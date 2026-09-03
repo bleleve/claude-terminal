@@ -1014,8 +1014,6 @@
     "tabClaude": "Claude",
     "moreTabs": "Lainnya",
     "hiddenTabsCount": "{count} tersembunyi",
-    "separatorTools": "Tool",
-    "separatorAI": "AI",
     "separatorExtensions": "Ekstensi",
     "tabPlugins": "Plugin",
     "tabSkills": "Skills",
@@ -1026,7 +1024,6 @@
     "tabDatabase": "Basis Data",
     "tabGit": "Git",
     "separatorCloud": "Cloud",
-    "separatorAnalytics": "Analitik",
     "tabDashboard": "Dasbor",
     "tabTimeTracking": "Pelacakan Waktu",
     "tabSessionReplay": "Replay",
@@ -1069,7 +1066,11 @@
     "tooltipWorkspace": "Pusat pengetahuan lintas proyek",
     "tooltipConnectivity": "Pengaturan GitHub, akses jarak jauh, dan cloud",
     "tooltipErrorLog": "Log kesalahan terpusat dengan triase AI",
-    "tabErrorLog": "Log Kesalahan"
+    "tabErrorLog": "Log Kesalahan",
+    "separatorProject": "Proyek",
+    "separatorAllProjects": "Semua proyek",
+    "separatorCapabilities": "Kemampuan",
+    "separatorSystem": "Sistem"
   },
   "memory": {
     "panelDescription": "Atur bagaimana Claude berperilaku dalam proyek Anda. Pengaturan global berlaku di mana saja, pengaturan proyek akan menimpanya.",
