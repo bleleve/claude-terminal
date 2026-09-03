@@ -2406,6 +2406,8 @@
   },
   "tabs": {
     "rename": "Renombrar",
+    "pin": "Fijar pestaña",
+    "unpin": "Dejar de fijar pestaña",
     "close": "Cerrar",
     "closeOthers": "Cerrar las demás",
     "closeToLeft": "Cerrar pestañas a la izquierda",
