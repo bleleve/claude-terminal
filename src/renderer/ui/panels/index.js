@@ -20,6 +20,7 @@ const SessionReplayPanel = require('./SessionReplayPanel');
 const ParallelTaskPanel = require('./ParallelTaskPanel');
 const WorkspacePanel = require('./WorkspacePanel');
 const ErrorLogPanel = require('./ErrorLogPanel');
+const ArtifactsPanel = require('./ArtifactsPanel');
 
 module.exports = {
   MemoryEditor,
@@ -39,4 +40,5 @@ module.exports = {
   ParallelTaskPanel,
   WorkspacePanel,
   ErrorLogPanel,
+  ArtifactsPanel,
 };
