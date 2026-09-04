@@ -116,7 +116,7 @@ const {
 const registry = require('./src/project-types/registry');
 const { mergeTranslations } = require('./src/renderer/i18n');
 const ModalComponent = require('./src/renderer/ui/components/Modal');
-const { MemoryEditor, GitChangesPanel, ShortcutsManager, SettingsPanel, SkillsAgentsPanel, PluginsPanel, MarketplacePanel, McpPanel, WorkflowPanel, DatabasePanel, CloudPanel, ConnectivityPanel, ControlTowerPanel, SessionReplayPanel, ParallelTaskPanel, WorkspacePanel, ErrorLogPanel, ArtifactsPanel } = require('./src/renderer/ui/panels');
+const { MemoryEditor, GitChangesPanel, ShortcutsManager, SettingsPanel, SkillsAgentsPanel, PluginsPanel, MarketplacePanel, McpPanel, WorkflowPanel, DatabasePanel, CloudPanel, ConnectivityPanel, ControlTowerPanel, SessionReplayPanel, ParallelTaskPanel, WorkspacePanel, ErrorLogPanel, ArtifactsPanel, FilesPanel } = require('./src/renderer/ui/panels');
 // Not re-exported by the panels index: ConnectivityPanel embeds it as a sub-tab,
 // but its polling lifecycle is driven from the tab registry below.
 const RemotePanel = require('./src/renderer/ui/panels/RemotePanel');
@@ -144,7 +144,9 @@ const localState = {
   gitRepoStatus: new Map(),
   gitStatusInitialized: false,
   // Dashboard scope: 'project' (the project bar's active tab) or 'overview'.
-  dashboardScope: 'project'
+  dashboardScope: 'project',
+  // Same split for the Files screen: 'project' or 'overview'.
+  filesScope: 'project'
 };
 
 // ========== I18N STATIC TEXT UPDATES ==========
@@ -217,6 +219,10 @@ const { loadSessionData, clearProjectSessions, saveTerminalSessions } = require(
       }
     }
   }
+  // Booting straight onto Claude clicks no tab, so nothing would have set the
+  // screen-scoped bits of the docked column.
+  document.body.dataset.activeTab = document.body.dataset.activeTab || 'claude';
+  syncOverviewEntry();
 
   // Initialize Claude event bus and provider (hooks or scraping)
   initClaudeEvents();
@@ -2745,6 +2751,7 @@ ProjectList.setCallbacks({
   onGitPull: gitPull,
   onGitPush: gitPush,
   onNewWorktree: openNewWorktreeModal,
+  onOpenProjectFiles: openProjectFiles,
   onCloudUpload: cloudUploadProject,
   onCloudDelete: cloudDeleteProject,
   onCloudReset: resetCloudState,
@@ -2831,9 +2838,12 @@ function selectProjectFromBar(projectIndex) {
   const tabs = document.getElementById('terminals-tabs');
   if (tabs) tabs.style.display = '';
 
-  // Picking a project tab is the way out of the dashboard's Overview tab.
+  // Picking a project is the way out of an Overview, on either screen.
   localState.dashboardScope = 'project';
+  localState.filesScope = 'project';
+  FilesPanel.setScope('project');
   ProjectBar.setOverviewActive(false);
+  syncOverviewEntry();
 
   TerminalManager.filterByProject(projectIndex);
   saveTerminalSessions();
@@ -2877,12 +2887,48 @@ ProjectBar.initProjectBar({
   onCloseProject: (project) => closeProjectFromBar(project),
   onContextMenu: (project, x, y) => showProjectTabContextMenu(project, x, y),
   onOpenPicker: (anchor) => toggleProjectsPopover(anchor),
-  onSelectOverview: () => {
-    localState.dashboardScope = 'overview';
-    renderDashboardForScope();
-  },
+  onSelectOverview: () => selectOverview(),
   getTerminalStatsForProject: TerminalManager.getTerminalStatsForProject,
 });
+
+/**
+ * Show the all-projects view of whichever screen is up. Two navigations reach
+ * this: the Overview project tab (tab-bar mode) and the entry at the top of the
+ * docked column (column mode), so it must not assume either is on screen.
+ */
+function selectOverview() {
+  if (document.body.dataset.activeTab === 'files') {
+    localState.filesScope = 'overview';
+    FilesPanel.setScope('overview');
+    ProjectBar.setOverviewActive(true);
+  } else {
+    localState.dashboardScope = 'overview';
+    renderDashboardForScope();
+  }
+  syncOverviewEntry();
+}
+
+/**
+ * Name the project the sessions below belong to. In tab-bar mode the project
+ * bar says it; in column mode nothing did, so the session row sat under a bare
+ * tools strip with no idea whose sessions it was showing.
+ */
+/**
+ * The column's Overview entry: offered only on the screens that have such a
+ * view, and lit when it is the one showing.
+ */
+function syncOverviewEntry() {
+  const entry = document.getElementById('projects-overview-item');
+  if (!entry) return;
+  const tab = document.body.dataset.activeTab;
+  const scoped = tab === 'dashboard' || tab === 'files';
+  entry.hidden = !scoped;
+  const active = (tab === 'dashboard' && localState.dashboardScope === 'overview')
+    || (tab === 'files' && localState.filesScope === 'overview');
+  entry.classList.toggle('active', active);
+}
+
+document.getElementById('projects-overview-item')?.addEventListener('click', () => selectOverview());
 
 // ── Projects popover (the + button) ──
 // Hosts the full ProjectList: search, folders, drag & drop and every
@@ -2958,14 +3004,6 @@ function setNavigationMode(mode) {
 
 // Changing it from Settings goes through the same path as the first-launch card
 document.addEventListener('navigation-mode-change', (e) => setNavigationMode(e.detail));
-
-// Replay and Tasks carry their own project dropdown in sidebar mode, where there
-// is no bar to pick from. They select through this rather than holding a second
-// notion of the active project.
-document.addEventListener('project-select-by-path', (e) => {
-  const index = projectsState.get().projects.findIndex(p => p.path === e.detail);
-  if (index >= 0) selectProjectFromBar(index);
-});
 
 function isProjectsPopoverOpen() {
   const popover = document.getElementById('projects-popover');
@@ -3169,21 +3207,17 @@ api.window.onCtrlTab((dir) => {
   api.window.setCtrlTabEnabled(ctrlTabEnabled);
 }
 
-// Setup FileExplorer
-FileExplorer.setCallbacks({
+// The Files screen owns the explorer's callbacks (a click lands in its own
+// viewer, not in a session tab); these two still need the host.
+FilesPanel.setCallbacks({
   onOpenInTerminal: (folderPath) => {
     const selectedFilter = projectsState.get().selectedProjectFilter;
     const projects = projectsState.get().projects;
     if (selectedFilter !== null && projects[selectedFilter]) {
       const project = { ...projects[selectedFilter], path: folderPath };
       TerminalManager.createTerminal(project, { runClaude: false });
+      document.querySelector('[data-tab="claude"]')?.click();
     }
-  },
-  onOpenFile: (filePath) => {
-    const selectedFilter = projectsState.get().selectedProjectFilter;
-    const projects = projectsState.get().projects;
-    const project = selectedFilter !== null ? projects[selectedFilter] : null;
-    TerminalManager.openFileTab(filePath, project);
   },
   onAddToChat: (relativePath, fullPath) => {
     const activeId = terminalsState.get().activeTerminal;
@@ -3191,15 +3225,28 @@ FileExplorer.setCallbacks({
     const termData = terminalsState.get().terminals.get(activeId);
     if (termData?.chatView?.addMentionChip) {
       termData.chatView.addMentionChip('file', { path: relativePath, fullPath });
+      document.querySelector('[data-tab="claude"]')?.click();
     }
   }
 });
-FileExplorer.init();
 
-// Toggle explorer button
-const btnToggleExplorer = document.getElementById('btn-toggle-explorer');
-if (btnToggleExplorer) {
-  btnToggleExplorer.onclick = () => FileExplorer.toggle();
+/**
+ * Show the Files screen for a project. Entry points are the project menu's
+ * "Files" item and Ctrl+E; both land here.
+ * @param {Object} project
+ */
+function openProjectFiles(project) {
+  if (!project) return;
+  const projectIndex = getProjectIndex(project.id);
+  if (projectIndex !== -1 && projectsState.get().selectedProjectFilter !== projectIndex) {
+    TerminalManager.filterByProject(projectIndex);
+    saveTerminalSessions();
+    applyProjectContext(projectIndex);
+  }
+  closeProjectsPopover();
+  // Clicking the nav element keeps scroll save/restore and the lifecycle hooks
+  // in one place — the hook is what mounts the panel.
+  document.querySelector('.nav-tab[data-tab="files"]')?.click();
 }
 
 // Wire "+" new terminal button
@@ -3258,8 +3305,8 @@ api.explorer.onChanges((changes) => {
 api.explorer.onWatchLimitWarning((totalPaths) => {
   showToast({ type: 'warning', title: t('fileExplorer.title'), message: t('fileExplorer.watchLimitWarning', { count: totalPaths }) });
 });
-// Wire lightbulb resume session button
-// Subscribe to project selection changes for FileExplorer
+// Follow the active project. The Files screen repoints itself on activate, so
+// this only has to keep the watcher and the tree root in step.
 projectsState.subscribe(() => {
   const state = projectsState.get();
   const selectedFilter = state.selectedProjectFilter;
@@ -3268,6 +3315,9 @@ projectsState.subscribe(() => {
   if (selectedFilter !== null && projects[selectedFilter]) {
     FileExplorer.setRootPath(projects[selectedFilter].path);
     api.explorer.watchDir(projects[selectedFilter].path);
+    if (document.body.dataset.activeTab === 'files') {
+      FilesPanel.loadPanel(document.getElementById('tab-files'), projects[selectedFilter]);
+    }
   } else {
     FileExplorer.hide();
     api.explorer.stopWatch();
@@ -3522,7 +3572,7 @@ const _TAB_LIFECYCLE = {
     deactivate: () => ControlTowerPanel.cleanup()
   },
   dashboard: {
-    activate: () => { populateDashboardProjects(); renderDashboardForScope(); },
+    activate: () => renderDashboardForScope(),
     // 30s GitHub Actions poll started by the dashboard cards; it used to keep
     // hitting the API from a tab nobody was looking at.
     deactivate: () => DashboardService.stopWorkflowPolling()
@@ -3549,6 +3599,16 @@ const _TAB_LIFECYCLE = {
     // Pauses the replay clock only — a full cleanup() would destroy the custom
     // <select> widgets that init() builds exactly once.
     deactivate: () => SessionReplayPanel.onDeactivate()
+  },
+  files: {
+    activate: () => {
+      const container = document.getElementById('tab-files');
+      if (!container) return;
+      FilesPanel.loadPanel(container, getCurrentProjectFromBar());
+      FilesPanel.setScope(localState.filesScope);
+    },
+    // Stops the explorer's 10s git-status poll while the screen is off.
+    deactivate: () => FilesPanel.onDeactivate()
   },
   memory: { activate: () => MemoryEditor.loadMemory() },
   workspace: {
@@ -3647,9 +3707,15 @@ document.querySelectorAll('.nav-tab[data-tab]').forEach(tab => {
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     document.getElementById(`tab-${tabId}`).classList.add('active');
     // Drives which parts of the project bar are relevant (tools are Claude-only,
-    // the Overview tab is dashboard-only) — see projects.css.
+    // the Overview tab belongs to Dashboard and Files) — see projects.css.
     document.body.dataset.activeTab = tabId;
-    ProjectBar.setOverviewActive(tabId === 'dashboard' && localState.dashboardScope === 'overview');
+    // Each screen remembers its own scope, so the tab reflects the one you are
+    // looking at rather than the last one you set anywhere.
+    ProjectBar.setOverviewActive(
+      (tabId === 'dashboard' && localState.dashboardScope === 'overview')
+      || (tabId === 'files' && localState.filesScope === 'overview')
+    );
+    syncOverviewEntry();
     // Tear down the tab we are leaving, then wake up the one we entered.
     _leaveCurrentTab(tabId);
     _runTabHook(tabId, 'activate');
@@ -3663,7 +3729,7 @@ document.querySelectorAll('.nav-tab[data-tab]').forEach(tab => {
 // ========== PINNED TABS SYSTEM ==========
 // Canonical order — must mirror the grouping in index.html, since the groups
 // carry meaning (whether the project tab drives the screen).
-const _ALL_TABS_ORDER = ['claude', 'artifacts', 'git', 'dashboard', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
+const _ALL_TABS_ORDER = ['claude', 'artifacts', 'dashboard', 'files', 'git', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
 
 function applyPinnedTabs() {
   const pinned = settingsState.get().pinnedTabs || _ALL_TABS_ORDER;
@@ -4348,156 +4414,6 @@ async function renameProjectUI(projectId) {
 document.getElementById('modal-close').onclick = closeModal;
 document.getElementById('modal-overlay').onclick = (e) => { if (e.target.id === 'modal-overlay') closeModal(); };
 
-// ========== SKILLS & AGENTS (extracted to SkillsAgentsPanel module) ==========
-// ========== PLUGINS (extracted to PluginsPanel module) ==========
-// ========== MARKETPLACE (extracted to MarketplacePanel module) ==========
-// ========== MCP (extracted to McpPanel module) ==========
-// ========== DASHBOARD ==========
-/**
- * The dashboard follows the project bar: a project tab shows that project, the
- * Overview tab in front of them shows all projects. There is deliberately no
- * second project selector on the screen itself.
- */
-function populateDashboardProjects() {
-  // Sidebar navigation only: in tab-bar mode the bar and its Overview tab are
-  // the selector, and this list is not on screen.
-  if (!document.body.classList.contains('nav-sidebar')) return;
-  const list = document.getElementById('dashboard-projects-list');
-  if (!list) return;
-  const state = projectsState.get();
-  const { projects, folders, rootOrder } = state;
-
-  if (projects.length === 0) {
-    list.innerHTML = `<div class="dashboard-projects-empty">Aucun projet</div>`;
-    return;
-  }
-
-  // Overview item
-  const overviewHtml = `
-    <div class="dashboard-project-item overview-item ${localState.dashboardScope === 'overview' ? 'active' : ''}" data-index="-1">
-      <div class="dashboard-project-icon">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
-      </div>
-      <div class="dashboard-project-info">
-        <div class="dashboard-project-name">${t('dashboard.overview')}</div>
-      </div>
-    </div>
-  `;
-
-  function renderFolderItem(folder, depth) {
-    const projectCount = countProjectsRecursive(folder.id);
-    const isCollapsed = folder.collapsed;
-    const indent = depth * 16;
-
-    const colorIndicator = folder.color
-      ? `<span class="dash-folder-color" style="background: ${folder.color}"></span>`
-      : '';
-
-    const folderIcon = folder.icon
-      ? `<span class="dash-folder-emoji">${folder.icon}</span>`
-      : `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>`;
-
-    let childrenHtml = '';
-    const children = folder.children || [];
-    for (const childId of children) {
-      const childFolder = folders.find(f => f.id === childId);
-      if (childFolder) {
-        childrenHtml += renderFolderItem(childFolder, depth + 1);
-      } else {
-        const childProject = projects.find(p => p.id === childId);
-        if (childProject && childProject.folderId === folder.id) {
-          childrenHtml += renderProjectItem(childProject, depth + 1);
-        }
-      }
-    }
-
-    return `
-      <div class="dash-folder-item" data-folder-id="${folder.id}">
-        <div class="dash-folder-header" style="padding-left: ${indent + 8}px">
-          <span class="dash-folder-chevron ${isCollapsed ? 'collapsed' : ''}">
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
-          </span>
-          ${colorIndicator}
-          <span class="dash-folder-icon">${folderIcon}</span>
-          <span class="dash-folder-name">${escapeHtml(folder.name)}</span>
-          <span class="dash-folder-count">${projectCount}</span>
-        </div>
-        <div class="dash-folder-children ${isCollapsed ? 'collapsed' : ''}">
-          ${childrenHtml}
-        </div>
-      </div>
-    `;
-  }
-
-  function renderProjectItem(project, depth) {
-    const index = getProjectIndex(project.id);
-    const isActive = localState.dashboardScope !== 'overview' && projectsState.get().selectedProjectFilter === index;
-    const indent = depth * 16;
-
-    const colorIndicator = project.color
-      ? `<span class="dash-folder-color" style="background: ${project.color}"></span>`
-      : '';
-
-    const dashTypeHandler = registry.get(project.type);
-    const dashTypeIcon = dashTypeHandler.getDashboardIcon ? dashTypeHandler.getDashboardIcon(project) : null;
-    const iconHtml = project.icon
-      ? `<span class="dashboard-project-emoji">${project.icon}</span>`
-      : (dashTypeIcon || '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>');
-
-    return `
-      <div class="dashboard-project-item ${isActive ? 'active' : ''}" data-index="${index}" style="padding-left: ${indent}px">
-        <div class="dashboard-project-icon">${colorIndicator}${iconHtml}</div>
-        <div class="dashboard-project-info">
-          <div class="dashboard-project-name">${escapeHtml(project.name)}</div>
-          <div class="dashboard-project-path">${escapeHtml(project.path)}</div>
-        </div>
-      </div>
-    `;
-  }
-
-  let itemsHtml = '';
-  for (const itemId of (rootOrder || [])) {
-    const folder = folders.find(f => f.id === itemId);
-    if (folder) {
-      itemsHtml += renderFolderItem(folder, 0);
-    } else {
-      const project = projects.find(p => p.id === itemId);
-      if (project) {
-        itemsHtml += renderProjectItem(project, 0);
-      }
-    }
-  }
-
-  list.innerHTML = overviewHtml + itemsHtml;
-
-  // Click handlers for projects
-  list.querySelectorAll('.dashboard-project-item').forEach(item => {
-    item.onclick = () => {
-      const index = parseInt(item.dataset.index);
-      if (index === -1) {
-        localState.dashboardScope = 'overview';
-        populateDashboardProjects();
-        renderDashboardForScope();
-      } else {
-        // Same switch the project bar performs, so both navigations agree
-        localState.dashboardScope = 'project';
-        selectProjectFromBar(index);
-        populateDashboardProjects();
-      }
-    };
-  });
-
-  // Click handlers for folder headers (toggle collapse)
-  list.querySelectorAll('.dash-folder-header').forEach(header => {
-    header.onclick = (e) => {
-      e.stopPropagation();
-      const folderItem = header.closest('.dash-folder-item');
-      const folderId = folderItem.dataset.folderId;
-      toggleFolderCollapse(folderId);
-      populateDashboardProjects();
-    };
-  });
-}
 
 function renderDashboardForScope() {
   const projectIndex = projectsState.get().selectedProjectFilter;
@@ -7026,28 +6942,24 @@ window.addEventListener('beforeunload', () => {
   if (savedWidth) panel.style.width = savedWidth + 'px';
 })();
 
-// ========== PROJECTS PANEL TOGGLE (sidebar navigation) ==========
+// ========== PROJECTS PANEL TOGGLE (column navigation) ==========
+// The collapsed state used to be a class on .claude-layout, which is inside
+// #tab-claude. Now that the column stands beside every screen, so must the
+// strip that brings it back — otherwise collapsing it on Git or Files left no
+// way to reopen it.
 (function initProjectsPanelToggle() {
   const panel = document.getElementById('projects-popover');
-  const layout = document.getElementById('claude-layout');
   const btnToggle = document.getElementById('btn-toggle-projects');
   const btnShow = document.getElementById('btn-show-projects');
-  if (!panel || !layout || !btnToggle || !btnShow) return;
+  if (!panel || !btnToggle || !btnShow) return;
 
-  if (localStorage.getItem('projects-panel-hidden') === 'true') {
-    panel.classList.add('collapsed');
-    layout.classList.add('projects-hidden');
-  }
-
-  btnToggle.onclick = () => {
-    panel.classList.add('collapsed');
-    layout.classList.add('projects-hidden');
-    localStorage.setItem('projects-panel-hidden', 'true');
+  const setCollapsed = (collapsed) => {
+    panel.classList.toggle('collapsed', collapsed);
+    document.body.classList.toggle('projects-collapsed', collapsed);
+    localStorage.setItem('projects-panel-hidden', String(collapsed));
   };
 
-  btnShow.onclick = () => {
-    panel.classList.remove('collapsed');
-    layout.classList.remove('projects-hidden');
-    localStorage.setItem('projects-panel-hidden', 'false');
-  };
+  setCollapsed(localStorage.getItem('projects-panel-hidden') === 'true');
+  btnToggle.onclick = () => setCollapsed(true);
+  btnShow.onclick = () => setCollapsed(false);
 })();

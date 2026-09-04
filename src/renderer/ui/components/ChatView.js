@@ -64,6 +64,20 @@ function parseResultJson(text) {
   try { return JSON.parse(trimmed); } catch (_) { return null; }
 }
 
+// TaskCreate answers with a plain sentence — "Task #3 created successfully: <subject>" —
+// not JSON. The id it hands back is the one every later TaskUpdate addresses, so failing
+// to read it leaves the task filed under its tool_use_id and freezes the bar at 0/N.
+const TASK_CREATED_RE = /task\s*#?\s*([A-Za-z0-9_-]+)\s+created/i;
+
+/** @returns {string|null} The task id a TaskCreate result reports, JSON or prose. */
+function parseCreatedTaskId(text) {
+  const parsed = parseResultJson(text);
+  const jsonId = parsed?.task?.id ?? parsed?.taskId ?? parsed?.id;
+  if (jsonId != null) return String(jsonId);
+  const match = TASK_CREATED_RE.exec(text || '');
+  return match ? match[1] : null;
+}
+
 // ── Wakeup countdown ticker (module-level, single global interval) ──
 // Runs only while a wakeup card is actually on screen. The first version armed
 // the interval on the first ScheduleWakeup of the session and then ticked for
@@ -125,6 +139,7 @@ const EFFORT_OPTIONS = [
 
 const MarkdownRenderer = require('../../services/MarkdownRenderer');
 const ArtifactService = require('../../services/ArtifactService');
+const DiffRenderer = require('../../services/DiffRenderer');
 
 function renderMarkdown(text) {
   return MarkdownRenderer.render(text);
@@ -416,7 +431,10 @@ class ChatView extends BaseComponent {
   // ── Task tool accumulator (SDK 0.3+ TaskCreate / TaskUpdate / TaskList) ──
   const tasksMap = new Map(); // taskId -> { id, subject, description, activeForm, status, order }
   const pendingCreateByUseId = new Map(); // tool_use_id -> { subject, description, activeForm, order }
+  const taskIdByUseId = new Map(); // tool_use_id -> real task id, once the result promoted it
+  const pendingTaskUpdates = new Map(); // task id -> patch held until its create is promoted
   let taskOrderCounter = 0;
+  let taskRenderSuspended = false; // batches the widget render during a history replay
   let slashCommands = []; // populated from system/init message
   let slashSelectedIndex = -1; // currently highlighted item in slash dropdown
   // Accumulates messages for CLAUDE.md analysis (role: 'user'|'assistant', content: string)
@@ -3925,31 +3943,22 @@ class ChatView extends BaseComponent {
   }
 
   // ── Session changes tab (files modified during this session) ──
-  // Accumulates per-file added/removed line counts from every file-editing tool
-  // (Write / Edit / MultiEdit / NotebookEdit), including subagents and resumed
-  // history. The map lives in this component instance, so it is session-scoped.
-  const sessionFileChanges = new Map(); // filePath -> { additions, deletions, edits }
+  // Only the tally lives here, so the tab badge can react the moment a tool
+  // runs. The diffs come from the transcript: Claude Code writes the patch it
+  // applied — exact hunks, exact line numbers — next to every edit, which beats
+  // anything this component could reconstruct from old_string/new_string.
+  const sessionFileTally = new Map(); // filePath -> { edits }
+  // A subagent tool_use arrives twice, once streamed and once in the full
+  // assistant message, so count it by id.
+  const recordedToolUseIds = new Set();
 
-  // Artifacts this session produced. Declared alongside sessionFileChanges
-  // because recordFileChange() feeds both, and both are session-scoped.
+  // Artifacts this session produced. Declared alongside the file tally because
+  // recordFileChange() feeds both, and both are session-scoped.
   const artifactRegistry = ArtifactService.createRegistry({
     project,
     getSessionId: () => sessionId,
     onChange: () => updateArtifactsTab(),
   });
-
-  // Count changed lines between two text blocks by stripping the common prefix
-  // and suffix — mirrors how `git diff` reports +/- on the changed hunk only.
-  function _diffLineCounts(oldStr, newStr) {
-    const oldLines = oldStr ? String(oldStr).split('\n') : [];
-    const newLines = newStr ? String(newStr).split('\n') : [];
-    let start = 0;
-    while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start++;
-    let oldEnd = oldLines.length;
-    let newEnd = newLines.length;
-    while (oldEnd > start && newEnd > start && oldLines[oldEnd - 1] === newLines[newEnd - 1]) { oldEnd--; newEnd--; }
-    return { additions: Math.max(0, newEnd - start), deletions: Math.max(0, oldEnd - start) };
-  }
 
   // Publishes waiting on their tool result, which is where the URL lives.
   // Keyed by tool_use_id; entries are consumed by resolveArtifactPublish.
@@ -3984,11 +3993,15 @@ class ChatView extends BaseComponent {
     capturePublishedArtifact(input, url);
   }
 
-  function recordFileChange(toolName, input, toolUseId = null) {
+  function recordFileChange(toolName, input, toolUseId) {
     if (!input || !toolName) return;
+    if (toolUseId) {
+      if (recordedToolUseIds.has(toolUseId)) return;
+      recordedToolUseIds.add(toolUseId);
+    }
 
     // The `Artifact` tool publishes an .html/.md file to claude.ai. Unlike every
-    // other extract this one is explicit, so it is captured from the tool call
+    // other document this one is explicit, so it is captured from the tool call
     // rather than inferred from the transcript — and deferred until the result
     // arrives, both to pick up the published URL and to skip failed publishes.
     if (ArtifactService.isArtifactPublish(toolName, input)) {
@@ -3997,60 +4010,56 @@ class ChatView extends BaseComponent {
       return;
     }
 
-    // A `Write` authors a complete file, which is an artifact in its own right.
+    // A `Write` authors a complete file, which is a document in its own right.
     // `Edit`/`MultiEdit` only amend an existing one — that is what the Changes
     // tab is for, and mirroring them here would just duplicate it.
     const fileArtifact = ArtifactService.fromFileTool(toolName, input);
     if (fileArtifact) artifactRegistry.add(fileArtifact);
 
-    const hits = []; // { path, additions, deletions }
+    let path = null;
     switch (toolName) {
       case 'Write':
-        if (input.file_path) hits.push({ path: input.file_path, additions: String(input.content || '').split('\n').length, deletions: 0 });
+      case 'Edit':
+      case 'MultiEdit':
+        path = input.file_path || null;
         break;
-      case 'Edit': {
-        if (!input.file_path) break;
-        const c = _diffLineCounts(input.old_string, input.new_string);
-        hits.push({ path: input.file_path, additions: c.additions, deletions: c.deletions });
+      case 'NotebookEdit':
+        path = input.notebook_path || input.file_path || null;
         break;
-      }
-      case 'MultiEdit': {
-        if (!input.file_path) break;
-        let additions = 0, deletions = 0;
-        for (const e of (input.edits || [])) {
-          const c = _diffLineCounts(e.old_string, e.new_string);
-          additions += c.additions; deletions += c.deletions;
-        }
-        hits.push({ path: input.file_path, additions, deletions });
-        break;
-      }
-      case 'NotebookEdit': {
-        const path = input.notebook_path || input.file_path;
-        if (path) hits.push({ path, additions: String(input.new_source || '').split('\n').length, deletions: 0 });
-        break;
-      }
       default:
         return;
     }
-    if (!hits.length) return;
-    for (const h of hits) {
-      const cur = sessionFileChanges.get(h.path) || { additions: 0, deletions: 0, edits: 0 };
-      cur.additions += h.additions;
-      cur.deletions += h.deletions;
-      cur.edits += 1;
-      sessionFileChanges.set(h.path, cur);
-    }
+    if (!path) return;
+    const cur = sessionFileTally.get(path) || { edits: 0 };
+    cur.edits += 1;
+    sessionFileTally.set(path, cur);
+    // The transcript now has one more edit than we last read.
+    liveChangesStale = true;
     updateChangesTab();
   }
 
-  function updateChangesTab() {
-    const count = sessionFileChanges.size;
+  /**
+   * Badge only. Kept separate from updateChangesTab because the transcript read
+   * refreshes the count, and repainting the panel from there would collapse a
+   * diff the reader has open.
+   */
+  function _updateChangesBadge() {
+    // The tally reveals the tab the instant a tool runs; the transcript count
+    // supersedes it once read, so the badge and the panel agree.
+    const count = liveFileCount == null
+      ? sessionFileTally.size
+      : Math.max(liveFileCount, sessionFileTally.size);
     if (count > 0 && tabbarEl.hidden) tabbarEl.hidden = false;
     if (changesBadgeEl) {
       changesBadgeEl.textContent = String(count);
       changesBadgeEl.hidden = count === 0;
     }
-    // Re-render live if the panel is currently visible
+  }
+
+  function updateChangesTab() {
+    _updateChangesBadge();
+    // Re-render live only while the panel shows this session — repainting it
+    // under someone reading a past session would collapse their open diffs.
     if (!changesPanelEl.hidden) renderChangesPanel();
   }
 
@@ -4065,8 +4074,74 @@ class ChatView extends BaseComponent {
     if (tab === 'artifacts') renderArtifactsPanel();
   }
 
+  // ── This session's changes ──
+  // Claude Code appends each edit's patch to the transcript as it runs, so this
+  // panel is just "the transcript of the session I am in", re-read when the
+  // tally says there is something new. Browsing *other* sessions belongs in the
+  // Files screen, where a tree gives it somewhere to land.
+  let changesSourceEntries = null; // Map<path, entry>
+  let changesSourceLoading = false;
+  let liveChangesStale = true;     // an edit landed since we last read the file
+  // File count once the transcript has been read. The tally is only what we
+  // watched go by, and replayed history is capped, so the two disagree on a
+  // long resumed session — the transcript is the one to believe.
+  let liveFileCount = null;
+  let changesDiffMode = getSetting('filesDiffMode') === 'split' ? 'split' : 'unified';
+
+  function _changesEntries() {
+    return changesSourceEntries || new Map();
+  }
+
+  /**
+   * Re-read this session's transcript. `force` skips the staleness check.
+   */
+  async function _loadChangesFor({ force = false } = {}) {
+    // sdkSessionId is the live truth once the SDK has started. Before that — a
+    // resumed tab whose history is on screen but whose query has not begun —
+    // the transcript we replayed is the one to read.
+    const targetId = sdkSessionId || resumeSessionId;
+    if (!targetId) {
+      // No transcript to read yet (the SDK has not handed us a session id).
+      // Clearing the flag matters: renderChangesPanel re-renders on the way
+      // out, and a flag left set turns that into an endless render loop.
+      changesSourceEntries = changesSourceEntries || new Map();
+      liveChangesStale = false;
+      return;
+    }
+    if (!force && !liveChangesStale && changesSourceEntries) return;
+
+    changesSourceLoading = true;
+    // Cleared up front, not on success: a read that fails must not leave the
+    // panel asking for the same file on every repaint. The next edit re-arms it.
+    liveChangesStale = false;
+    try {
+      const res = await api.claude.sessionChanges({ projectPath: project.path, sessionId: targetId });
+      const files = (res && res.success ? res.files : []);
+      liveFileCount = files.length;
+      _updateChangesBadge();
+      changesSourceEntries = new Map(files.map(f => [f.path, f]));
+    } catch {
+      if (!changesSourceEntries) changesSourceEntries = new Map();
+    } finally {
+      changesSourceLoading = false;
+    }
+  }
+
   function renderChangesPanel() {
-    const files = [...sessionFileChanges.entries()];
+    // Entering the tab after an edit landed: re-read the transcript, then
+    // repaint. The tally already moved the badge, so this is never a blocker.
+    if (liveChangesStale && !changesSourceLoading) {
+      _loadChangesFor().then(() => {
+        if (!changesPanelEl.hidden) renderChangesPanel();
+      });
+    }
+
+    if (changesSourceLoading && !changesSourceEntries) {
+      changesPanelEl.innerHTML = `<div class="chat-changes-empty">${escapeHtml(t('common.loading') || 'Loading...')}</div>`;
+      return;
+    }
+
+    const files = [...(_changesEntries().entries())];
     if (!files.length) {
       changesPanelEl.innerHTML = `<div class="chat-changes-empty">${escapeHtml(t('chat.noChangesYet') || 'No files modified yet.')}</div>`;
       return;
@@ -4078,16 +4153,26 @@ class ChatView extends BaseComponent {
       const base = path.split(/[\\/]/).pop();
       const dir = path.slice(0, path.length - base.length);
       return `
-        <div class="chat-change-item" data-path="${escapeHtml(path)}" title="${escapeHtml(path)}">
-          <div class="chat-change-file">
-            <span class="chat-change-base">${escapeHtml(base)}</span>
-            <span class="chat-change-dir">${escapeHtml(dir)}</span>
+        <div class="chat-change-item" data-path="${escapeHtml(path)}">
+          <div class="chat-change-row" role="button" tabindex="0" title="${escapeHtml(path)}">
+            <svg class="chat-change-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+            <div class="chat-change-file">
+              <span class="chat-change-base">${escapeHtml(base)}</span>
+              <span class="chat-change-dir">${escapeHtml(dir)}</span>
+            </div>
+            <div class="chat-change-stats">
+              ${s.edits > 1 ? `<span class="chat-change-edits">${s.edits}×</span>` : ''}
+              <span class="chat-change-add">+${s.additions}</span>
+              <span class="chat-change-del">-${s.deletions}</span>
+              <button class="chat-change-current" title="${escapeHtml(t('chat.diffVsCurrent') || 'Compare with the file on disk')}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-7.35-3.82"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 7.35 3.82"/><polyline points="21 3 19.35 6.82 15.5 6"/><polyline points="3 21 4.65 17.18 8.5 18"/></svg>
+              </button>
+              <button class="chat-change-open" title="${escapeHtml(t('chat.openFile') || 'Open file')}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              </button>
+            </div>
           </div>
-          <div class="chat-change-stats">
-            ${s.edits > 1 ? `<span class="chat-change-edits">${s.edits}×</span>` : ''}
-            <span class="chat-change-add">+${s.additions}</span>
-            <span class="chat-change-del">-${s.deletions}</span>
-          </div>
+          <div class="chat-change-diff" hidden></div>
         </div>`;
     }).join('');
     const fileLabel = files.length > 1
@@ -4099,6 +4184,11 @@ class ChatView extends BaseComponent {
         <span class="chat-changes-totals">
           <span class="chat-change-add">+${totalAdd}</span>
           <span class="chat-change-del">-${totalDel}</span>
+          <button class="chat-changes-split" title="${escapeHtml(t('files.toggleSplit'))}">
+            ${changesDiffMode === 'split'
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="12" y1="4" x2="12" y2="20"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="12" x2="21" y2="12"/></svg>'}
+          </button>
         </span>
       </div>
       <div class="chat-changes-list">${rows}</div>
@@ -4110,11 +4200,122 @@ class ChatView extends BaseComponent {
     if (btn) switchChatTab(btn.dataset.tab);
   });
 
+  /**
+   * Expand or collapse a file's diff. The rows are built on expand and dropped
+   * on collapse: a session can touch dozens of files, and keeping every diff
+   * mounted is exactly the kind of DOM weight that slows the transcript down.
+   */
+  async function toggleFileDiff(item, mode = 'session') {
+    const path = item.dataset.path;
+    const diffEl = item.querySelector('.chat-change-diff');
+    if (!path || !diffEl) return;
+
+    // Clicking the same view again collapses; switching view re-renders.
+    if (item.classList.contains('expanded') && item.dataset.diffMode === mode) {
+      item.classList.remove('expanded');
+      delete item.dataset.diffMode;
+      diffEl.hidden = true;
+      diffEl.innerHTML = '';
+      return;
+    }
+
+    const entry = _changesEntries().get(path);
+    if (!entry) return;
+    item.classList.add('expanded');
+    item.dataset.diffMode = mode;
+    diffEl.hidden = false;
+
+    if (mode === 'current') {
+      diffEl.innerHTML = `<div class="chat-change-note">${escapeHtml(t('common.loading') || 'Loading...')}</div>`;
+      const html = await _buildCurrentDiffHtml(path);
+      if (item.classList.contains('expanded') && item.dataset.diffMode === mode) diffEl.innerHTML = html;
+      return;
+    }
+    // The session diff needs no I/O: the patch came with the transcript.
+    diffEl.innerHTML = DiffRenderer.renderPatch(entry.hunks, { filePath: path, mode: changesDiffMode });
+  }
+
+  /**
+   * The file's uncommitted diff, as git sees it right now. The session hunks
+   * say what the agent wrote at the time; this says what survived — an edit
+   * since reverted or overwritten shows up nowhere here.
+   */
+  async function _buildCurrentDiffHtml(filePath) {
+    let diff;
+    try {
+      diff = await api.git.fileDiff({ projectPath: project.path, filePath });
+    } catch (e) {
+      diff = { error: true, message: e.message };
+    }
+    if (!diff || diff.error) {
+      const msg = (diff && diff.message) || t('chat.noDiffAvailable') || 'No diff available.';
+      return `<div class="chat-change-note">${escapeHtml(msg)}</div>`;
+    }
+    if (typeof diff !== 'string' || !diff.trim()) {
+      return `<div class="chat-change-note">${escapeHtml(t('chat.diffNoCurrentChanges') || 'No uncommitted changes for this file.')}</div>`;
+    }
+    // Reshape git's textual output into the same hunks DiffRenderer draws, so
+    // both readings of a file look alike.
+    return DiffRenderer.renderPatch(_parseUnifiedDiff(diff), { filePath, mode: changesDiffMode });
+  }
+
+  /** Textual unified diff -> structuredPatch-shaped hunks. */
+  function _parseUnifiedDiff(diff) {
+    const hunks = [];
+    let current = null;
+    for (const line of diff.split('\n')) {
+      const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+      if (header) {
+        current = {
+          oldStart: Number(header[1]), oldLines: Number(header[2] ?? 1),
+          newStart: Number(header[3]), newLines: Number(header[4] ?? 1),
+          lines: [],
+        };
+        hunks.push(current);
+        continue;
+      }
+      if (!current) continue; // file headers before the first hunk
+      if (line.startsWith('\\')) continue; // "\ No newline at end of file"
+      if (line[0] === '+' || line[0] === '-' || line[0] === ' ') current.lines.push(line);
+    }
+    return hunks;
+  }
+
   changesPanelEl.addEventListener('click', (e) => {
+    if (e.target.closest('.chat-changes-split')) {
+      changesDiffMode = changesDiffMode === 'split' ? 'unified' : 'split';
+      setSetting('filesDiffMode', changesDiffMode);
+      // Repaint whatever diffs are open in the new layout.
+      const expanded = [...changesPanelEl.querySelectorAll('.chat-change-item.expanded')]
+        .map(el => [el.dataset.path, el.dataset.diffMode]);
+      renderChangesPanel();
+      for (const [path, mode] of expanded) {
+        const el = changesPanelEl.querySelector(`.chat-change-item[data-path="${CSS.escape(path)}"]`);
+        if (el) toggleFileDiff(el, mode);
+      }
+      return;
+    }
+
     const item = e.target.closest('.chat-change-item');
     if (!item || !item.dataset.path) return;
-    const editor = getSetting('editor') || 'code';
-    api.dialog.openInEditor({ editor, path: item.dataset.path });
+    if (e.target.closest('.chat-change-open')) {
+      const editor = getSetting('editor') || 'code';
+      api.dialog.openInEditor({ editor, path: item.dataset.path });
+      return;
+    }
+    if (e.target.closest('.chat-change-current')) {
+      toggleFileDiff(item, 'current');
+      return;
+    }
+    toggleFileDiff(item);
+  });
+
+  changesPanelEl.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const row = e.target.closest('.chat-change-row');
+    if (!row) return;
+    e.preventDefault();
+    toggleFileDiff(row.closest('.chat-change-item'));
   });
 
   // ── Documents tab ──
@@ -4924,7 +5125,7 @@ class ChatView extends BaseComponent {
             try {
               const toolInput = JSON.parse(jsonStr);
               const name = mini.dataset.toolName || mini.querySelector('.sa-tool-name')?.textContent || '';
-              recordFileChange(name, toolInput, mini.dataset.toolUseId || null);
+              recordFileChange(name, toolInput, mini.dataset.toolUseId);
               const detail = getToolDisplayInfo(name, toolInput);
               const detailEl = mini.querySelector('.sa-tool-detail');
               if (detailEl && detail) {
@@ -4955,7 +5156,7 @@ class ChatView extends BaseComponent {
 
     for (const block of content) {
       if (block.type === 'tool_use' && block.name !== 'TodoWrite' && block.name !== 'TaskCreate' && block.name !== 'TaskUpdate' && block.name !== 'TaskList' && block.name !== 'TaskGet') {
-        recordFileChange(block.name, block.input, block.id || null);
+        recordFileChange(block.name, block.input, block.id);
         const detail = getToolDisplayInfo(block.name, block.input);
         info.activityEl.textContent = `${block.name}...`;
 
@@ -5030,36 +5231,52 @@ class ChatView extends BaseComponent {
 
   function applyTaskCreate(input, toolUseId) {
     if (!input || !input.subject) return;
-    pendingCreateByUseId.set(toolUseId, {
-      subject: input.subject,
-      description: input.description || '',
-      activeForm: input.activeForm || '',
-      order: ++taskOrderCounter,
-    });
+    // Every TaskCreate is seen twice — once from the stream (content_block_stop) and
+    // once from the full assistant message. Keying off the tool_use_id (or the real id
+    // it was promoted to) makes the second pass an update, not a duplicate row with a
+    // second slot in the ordering.
+    const key = taskIdByUseId.get(toolUseId) || toolUseId;
+    const existing = tasksMap.get(key);
+    const order = existing ? existing.order : ++taskOrderCounter;
+    if (!taskIdByUseId.has(toolUseId)) {
+      pendingCreateByUseId.set(toolUseId, {
+        subject: input.subject,
+        description: input.description || '',
+        activeForm: input.activeForm || '',
+        order,
+      });
+    }
     // Optimistic render with temp id (tool_use_id) so the widget updates immediately;
     // it'll be replaced with the real task id when the tool_result arrives.
-    tasksMap.set(toolUseId, {
-      id: toolUseId,
+    tasksMap.set(key, {
+      id: key,
       subject: input.subject,
       description: input.description || '',
       activeForm: input.activeForm || '',
-      status: 'pending',
-      order: taskOrderCounter,
-      _temp: true,
+      status: existing?.status || 'pending',
+      order,
+      _temp: key === toolUseId,
     });
     renderTasksWidget();
   }
 
   function applyTaskUpdate(input) {
-    if (!input || !input.taskId) return;
-    const task = tasksMap.get(input.taskId);
-    if (!task) return;
+    if (!input || input.taskId == null) return;
+    const id = String(input.taskId);
+    const task = tasksMap.get(id);
+    if (!task) {
+      // The matching create hasn't been promoted to its real id yet (its tool_result is
+      // still in flight, or arrived in a shape we couldn't read). Hold the patch and
+      // replay it on promotion — dropping it is what left the bar stuck at 0/N.
+      pendingTaskUpdates.set(id, { ...(pendingTaskUpdates.get(id) || {}), ...input });
+      return;
+    }
     if (input.subject != null) task.subject = input.subject;
     if (input.description != null) task.description = input.description;
     if (input.activeForm != null) task.activeForm = input.activeForm;
     if (input.status != null) {
       if (input.status === 'deleted') {
-        tasksMap.delete(input.taskId);
+        tasksMap.delete(id);
       } else {
         task.status = input.status;
       }
@@ -5069,16 +5286,18 @@ class ChatView extends BaseComponent {
 
   function promoteTaskCreateResult(toolUseId, taskId) {
     if (!toolUseId || !taskId) return;
+    const id = String(taskId);
     const pending = pendingCreateByUseId.get(toolUseId);
     pendingCreateByUseId.delete(toolUseId);
+    taskIdByUseId.set(toolUseId, id);
     // Move from temp tool_use_id key to real task id key
     const existing = tasksMap.get(toolUseId);
     if (existing) {
       tasksMap.delete(toolUseId);
-      tasksMap.set(taskId, { ...existing, id: taskId, _temp: false });
+      tasksMap.set(id, { ...existing, id, _temp: false });
     } else if (pending) {
-      tasksMap.set(taskId, {
-        id: taskId,
+      tasksMap.set(id, {
+        id,
         subject: pending.subject,
         description: pending.description,
         activeForm: pending.activeForm,
@@ -5086,12 +5305,27 @@ class ChatView extends BaseComponent {
         order: pending.order,
       });
     }
+    const held = pendingTaskUpdates.get(id);
+    if (held) {
+      pendingTaskUpdates.delete(id);
+      applyTaskUpdate(held); // renders
+      return;
+    }
     renderTasksWidget();
   }
 
   function renderTasksWidget() {
+    if (taskRenderSuspended) return;
     const tasks = getOrderedTasks();
-    if (!tasks.length) return;
+    if (!tasks.length) {
+      // Every task deleted — drop the bar rather than leave the last count standing
+      if (todoWidgetEl) {
+        todoWidgetEl.remove();
+        todoWidgetEl = null;
+        todoAllDone = false;
+      }
+      return;
+    }
 
     const completed = tasks.filter(td => td.status === 'completed').length;
     const active = tasks.find(td => td.status === 'in_progress');
@@ -5154,6 +5388,8 @@ class ChatView extends BaseComponent {
     if (!Array.isArray(todos) || !todos.length) return;
     tasksMap.clear();
     pendingCreateByUseId.clear();
+    taskIdByUseId.clear();
+    pendingTaskUpdates.clear();
     todos.forEach((todo, i) => {
       const id = `todo-${i}`;
       tasksMap.set(id, {
@@ -5166,6 +5402,35 @@ class ChatView extends BaseComponent {
       });
     });
     taskOrderCounter = Math.max(taskOrderCounter, todos.length);
+    renderTasksWidget();
+  }
+
+  /**
+   * Replay the Task tools of a resumed session so the bar opens on the plan the
+   * conversation left off at, instead of staying blank until the next TaskCreate.
+   * The history carries each create's result text, so ids promote exactly as live.
+   * @param {Array} messages One page of history, oldest first.
+   */
+  function hydrateTasksFromHistory(messages) {
+    taskRenderSuspended = true;
+    try {
+      for (const msg of messages) {
+        if (msg.role === 'assistant' && msg.type === 'tool_use') {
+          if (msg.toolName === 'TodoWrite' && msg.toolInput?.todos) {
+            updateTodoWidget(msg.toolInput.todos);
+          } else if (msg.toolName === 'TaskCreate' && msg.toolInput) {
+            applyTaskCreate(msg.toolInput, msg.toolUseId);
+          } else if (msg.toolName === 'TaskUpdate' && msg.toolInput) {
+            applyTaskUpdate(msg.toolInput);
+          }
+        } else if (msg.role === 'tool_result' && pendingCreateByUseId.has(msg.toolUseId)) {
+          const taskId = parseCreatedTaskId(msg.output || '');
+          if (taskId) promoteTaskCreateResult(msg.toolUseId, taskId);
+        }
+      }
+    } finally {
+      taskRenderSuspended = false;
+    }
     renderTasksWidget();
   }
 
@@ -6085,7 +6350,7 @@ class ChatView extends BaseComponent {
             if (card) {
               card.dataset.toolInput = JSON.stringify(toolInput);
               const name = card.dataset.toolName || card.querySelector('.chat-tool-name')?.textContent || '';
-              recordFileChange(name, toolInput, card.dataset.toolUseId || null);
+              recordFileChange(name, toolInput, card.dataset.toolUseId);
               // Custom card renderer (ScheduleWakeup, CronCreate, Worktree, Notification)
               const customHtml = renderToolCardHtml(name, toolInput);
               if (customHtml) {
@@ -6249,8 +6514,7 @@ class ChatView extends BaseComponent {
     if (block.tool_use_id && pendingCreateByUseId.has(block.tool_use_id)) {
       const raw = typeof block.content === 'string' ? block.content
         : Array.isArray(block.content) ? block.content.map(b => b.text || '').join('\n') : '';
-      const parsed = parseResultJson(raw);
-      const taskId = parsed?.task?.id;
+      const taskId = parseCreatedTaskId(raw);
       if (taskId) promoteTaskCreateResult(block.tool_use_id, taskId);
       return;
     }
@@ -7074,6 +7338,10 @@ class ChatView extends BaseComponent {
         return;
       }
 
+      // Only this first page seeds the bar: later pages are prepended *older*
+      // messages, whose creates and updates would land out of order.
+      hydrateTasksFromHistory(msgs);
+
       renderHistoryMessages(msgs, {
         onComplete: () => {
           syncHistoryTop(result, msgs.length);
@@ -7226,7 +7494,7 @@ class ChatView extends BaseComponent {
             continue;
           }
 
-          recordFileChange(msg.toolName, msg.toolInput || {}, msg.toolUseId || null);
+          recordFileChange(msg.toolName, msg.toolInput || {}, msg.toolUseId);
           const detail = getToolDisplayInfo(msg.toolName, msg.toolInput || {});
           const el = document.createElement('div');
           el.className = 'chat-tool-card history';
@@ -7430,6 +7698,10 @@ class ChatView extends BaseComponent {
       toolInputBuffers.clear();
       todoToolIndices.clear();
       taskToolIndices.clear();
+      tasksMap.clear();
+      pendingCreateByUseId.clear();
+      taskIdByUseId.clear();
+      pendingTaskUpdates.clear();
       // Clean up parallel run widgets
       for (const [, w] of parallelRunWidgets) {
         if (typeof w.cleanup === 'function') w.cleanup();
