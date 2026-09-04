@@ -1086,7 +1086,8 @@
     "separatorSystem": "System",
     "tooltipArtifacts": "Artifacts published to claude.ai from this project",
     "tabFiles": "Files",
-    "tooltipFiles": "Files"
+    "tooltipFiles": "Files",
+    "tooltipBackgroundTasks": "Background tasks"
   },
   "memory": {
     "panelDescription": "Configure how Claude behaves in your projects. Global settings apply everywhere, project settings override them.",
@@ -3531,7 +3532,23 @@
     "noActiveSession": "No active session to link",
     "sessionJustNow": "Just now",
     "sessionMinutesAgo": "{count} min ago",
-    "sessionHoursAgo": "{count}h ago"
+    "sessionHoursAgo": "{count}h ago",
+    "navTitle": "Background tasks",
+    "running": "Running",
+    "finished": "Finished",
+    "noneRunning": "Nothing running.",
+    "empty": "No background tasks yet.",
+    "clear": "Clear",
+    "typeAgent": "Agent",
+    "typeShell": "Bash",
+    "typeWorkflow": "Workflow",
+    "typeMonitor": "Monitor",
+    "typeTask": "Task",
+    "statusRunning": "Running",
+    "statusCompleted": "Completed",
+    "statusFailed": "Failed",
+    "statusStopped": "Stopped",
+    "statusEnded": "Ended"
   },
   "kanban": {
     "tab": "Kanban",
