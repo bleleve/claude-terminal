@@ -11,6 +11,8 @@ const { execFileSync } = require('child_process');
 const ModelCatalogService = require('./ModelCatalogService');
 const AccountManager = require('./AccountManager');
 const { isCliFailureText } = require('../../shared/cli-failure-text');
+const chromeBridgeService = require('./ChromeBridgeService');
+const { getSdkCliPath } = require('../utils/sdkCli');
 
 let sdkPromise = null;
 let resolvedRuntime = null;
@@ -95,31 +97,6 @@ async function loadSDK() {
     sdkPromise = import('@anthropic-ai/claude-agent-sdk');
   }
   return sdkPromise;
-}
-
-/**
- * Resolve the path to the SDK's native CLI binary.
- *
- * As of @anthropic-ai/claude-agent-sdk 0.3 the SDK no longer ships a `cli.js`;
- * it spawns a platform-specific native binary shipped in the optional dependency
- * `@anthropic-ai/claude-agent-sdk-<platform>-<arch>` (e.g. `claude.exe` on
- * Windows). That package is pulled into the asarUnpack closure automatically
- * (resolve-unpack-deps walks optionalDependencies — see electron-builder.config.js).
- *
- * We resolve it explicitly so the spawn behaves identically in dev and in the
- * packaged app.asar.unpacked layout. If the expected binary is missing (e.g. a
- * musl Linux build), we return null so the SDK self-resolves via
- * require.resolve, which handles the glibc/musl split on its own.
- */
-function getSdkCliPath() {
-  const ext = process.platform === 'win32' ? '.exe' : '';
-  const pkg = `claude-agent-sdk-${process.platform}-${process.arch}`;
-  const binRelative = path.join('node_modules', '@anthropic-ai', pkg, `claude${ext}`);
-  const base = app.isPackaged
-    ? app.getAppPath().replace('app.asar', 'app.asar.unpacked')
-    : app.getAppPath();
-  const binPath = path.join(base, binRelative);
-  return fs.existsSync(binPath) ? binPath : null;
 }
 
 /**
@@ -767,6 +744,20 @@ class ChatService {
       // Arrives via task_progress system messages with a `summary` field.
       options.agentProgressSummaries = true;
 
+      // Claude in Chrome: hand the session the browser-automation MCP server.
+      //
+      // Skipped for a self-restricting session (see RESTRICTED_SESSION_MAX_TURNS):
+      // it runs unattended off a possibly-misheard transcription, and its
+      // allowlist would withhold the browser tools anyway, so spawning the
+      // server would only cost a process.
+      if (!allowedTools?.length) {
+        const chrome = chromeBridgeService.getSessionConfig();
+        if (chrome) {
+          options.mcpServers = { ...(options.mcpServers || {}), ...chrome.mcpServers };
+          options.systemPrompt = this._appendSystemPrompt(options.systemPrompt, chrome.systemPrompt);
+        }
+      }
+
       // Ephemeral session: skip writing transcript to ~/.claude/projects/
       // The session cannot be resumed later but leaves no trace on disk.
       if (persistSession === false) {
@@ -880,6 +871,26 @@ class ChatService {
    * @param {Array} mentions - Array of { label, content } resolved context blocks
    * @returns {string|Array}
    */
+  /**
+   * Add a section to a session's system prompt, whatever shape it currently has.
+   *
+   * The SDK accepts three: a preset object (the default), a preset object the
+   * renderer already appended a custom prompt to, and a bare string (a fully
+   * custom prompt). Appending must preserve the preset, so a string is the only
+   * case we concatenate directly.
+   *
+   * @param {object|string|undefined} current
+   * @param {string} extra
+   * @returns {object|string}
+   */
+  _appendSystemPrompt(current, extra) {
+    if (typeof current === 'string') {
+      return current ? `${current}\n\n${extra}` : extra;
+    }
+    const base = current || { type: 'preset', preset: 'claude_code' };
+    return { ...base, append: base.append ? `${base.append}\n\n${extra}` : extra };
+  }
+
   _buildContent(text, images, mentions = []) {
     const hasImages = images && images.length > 0;
     const hasMentions = mentions && mentions.length > 0;
