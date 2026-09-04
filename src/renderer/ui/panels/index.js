@@ -20,6 +20,7 @@ const SessionReplayPanel = require('./SessionReplayPanel');
 const ParallelTaskPanel = require('./ParallelTaskPanel');
 const WorkspacePanel = require('./WorkspacePanel');
 const ErrorLogPanel = require('./ErrorLogPanel');
+const ArtifactsPanel = require('./ArtifactsPanel');
 const FilesPanel = require('./FilesPanel');
 
 module.exports = {
@@ -41,4 +42,5 @@ module.exports = {
   ParallelTaskPanel,
   WorkspacePanel,
   ErrorLogPanel,
+  ArtifactsPanel,
 };
