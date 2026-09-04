@@ -118,7 +118,8 @@ const { getSetting, setSetting, isNotificationsEnabled } = require('../../state/
 const { updateTerminal, getTerminal } = require('../../state/terminals.state');
 const { saveTerminalSessions } = require('../../services/TerminalSessionService');
 
-const { matchModel, hasOneMContext, DEFAULT_ALIAS } = require('../../../shared/model-options');
+const { matchModel, resolveModelSelection, hasOneMContext, DEFAULT_ALIAS } = require('../../../shared/model-options');
+const { contextTokensFromUsage } = require('../../../shared/context-usage');
 const ModelCatalog = require('../../services/ModelCatalogClient');
 
 // Catalog access is shared with the project-settings and parallel-run pickers
@@ -413,10 +414,12 @@ class ChatView extends BaseComponent {
   // catalog may still be the fallback, so an unresolvable id must not be
   // rewritten yet or a persisted choice would be lost on a slow CLI.
   let selectedModel = initialModel || getSetting('chatModel') || '';
+  // Whether `selectedModel` is a choice someone made — a stored setting, or a
+  // pick from the menu — rather than one the picker derived because nothing was
+  // chosen. Only a real choice may be written back; see resolveModelSelection.
+  let modelIsExplicit = !!selectedModel;
   let selectedEffort = initialEffort || getSetting('effortLevel') || 'high';
-  let totalCost = 0;
-  let totalTokens = 0;
-  let inputTokens = 0; // tracks context window usage
+  let inputTokens = 0; // drives the context gauge
   const toolCards = new Map(); // content_block index -> element
   const toolInputBuffers = new Map(); // content_block index -> accumulated JSON string
   const todoToolIndices = new Map(); // block index -> { kind: 'TaskCreate'|'TaskUpdate'|'TaskList'|'TaskGet'|'TodoWrite', toolUseId }
@@ -539,19 +542,21 @@ class ChatView extends BaseComponent {
             </button>
           </div>
           <div class="chat-footer-right">
-            <div class="chat-effort-selector">
-              <button class="chat-effort-btn"><span class="chat-effort-label">High</span> <span class="chat-effort-arrow">&#9662;</span></button>
-              <div class="chat-effort-dropdown" style="display:none"></div>
-            </div>
             <div class="chat-model-selector">
               <button class="chat-model-btn"><span class="chat-model-label">Sonnet</span> <span class="chat-model-arrow">&#9662;</span></button>
               <div class="chat-model-dropdown" style="display:none"></div>
             </div>
+            <div class="chat-effort-selector">
+              <button class="chat-effort-btn"><span class="chat-effort-label">High</span> <span class="chat-effort-arrow">&#9662;</span></button>
+              <div class="chat-effort-dropdown" style="display:none"></div>
+            </div>
             <span class="chat-status-tokens" tabindex="0">
-              <span class="chat-status-tokens-text"></span>
+              <svg class="chat-ctx-ring" viewBox="0 0 20 20" aria-hidden="true">
+                <circle class="chat-ctx-ring-track" cx="10" cy="10" r="7"/>
+                <circle class="chat-ctx-ring-fill" cx="10" cy="10" r="7"/>
+              </svg>
               <div class="chat-context-popover" hidden></div>
             </span>
-            <span class="chat-status-cost"></span>
           </div>
         </div>
       </div>
@@ -583,9 +588,7 @@ class ChatView extends BaseComponent {
   const effortLabel = chatView.querySelector('.chat-effort-label');
   const effortDropdown = chatView.querySelector('.chat-effort-dropdown');
   const statusTokens = chatView.querySelector('.chat-status-tokens');
-  const statusTokensText = chatView.querySelector('.chat-status-tokens-text');
   const contextPopover = chatView.querySelector('.chat-context-popover');
-  const statusCost = chatView.querySelector('.chat-status-cost');
   const slashDropdown = chatView.querySelector('.chat-slash-dropdown');
   const attachBtn = chatView.querySelector('.chat-attach-btn');
   const fileInput = chatView.querySelector('.chat-file-input');
@@ -1114,27 +1117,19 @@ class ChatView extends BaseComponent {
    * window the request didn't ask for. `matchModel` keeps the `default` alias
    * out of this path, so a deliberate choice is never re-pointed by a CLI
    * release; only an explicit pick of "Default (recommended)" stores it.
+   *
+   * Runs twice per session — once on the catalog we happen to hold, once after
+   * the CLI answers — so it has to be safe to call on the fallback tier. That
+   * is what `modelIsExplicit` guards: without it the derived first pass looked
+   * like a preference to the second, and got saved as one.
    */
   function applyResolvedModel() {
     const preferred = selectedModel || initialModel || getSetting('chatModel') || '';
-    const current = matchModel(allCatalogModels(), preferred);
-    if (current) {
-      if (selectedModel !== current.value) {
-        selectedModel = current.value;
-        if (preferred) setSetting('chatModel', selectedModel);
-      }
-      modelLabel.textContent = current.displayName;
-      return;
-    }
-    const first = ModelCatalog.getCatalog().primary[0];
-    if (!preferred && first) {
-      selectedModel = first.value;
-      modelLabel.textContent = first.displayName;
-    } else if (preferred) {
-      // An id the catalog doesn't cover (older setting, or a CLI that moved on).
-      // Show it rather than silently swapping the user's model.
-      modelLabel.textContent = preferred.replace(/^claude-/, '');
-    }
+    const resolved = resolveModelSelection(allCatalogModels(), preferred, modelIsExplicit);
+    if (!resolved) return;
+    selectedModel = resolved.value;
+    modelLabel.textContent = resolved.label;
+    if (resolved.persist) setSetting('chatModel', selectedModel);
   }
 
   /**
@@ -1250,7 +1245,9 @@ class ChatView extends BaseComponent {
     if (!option) return;
     const previousId = selectedModel;
     const previousOption = matchModel(models, previousId);
+    const previousExplicit = modelIsExplicit;
     selectedModel = option.value;
+    modelIsExplicit = true;
     modelLabel.textContent = option.displayName;
     closeModelDropdown();
     setSetting('chatModel', selectedModel);
@@ -1274,8 +1271,11 @@ class ChatView extends BaseComponent {
     // Revert the label + persisted setting so the footer stops lying.
     if (previousOption) {
       selectedModel = previousId;
+      modelIsExplicit = previousExplicit;
       modelLabel.textContent = previousOption.displayName;
-      setSetting('chatModel', previousId);
+      // Reverting to a model nobody had chosen means clearing the setting, not
+      // writing it back: `null` is how "no explicit choice" is stored.
+      setSetting('chatModel', previousExplicit ? previousId : null);
     }
     const Toast = require('./Toast');
     Toast.showToast({
@@ -5992,92 +5992,117 @@ class ChatView extends BaseComponent {
       if (match) modelLabel.textContent = match.displayName;
       else modelLabel.textContent = model.split('-').slice(1, 3).join('-');
     }
-    if (inputTokens > 0) {
-      const contextLimit = currentContextLimit();
-      const pct = Math.round((inputTokens / contextLimit) * 100);
-      const formatK = (n) => n >= 1000 ? Math.round(n / 1000) + 'K' : n;
-      statusTokensText.textContent = `${formatK(inputTokens)} / ${formatK(contextLimit)} (${pct}%)`;
-      statusTokens.title = `${t('chat.contextWindowUsage') || 'Context window'}: ${inputTokens.toLocaleString()} / ${contextLimit.toLocaleString()} tokens`;
-    } else if (totalTokens > 0) {
-      statusTokensText.textContent = `${totalTokens.toLocaleString()} tokens`;
-    }
-    if (totalCost > 0) statusCost.textContent = `$${totalCost.toFixed(4)}`;
+    setContextGauge(inputTokens, currentContextLimit());
   }
 
-  // ── Context usage breakdown popover (SDK 0.2.86+) ──────────────────────
-  let contextUsageFetchTimer = null;
+  /**
+   * Paint context usage as a filling ring.
+   *
+   * The exact figures moved to the hover overlay: a ratio is something you read
+   * at a glance, and "4 / 1000K tokens" spent a footer slot on a number nobody
+   * reads digit by digit.
+   *
+   * Only `--ctx-used` crosses over to CSS; the geometry that turns it into an
+   * arc stays there, so an empty ring is the stylesheet's default and shows
+   * from the first frame rather than waiting on the first result message.
+   *
+   * No `title`: the native tooltip takes about a second to appear and cannot be
+   * styled. `aria-label` carries the same text for assistive tech without it.
+   */
+  function setContextGauge(used, limit) {
+    const ratio = limit > 0 ? Math.max(0, Math.min(used / limit, 1)) : 0;
+    statusTokens.style.setProperty('--ctx-used', String(ratio));
+    // Pressure, not decoration: past three quarters a compaction is close, and
+    // that is worth seeing without opening the breakdown.
+    statusTokens.classList.toggle('warn', ratio >= 0.75 && ratio < 0.9);
+    statusTokens.classList.toggle('danger', ratio >= 0.9);
+    statusTokens.setAttribute(
+      'aria-label',
+      `${t('chat.contextWindowUsage') || 'Context window'}: ${contextSummaryText(used, limit)}`
+    );
+  }
+
+  /** "371.3k", "1M", "820" — the compact shape the overlay reads in. */
+  function formatTokenCount(n) {
+    const round = (v) => String(Math.round(v * 10) / 10);
+    if (n >= 1e6) return `${round(n / 1e6)}M`;
+    if (n >= 1000) return `${round(n / 1000)}k`;
+    return String(Math.round(n));
+  }
+
+  /** "371.3k / 1M (37%)" */
+  function contextSummaryText(used, limit) {
+    const pct = limit > 0 ? Math.round((used / limit) * 100) : 0;
+    return `${formatTokenCount(used)} / ${formatTokenCount(limit)} (${pct}%)`;
+  }
+
+  // ── Context usage overlay ───────────────────────────────────────────────
+  //
+  // Replaces the native `title`, which the OS holds back for about a second and
+  // renders in its own chrome. This one paints on mouseenter from state already
+  // in hand — no timer, no round trip — and the per-category breakdown
+  // (SDK 0.2.86+) fills in underneath when a live session can supply it.
   let contextUsageBusy = false;
 
+  function contextSummaryHtml(used, limit) {
+    return `
+      <div class="ccp-header">
+        <span class="ccp-title">${escapeHtml(t('chat.contextWindowUsage') || 'Context window')}</span>
+        <span class="ccp-total">${escapeHtml(contextSummaryText(used, limit))}</span>
+      </div>`;
+  }
+
   function renderContextBreakdown(usage) {
-    if (!usage) {
-      contextPopover.innerHTML = `<div class="ccp-empty">${escapeHtml(t('chat.contextNoBreakdown') || 'Breakdown unavailable')}</div>`;
-      return;
-    }
     const breakdown = usage.breakdown || usage.categories || {};
     const total = usage.total || Object.values(breakdown).reduce((a, b) => a + (Number(b) || 0), 0);
     const limit = usage.limit || currentContextLimit();
-    const formatK = (n) => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'K' : String(n);
     const entries = Object.entries(breakdown)
       .filter(([, v]) => Number(v) > 0)
       .sort((a, b) => Number(b[1]) - Number(a[1]));
+    if (!entries.length) return;
 
-    const header = `
-      <div class="ccp-header">
-        <span class="ccp-title">${escapeHtml(t('chat.contextWindowUsage') || 'Context window')}</span>
-        <span class="ccp-total">${formatK(total)} / ${formatK(limit)}</span>
-      </div>
-    `;
-    const rows = entries.length
-      ? entries.map(([key, value]) => {
-          const v = Number(value) || 0;
-          const pct = total > 0 ? Math.min(100, (v / total) * 100) : 0;
-          return `
-            <div class="ccp-row">
-              <span class="ccp-label">${escapeHtml(key.replace(/_/g, ' '))}</span>
-              <div class="ccp-bar"><div class="ccp-fill" style="width:${pct.toFixed(1)}%"></div></div>
-              <span class="ccp-value">${formatK(v)}</span>
-            </div>
-          `;
-        }).join('')
-      : `<div class="ccp-empty">${escapeHtml(t('chat.contextNoBreakdown') || 'No detailed breakdown available')}</div>`;
-    contextPopover.innerHTML = header + rows;
+    contextPopover.innerHTML = contextSummaryHtml(total, limit) + entries.map(([key, value]) => {
+      const v = Number(value) || 0;
+      const pct = total > 0 ? Math.min(100, (v / total) * 100) : 0;
+      return `
+        <div class="ccp-row">
+          <span class="ccp-label">${escapeHtml(key.replace(/_/g, ' '))}</span>
+          <div class="ccp-bar"><div class="ccp-fill" style="width:${pct.toFixed(1)}%"></div></div>
+          <span class="ccp-value">${escapeHtml(formatTokenCount(v))}</span>
+        </div>`;
+    }).join('');
   }
 
-  async function fetchAndShowContextBreakdown() {
+  /**
+   * Show the overlay immediately, then enrich it.
+   *
+   * The summary is never left waiting on the fetch: a failed or absent
+   * breakdown just means the overlay stays as it opened, which is still the
+   * number the user came for.
+   */
+  function showContextOverlay() {
+    contextPopover.innerHTML = contextSummaryHtml(inputTokens, currentContextLimit());
+    contextPopover.hidden = false;
     if (!sessionId || contextUsageBusy) return;
     contextUsageBusy = true;
-    contextPopover.hidden = false;
-    contextPopover.innerHTML = `<div class="ccp-loading">${escapeHtml(t('chat.loading') || 'Loading...')}</div>`;
-    try {
-      const result = await window.electron_api.chat.getContextUsage({ sessionId });
-      if (result?.success && result.usage) {
-        renderContextBreakdown(result.usage);
-      } else {
-        renderContextBreakdown(null);
-      }
-    } catch {
-      renderContextBreakdown(null);
-    } finally {
-      contextUsageBusy = false;
-    }
+    window.electron_api.chat.getContextUsage({ sessionId })
+      .then(result => {
+        // The pointer may have left while this was in flight.
+        if (!contextPopover.hidden && result?.success && result.usage) {
+          renderContextBreakdown(result.usage);
+        }
+      })
+      .catch(() => {})
+      .finally(() => { contextUsageBusy = false; });
   }
 
   function hideContextBreakdown() {
     contextPopover.hidden = true;
-    if (contextUsageFetchTimer) {
-      clearTimeout(contextUsageFetchTimer);
-      contextUsageFetchTimer = null;
-    }
   }
 
-  statusTokens.addEventListener('mouseenter', () => {
-    if (!sessionId || inputTokens === 0) return;
-    contextUsageFetchTimer = setTimeout(fetchAndShowContextBreakdown, 200);
-  });
+  statusTokens.addEventListener('mouseenter', showContextOverlay);
   statusTokens.addEventListener('mouseleave', hideContextBreakdown);
-  statusTokens.addEventListener('focus', () => {
-    if (sessionId && inputTokens > 0) fetchAndShowContextBreakdown();
-  });
+  statusTokens.addEventListener('focus', showContextOverlay);
   statusTokens.addEventListener('blur', hideContextBreakdown);
 
   let userHasScrolled = false;
@@ -6290,11 +6315,8 @@ class ChatView extends BaseComponent {
 
     // Result — update stats. Also detect SDK errors.
     if (message.type === 'result') {
-      if (message.total_cost_usd != null) totalCost = message.total_cost_usd;
-      if (message.usage) {
-        totalTokens = (message.usage.input_tokens || 0) + (message.usage.output_tokens || 0);
-        inputTokens = message.usage.input_tokens || 0;
-      }
+      const turnTokens = contextTokensFromUsage(message.usage);
+      if (turnTokens > 0) inputTokens = turnTokens;
       if (message.model) model = message.model;
       updateStatusInfo();
 
@@ -6546,13 +6568,10 @@ class ChatView extends BaseComponent {
         break;
       }
 
-      case 'message_delta':
-        // Contains stop_reason, usage
-        if (event.usage) {
-          totalTokens = (event.usage.input_tokens || 0) + (event.usage.output_tokens || 0);
-          updateStatusInfo();
-        }
-        break;
+      // 'message_delta' carries stop_reason and a running usage count. The
+      // footer no longer shows a token total, and the context gauge reads the
+      // authoritative figure off the result message, so there is nothing to do
+      // with it here.
 
       case 'message_stop':
         removeThinkingIndicator();
@@ -7546,6 +7565,14 @@ class ChatView extends BaseComponent {
 
       const rawMsgs = (result?.success && result.messages) || [];
       previousRawCount = rawMsgs.length;
+
+      // A resumed conversation has no live session to query until the user sends
+      // something, so the gauge would sit empty on a transcript already holding
+      // 200K. The transcript carries the figure — open on it.
+      if (result?.contextTokens > 0) {
+        inputTokens = result.contextTokens;
+        updateStatusInfo();
+      }
 
       let msgs = rawMsgs;
       // Older main processes truncate client-side; harmless double safety for forks
