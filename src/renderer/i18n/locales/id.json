@@ -2120,7 +2120,8 @@
     "saved": "Artefak disimpan",
     "openInEditor": "Buka di editor",
     "resizePane": "Ubah ukuran panel artefak",
-    "jumpToMessage": "Ke pesan"
+    "jumpToMessage": "Ke pesan",
+    "openPublished": "Buka halaman terbit"
   },
   "errorLog": {
     "title": "Log Kesalahan",
