@@ -3737,7 +3737,9 @@ document.querySelectorAll('.nav-tab[data-tab]').forEach(tab => {
 // ========== PINNED TABS SYSTEM ==========
 // Canonical order — must mirror the grouping in index.html, since the groups
 // carry meaning (whether the project tab drives the screen).
-const _ALL_TABS_ORDER = ['claude', 'git', 'dashboard', 'session-replay', 'tasks', 'control-tower', 'background-tasks', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
+const _ALL_TABS_ORDER = ['claude', 'artifacts', 'dashboard', 'files', 'git', 'session-replay', 'tasks', 'control-tower', 'background-tasks', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
+
+
 
 function applyPinnedTabs() {
   const pinned = settingsState.get().pinnedTabs || _ALL_TABS_ORDER;
