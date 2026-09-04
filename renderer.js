@@ -3758,6 +3758,8 @@ document.querySelectorAll('.nav-tab[data-tab]').forEach(tab => {
 // carry meaning (whether the project tab drives the screen).
 const _ALL_TABS_ORDER = ['claude', 'artifacts', 'dashboard', 'files', 'git', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
 
+
+
 function applyPinnedTabs() {
   const pinned = settingsState.get().pinnedTabs || _ALL_TABS_ORDER;
   let hiddenCount = 0;
