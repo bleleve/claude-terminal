@@ -127,9 +127,11 @@ module.exports = {
       Terminal: "false"
     }
   },
+  // Fork-only: releases are published to (and auto-updates pulled from) the fork.
+  // Overridable so an upstream build can still target Sterll/claude-terminal.
   publish: {
     provider: "github",
-    owner: "Sterll",
+    owner: process.env.GH_PUBLISH_OWNER || "bleleve",
     repo: "claude-terminal"
   }
 };
