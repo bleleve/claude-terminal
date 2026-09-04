@@ -3536,20 +3536,11 @@
     "running": "En curso",
     "finished": "Terminadas",
     "noneRunning": "Nada en curso.",
-    "empty": "Aún no hay tareas en segundo plano.",
-    "clear": "Borrar",
     "typeAgent": "Agente",
     "typeShell": "Bash",
     "typeWorkflow": "Workflow",
     "typeMonitor": "Monitor",
-    "typeTask": "Tarea",
-    "statusRunning": "En curso",
-    "statusCompleted": "Completada",
-    "statusFailed": "Fallida",
-    "statusStopped": "Detenida",
-    "statusEnded": "Finalizada",
-    "sessionGroup": "Sesión",
-    "typeSession": "Sesión"
+    "typeTask": "Tarea"
   },
   "kanban": {
     "tab": "Kanban",

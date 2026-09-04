@@ -3539,20 +3539,11 @@
     "running": "Berjalan",
     "finished": "Selesai",
     "noneRunning": "Tidak ada yang berjalan.",
-    "empty": "Belum ada tugas latar belakang.",
-    "clear": "Hapus",
     "typeAgent": "Agen",
     "typeShell": "Bash",
     "typeWorkflow": "Workflow",
     "typeMonitor": "Monitor",
-    "typeTask": "Tugas",
-    "statusRunning": "Berjalan",
-    "statusCompleted": "Selesai",
-    "statusFailed": "Gagal",
-    "statusStopped": "Dihentikan",
-    "statusEnded": "Berakhir",
-    "sessionGroup": "Sesi",
-    "typeSession": "Sesi"
+    "typeTask": "Tugas"
   },
   "kanban": {
     "tab": "Kanban",

@@ -3539,20 +3539,11 @@
     "running": "En cours",
     "finished": "Terminé",
     "noneRunning": "Rien en cours.",
-    "empty": "Aucune tâche de fond pour l'instant.",
-    "clear": "Effacer",
     "typeAgent": "Agent",
     "typeShell": "Bash",
     "typeWorkflow": "Workflow",
     "typeMonitor": "Moniteur",
-    "typeTask": "Tâche",
-    "statusRunning": "En cours",
-    "statusCompleted": "Terminé",
-    "statusFailed": "Échec",
-    "statusStopped": "Arrêté",
-    "statusEnded": "Terminé",
-    "sessionGroup": "Session",
-    "typeSession": "Session"
+    "typeTask": "Tâche"
   },
   "kanban": {
     "tab": "Kanban",
