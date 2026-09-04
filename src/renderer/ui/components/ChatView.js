@@ -3942,8 +3942,52 @@ class ChatView extends BaseComponent {
     return { additions: Math.max(0, newEnd - start), deletions: Math.max(0, oldEnd - start) };
   }
 
-  function recordFileChange(toolName, input) {
+  // Publishes waiting on their tool result, which is where the URL lives.
+  // Keyed by tool_use_id; entries are consumed by resolveArtifactPublish.
+  const pendingPublishes = new Map();
+
+  /**
+   * Read the file an `Artifact` call published and register it as an extract.
+   * The tool takes a path and never inline content, so the content has to come
+   * off disk here.
+   */
+  async function capturePublishedArtifact(input, url) {
+    const { fsp } = require('../../utils/fs-async');
+    let source;
+    try {
+      source = await fsp.readFile(input.file_path, 'utf8');
+    } catch (e) {
+      // Often a temp file that is already gone. Without content there is
+      // nothing to preview, and a sourceless card would just be dead weight.
+      console.warn('[ChatView] published artifact unreadable:', e.message);
+      return;
+    }
+    artifactRegistry.add(ArtifactService.fromArtifactTool(input, source, url));
+  }
+
+  /** Pair a tool result with its pending publish and capture the artifact. */
+  function resolveArtifactPublish(toolUseId, resultText) {
+    const input = pendingPublishes.get(toolUseId);
+    if (!input) return;
+    pendingPublishes.delete(toolUseId);
+    const parsed = parseResultJson(resultText || '');
+    const url = parsed?.url || (String(resultText || '').match(/https?:\/\/\S+/) || [])[0] || null;
+    capturePublishedArtifact(input, url);
+  }
+
+  function recordFileChange(toolName, input, toolUseId = null) {
     if (!input || !toolName) return;
+
+    // The `Artifact` tool publishes an .html/.md file to claude.ai. Unlike every
+    // other extract this one is explicit, so it is captured from the tool call
+    // rather than inferred from the transcript — and deferred until the result
+    // arrives, both to pick up the published URL and to skip failed publishes.
+    if (ArtifactService.isArtifactPublish(toolName, input)) {
+      if (toolUseId) pendingPublishes.set(toolUseId, input);
+      else capturePublishedArtifact(input, null);
+      return;
+    }
+
     // A `Write` authors a complete file, which is an artifact in its own right.
     // `Edit`/`MultiEdit` only amend an existing one — that is what the Changes
     // tab is for, and mirroring them here would just duplicate it.
@@ -4103,7 +4147,7 @@ class ChatView extends BaseComponent {
   }
 
   const ARTIFACT_KIND_LABEL = {
-    html: 'HTML', svg: 'SVG', mermaid: 'Diagram', code: 'Code', file: 'File',
+    published: 'Published', html: 'HTML', svg: 'SVG', mermaid: 'Diagram', code: 'Code', file: 'File',
   };
 
   /** Cards, newest first, one per artifact. */
@@ -4120,11 +4164,20 @@ class ChatView extends BaseComponent {
       const meta = a.kind === 'code' || a.kind === 'file'
         ? `${a.lines || a.source.split('\n').length} ${escapeHtml(t('artifacts.lines') || 'lines')}`
         : escapeHtml(a.lang || kindLabel);
+      // A published artifact brought its own emoji and subtitle from the
+      // Artifact tool; nothing else has either.
+      const thumb = a.favicon
+        ? `<span class="chat-artifact-favicon">${escapeHtml(a.favicon)}</span>`
+        : artifactGlyph(a.kind);
+      const sub = a.description
+        ? `<span class="chat-artifact-card-desc">${escapeHtml(a.description)}</span>`
+        : '';
       return `
         <button class="chat-artifact-card${a.id === openId ? ' active' : ''}" data-artifact-id="${escapeHtml(a.id)}" title="${escapeHtml(a.title)}">
-          <span class="chat-artifact-thumb" data-kind="${escapeHtml(a.kind)}">${artifactGlyph(a.kind)}</span>
+          <span class="chat-artifact-thumb" data-kind="${escapeHtml(a.kind)}">${thumb}</span>
           <span class="chat-artifact-card-text">
             <span class="chat-artifact-card-title">${escapeHtml(a.title)}</span>
+            ${sub}
             <span class="chat-artifact-card-meta">
               <span class="chat-artifact-kind">${escapeHtml(kindLabel)}</span>
               <span class="chat-artifact-dot">•</span>
@@ -4230,11 +4283,17 @@ class ChatView extends BaseComponent {
         <button class="chat-artifact-action" data-action="copy">${escapeHtml(t('common.copy') || 'Copy')}</button>
         <button class="chat-artifact-action" data-action="save">${escapeHtml(t('artifacts.saveAs') || 'Save as...')}</button>
         ${canOpenInEditor ? `<button class="chat-artifact-action" data-action="edit">${escapeHtml(t('artifacts.openInEditor') || 'Open in editor')}</button>` : ''}
+        ${artifact.url ? `<button class="chat-artifact-action" data-action="open-url">${escapeHtml(t('artifacts.openPublished') || 'Open published page')}</button>` : ''}
         ${artifact.node?.isConnected ? `<button class="chat-artifact-action" data-action="reveal">${escapeHtml(t('artifacts.jumpToMessage') || 'Go to message')}</button>` : ''}
       </div>
     `;
 
-    artifactBodyEl.innerHTML = renderMarkdown(artifactAsMarkdown(artifact));
+    // A published Markdown page IS a document — render it as one rather than
+    // fencing it into a code block showing its own syntax. Everything else goes
+    // through a fence so the renderer picks the right block for it.
+    const isMarkdownDoc = artifact.kind === 'published' && artifact.lang === 'markdown';
+    artifactBodyEl.innerHTML = renderMarkdown(isMarkdownDoc ? artifact.source : artifactAsMarkdown(artifact));
+    artifactBodyEl.classList.toggle('chat-artifact-doc', isMarkdownDoc);
     MarkdownRenderer.postProcess(artifactBodyEl);
   }
 
@@ -4278,6 +4337,9 @@ class ChatView extends BaseComponent {
       }
       case 'edit':
         api.dialog.openInEditor({ editor: getSetting('editor') || 'code', path: artifact.path });
+        break;
+      case 'open-url':
+        if (artifact.url) api.dialog.openExternal(artifact.url);
         break;
       case 'reveal': {
         // The transcript pruner detaches old messages, so the node can be alive
@@ -4836,7 +4898,7 @@ class ChatView extends BaseComponent {
             try {
               const toolInput = JSON.parse(jsonStr);
               const name = mini.dataset.toolName || mini.querySelector('.sa-tool-name')?.textContent || '';
-              recordFileChange(name, toolInput);
+              recordFileChange(name, toolInput, mini.dataset.toolUseId || null);
               const detail = getToolDisplayInfo(name, toolInput);
               const detailEl = mini.querySelector('.sa-tool-detail');
               if (detailEl && detail) {
@@ -4867,7 +4929,7 @@ class ChatView extends BaseComponent {
 
     for (const block of content) {
       if (block.type === 'tool_use' && block.name !== 'TodoWrite' && block.name !== 'TaskCreate' && block.name !== 'TaskUpdate' && block.name !== 'TaskList' && block.name !== 'TaskGet') {
-        recordFileChange(block.name, block.input);
+        recordFileChange(block.name, block.input, block.id || null);
         const detail = getToolDisplayInfo(block.name, block.input);
         info.activityEl.textContent = `${block.name}...`;
 
@@ -5997,7 +6059,7 @@ class ChatView extends BaseComponent {
             if (card) {
               card.dataset.toolInput = JSON.stringify(toolInput);
               const name = card.dataset.toolName || card.querySelector('.chat-tool-name')?.textContent || '';
-              recordFileChange(name, toolInput);
+              recordFileChange(name, toolInput, card.dataset.toolUseId || null);
               // Custom card renderer (ScheduleWakeup, CronCreate, Worktree, Notification)
               const customHtml = renderToolCardHtml(name, toolInput);
               if (customHtml) {
@@ -6147,6 +6209,16 @@ class ChatView extends BaseComponent {
   }
 
   function processToolResultBlock(block) {
+    // Artifact publish — the result is where the claude.ai URL comes from.
+    // Runs before the early returns below so it is never skipped.
+    if (block.tool_use_id && pendingPublishes.has(block.tool_use_id)) {
+      const raw = typeof block.content === 'string' ? block.content
+        : Array.isArray(block.content) ? block.content.map(b => b.text || '').join('\n') : '';
+      // A failed publish produced nothing worth listing; drop it.
+      if (block.is_error) pendingPublishes.delete(block.tool_use_id);
+      else resolveArtifactPublish(block.tool_use_id, raw);
+    }
+
     // TaskCreate result — promote pending temp id to real task id
     if (block.tool_use_id && pendingCreateByUseId.has(block.tool_use_id)) {
       const raw = typeof block.content === 'string' ? block.content
@@ -7128,7 +7200,7 @@ class ChatView extends BaseComponent {
             continue;
           }
 
-          recordFileChange(msg.toolName, msg.toolInput || {});
+          recordFileChange(msg.toolName, msg.toolInput || {}, msg.toolUseId || null);
           const detail = getToolDisplayInfo(msg.toolName, msg.toolInput || {});
           const el = document.createElement('div');
           el.className = 'chat-tool-card history';
@@ -7154,6 +7226,9 @@ class ChatView extends BaseComponent {
           }
           if (msg.toolUseId && toolResults.has(msg.toolUseId)) {
             el.dataset.toolOutput = toolResults.get(msg.toolUseId);
+            // History carries results too, so a replayed publish recovers its
+            // URL exactly like a live one.
+            resolveArtifactPublish(msg.toolUseId, toolResults.get(msg.toolUseId));
           }
 
           // Group consecutive same-tool cards in history
