@@ -109,6 +109,10 @@
     "closeProjectTitle": "¿Cerrar {name}?",
     "closeProjectMessage": "Este proyecto tiene {count} sesión(es) abierta(s). Cerrar su pestaña las finaliza.",
     "closeProjectConfirm": "Cerrar y finalizar sesiones",
+    "closeProjectMessageEmpty": "Se cerrará su pestaña. El proyecto en sí no se elimina.",
+    "closeOthersTitle": "¿Cerrar {count} proyecto(s) más?",
+    "closeOthersMessage": "Se cerrarán sus pestañas y finalizarán {count} sesión(es) en curso.",
+    "closeOthersMessageEmpty": "Se cerrarán sus pestañas. Los proyectos en sí no se eliminan.",
     "moreActions": "Más acciones"
   },
   "terminals": {
@@ -2162,7 +2166,23 @@
   "connectivity": {
     "tabTitle": "Conectividad",
     "localTab": "Local",
-    "cloudTab": "Nube"
+    "cloudTab": "Nube",
+    "claudeTab": "claude.ai"
+  },
+  "claudeRemote": {
+    "enable": "Control remoto (claude.ai)",
+    "enableDesc": "Sigue y dirige tus sesiones de chat desde claude.ai/code o la app móvil de Claude.",
+    "allowDriving": "Permitir el control remoto",
+    "drivingOn": "claude.ai puede enviar mensajes, interrumpir un turno y responder a las solicitudes de permiso. Las sesiones ya abiertas siguen en solo lectura hasta reiniciarlas.",
+    "drivingOff": "Solo espejo: claude.ai muestra la conversación pero no puede actuar en esta máquina.",
+    "privacy": "Las sesiones reflejadas envían su conversación — mensajes, contenido de archivos y salida de herramientas — a claude.ai.",
+    "blocked": "El control remoto está desactivado por la política de tu organización.",
+    "unsupported": "Esta versión no puede ofrecer el control remoto.",
+    "statusUnknown": "Estado no disponible.",
+    "mirroring": "{count} sesión(es) reflejada(s) en claude.ai.",
+    "idle": "Ninguna sesión reflejada. Abre una pestaña de chat para empezar.",
+    "terminals": "Conectar también las pestañas de terminal",
+    "terminalsDesc": "Lanza el CLI de Claude con --rc en las pestañas de terminal, para que esas sesiones también lleguen a claude.ai."
   },
   "cloud": {
     "tabTitle": "Nube",
@@ -2444,6 +2464,8 @@
     "closeOthers": "Cerrar las demás",
     "closeToLeft": "Cerrar pestañas a la izquierda",
     "closeToRight": "Cerrar pestañas a la derecha",
+    "closeTabTitle": "¿Cerrar {name}?",
+    "closeTabMessage": "Se cerrará esta pestaña. Cualquier sesión en curso finalizará.",
     "closeAll": "Cerrar todo"
   },
   "telemetry": {

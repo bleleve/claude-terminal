@@ -109,6 +109,10 @@
     "closeProjectTitle": "Fermer {name} ?",
     "closeProjectMessage": "Ce projet a {count} session(s) ouverte(s). Fermer son onglet y met fin.",
     "closeProjectConfirm": "Fermer et terminer les sessions",
+    "closeProjectMessageEmpty": "Son onglet va être fermé. Le projet lui-même n'est pas supprimé.",
+    "closeOthersTitle": "Fermer {count} autre(s) projet(s) ?",
+    "closeOthersMessage": "Leurs onglets vont être fermés et {count} session(s) en cours terminée(s).",
+    "closeOthersMessageEmpty": "Leurs onglets vont être fermés. Les projets eux-mêmes ne sont pas supprimés.",
     "moreActions": "Plus d'actions"
   },
   "terminals": {
@@ -2165,7 +2169,23 @@
   "connectivity": {
     "tabTitle": "Connectivite",
     "localTab": "Local",
-    "cloudTab": "Cloud"
+    "cloudTab": "Cloud",
+    "claudeTab": "claude.ai"
+  },
+  "claudeRemote": {
+    "enable": "Contrôle à distance (claude.ai)",
+    "enableDesc": "Suivez et pilotez vos sessions de chat depuis claude.ai/code ou l’application mobile Claude.",
+    "allowDriving": "Autoriser le pilotage",
+    "drivingOn": "claude.ai peut envoyer des messages, interrompre un tour et répondre aux demandes de permission. Les sessions déjà ouvertes restent en lecture seule jusqu’à leur redémarrage.",
+    "drivingOff": "Miroir seul : claude.ai affiche la conversation mais ne peut rien faire sur cette machine.",
+    "privacy": "Les sessions en miroir envoient leur conversation — messages, contenu des fichiers et sorties d’outils — vers claude.ai.",
+    "blocked": "Le contrôle à distance est désactivé par la politique de votre organisation.",
+    "unsupported": "Cette version ne peut pas assurer le contrôle à distance.",
+    "statusUnknown": "Statut indisponible.",
+    "mirroring": "{count} session(s) en miroir sur claude.ai.",
+    "idle": "Aucune session en miroir. Ouvrez un onglet de chat pour commencer.",
+    "terminals": "Connecter aussi les onglets terminal",
+    "terminalsDesc": "Lance le CLI Claude avec --rc dans les onglets terminal, pour que ces sessions arrivent aussi sur claude.ai."
   },
   "cloud": {
     "tabTitle": "Cloud",
@@ -2447,6 +2467,8 @@
     "closeOthers": "Fermer les autres",
     "closeToLeft": "Fermer les onglets à gauche",
     "closeToRight": "Fermer les onglets à droite",
+    "closeTabTitle": "Fermer {name} ?",
+    "closeTabMessage": "Cet onglet va être fermé. Toute session en cours y sera terminée.",
     "closeAll": "Tout fermer"
   },
   "telemetry": {

@@ -109,6 +109,10 @@
     "closeProjectTitle": "Close {name}?",
     "closeProjectMessage": "This project has {count} open session(s). Closing its tab ends them.",
     "closeProjectConfirm": "Close and end sessions",
+    "closeProjectMessageEmpty": "Its tab will be closed. The project itself is not deleted.",
+    "closeOthersTitle": "Close {count} other project(s)?",
+    "closeOthersMessage": "Their tabs will be closed and {count} running session(s) ended.",
+    "closeOthersMessageEmpty": "Their tabs will be closed. The projects themselves are not deleted.",
     "moreActions": "More actions"
   },
   "terminals": {
@@ -2165,7 +2169,23 @@
   "connectivity": {
     "tabTitle": "Connectivity",
     "localTab": "Local",
-    "cloudTab": "Cloud"
+    "cloudTab": "Cloud",
+    "claudeTab": "claude.ai"
+  },
+  "claudeRemote": {
+    "enable": "Remote Control (claude.ai)",
+    "enableDesc": "Follow and steer your chat sessions from claude.ai/code or the Claude mobile app.",
+    "allowDriving": "Allow remote control",
+    "drivingOn": "claude.ai can send prompts, interrupt a turn and answer permission prompts. Sessions already open stay read-only until restarted.",
+    "drivingOff": "Mirror only: claude.ai shows the transcript but cannot act on this machine.",
+    "privacy": "Mirrored sessions send their transcript — prompts, file contents and tool output — to claude.ai.",
+    "blocked": "Remote Control is disabled by your organisation policy.",
+    "unsupported": "This build cannot serve Remote Control.",
+    "statusUnknown": "Status unavailable.",
+    "mirroring": "{count} session(s) mirrored to claude.ai.",
+    "idle": "No session mirrored yet. Open a chat tab to start one.",
+    "terminals": "Connect terminal tabs too",
+    "terminalsDesc": "Launches the Claude CLI with --rc in terminal tabs, so those sessions reach claude.ai as well."
   },
   "cloud": {
     "tabTitle": "Cloud",
@@ -2447,6 +2467,8 @@
     "closeOthers": "Close Others",
     "closeToLeft": "Close Tabs to Left",
     "closeToRight": "Close Tabs to Right",
+    "closeTabTitle": "Close {name}?",
+    "closeTabMessage": "This tab will be closed. Any session running in it ends.",
     "closeAll": "Close All"
   },
   "telemetry": {
