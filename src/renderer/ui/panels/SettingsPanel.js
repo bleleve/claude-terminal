@@ -35,6 +35,82 @@ function renderAgentColorRow(key, label, badge, color) {
     </div>`;
 }
 
+/**
+ * How long until a limit window resets, in the same compact form the titlebar
+ * uses. Empty once the window has passed — a countdown at zero says nothing.
+ * @param {string|null} iso
+ * @returns {string}
+ */
+function formatUsageReset(iso) {
+  if (!iso) return '';
+  const target = new Date(iso).getTime();
+  if (Number.isNaN(target)) return '';
+  const remaining = target - Date.now();
+  if (remaining <= 0) return '';
+  const dayUnit = getCurrentLanguage() === 'fr' ? 'j' : 'd';
+  const d = Math.floor(remaining / 86400000);
+  const h = Math.floor((remaining % 86400000) / 3600000);
+  const m = Math.floor((remaining % 3600000) / 60000);
+  if (d > 0) return `${d}${dayUnit} ${h}h`;
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}min`;
+  return `${m}min`;
+}
+
+/**
+ * One usage bucket, in the markup the titlebar bars already use so both read
+ * the same: blue for the session window, purple for the weekly one, and the
+ * warning / danger tints above 70% and 90%.
+ *
+ * A scoped bucket is named by the API, so its label is escaped rather than
+ * translated — it is data, not a string we ship.
+ *
+ * @param {Object} bucket
+ * @returns {string}
+ */
+function buildUsageBucketHtml(bucket) {
+  const percent = typeof bucket.utilization === 'number' ? Math.round(bucket.utilization) : null;
+  const level = percent === null ? '' : percent >= 90 ? ' danger' : percent >= 70 ? ' warning' : '';
+  const label = bucket.labelKey ? t(bucket.labelKey) : (bucket.label || '');
+  const reset = formatUsageReset(bucket.resetsAt);
+  return `
+    <div class="usage-item" data-type="${escapeHtml(bucket.type || '')}">
+      <div class="usage-header">
+        <span class="usage-label">${escapeHtml(label)}</span>
+        <span class="usage-value">
+          <span class="usage-percent">${percent === null ? '--' : `${percent}%`}</span>
+          <span class="usage-reset">${escapeHtml(reset)}</span>
+        </span>
+      </div>
+      <div class="usage-bar-container">
+        <div class="usage-bar${level}" style="width: ${Math.min(percent ?? 0, 100)}%"></div>
+      </div>
+    </div>`;
+}
+
+/**
+ * The usage strip under an account row.
+ *
+ * An account nobody has run lately has no usable token of its own, and no
+ * amount of retrying will produce one — so that case says what to do about it
+ * rather than showing bars stuck at zero, which would read as "plenty left".
+ *
+ * @param {Object|null|undefined} usage - one entry of the accounts-usage map
+ * @returns {string}
+ */
+function buildAccountUsageHtml(usage) {
+  if (!usage) {
+    return `<div class="account-usage-note">${escapeHtml(t('accounts.usageLoading') || 'Reading usage…')}</div>`;
+  }
+  const buckets = usage.data?.buckets;
+  if (!Array.isArray(buckets) || !buckets.length) {
+    return `<div class="account-usage-note" title="${escapeHtml(usage.error || '')}">${escapeHtml(t('accounts.usageUnavailable') || 'Usage unavailable — run "claude /login" on this account')}</div>`;
+  }
+  return `
+    <div class="account-usage-bars${usage.stale ? ' stale' : ''}"${usage.stale ? ` title="${escapeHtml(t('accounts.usageStale') || 'The API could not confirm these figures')}"` : ''}>
+      ${buckets.map(buildUsageBucketHtml).join('')}
+    </div>`;
+}
+
 function buildContextItemRow(item, index) {
   const typeOptions = ['file', 'folder', 'text'].map(type =>
     `<option value="${type}" ${item.type === type ? 'selected' : ''}>${type === 'file' ? t('settings.contextPackItemFile') : type === 'folder' ? t('settings.contextPackItemFolder') : t('settings.contextPackItemText')}</option>`
@@ -475,6 +551,54 @@ class SettingsPanel extends BasePanel {
   }
 
   // ── Agent Colors Panel ──
+
+  /**
+   * Fill in the "Claude in Chrome" status line.
+   *
+   * Three things have to line up for the bridge to work, and each fails
+   * differently, so the line names the one that is missing rather than showing
+   * a generic error: the platform must support native messaging, the browser
+   * extension must be installed, and the native host must be registered.
+   *
+   * @param {boolean} [force] Re-scan for the extension instead of using the
+   *   30s cache — passed after sending the user to the Web Store.
+   */
+  async refreshChromeBridgeStatus(force = false) {
+    const row = document.getElementById('chrome-bridge-status');
+    if (!row) return;
+    const text = row.querySelector('.chrome-bridge-text');
+    const installBtn = document.getElementById('chrome-bridge-install');
+
+    const set = (state, message, showInstall = false) => {
+      // The panel can be re-rendered or closed while the IPC is in flight.
+      if (!document.body.contains(row)) return;
+      row.dataset.state = state;
+      if (text) text.textContent = message;
+      if (installBtn) installBtn.hidden = !showInstall;
+    };
+
+    let res;
+    try {
+      res = await this.api.chrome.status({ force });
+    } catch (e) {
+      set('error', e.message || t('common.errorOccurred'));
+      return;
+    }
+    if (!res?.success) {
+      set('error', res?.error || t('common.errorOccurred'));
+      return;
+    }
+
+    const st = res.status;
+    if (!st.supported) return set('error', t('settings.chrome.unsupported'));
+    if (!st.cliAvailable) return set('error', t('settings.chrome.cliMissing'));
+    if (!st.extensionInstalled) return set('warn', t('settings.chrome.extensionMissing'), true);
+    if (!st.enabled) {
+      return set('idle', t('settings.chrome.readyDisabled', { browser: st.browserLabel || 'Chrome' }));
+    }
+    if (!st.hostInstalled) return set('error', t('settings.chrome.hostFailed'));
+    set('ok', t('settings.chrome.connected', { browser: st.browserLabel || 'Chrome' }));
+  }
 
   async loadAgentsColorPanel() {
     const content = document.getElementById('agent-colors-content');
@@ -1013,6 +1137,7 @@ class SettingsPanel extends BasePanel {
                 </div>
                 <div style="display: flex; gap: 8px; padding: 8px 16px 16px;">
                   <button class="btn btn-secondary" id="btn-account-capture">${t('accounts.captureCurrent') || 'Save current account'}</button>
+                  <button class="btn btn-secondary" id="btn-accounts-usage-refresh">${t('accounts.usageRefresh') || 'Refresh usage'}</button>
                 </div>
               </div>
             </div>
@@ -1205,6 +1330,26 @@ class SettingsPanel extends BasePanel {
                   <textarea id="persona-instructions-input" class="persona-input" rows="3" placeholder="${t('settings.personaInstructionsPlaceholder')}">${escapeHtml(settings.personaInstructions || '')}</textarea>
                 </div>
                 <div class="persona-help">${t('settings.personaHelp')}</div>
+              </div>
+            </div>
+            <div class="settings-group" data-section="chrome">
+              <div class="settings-group-title">${t('settings.chrome.title')}</div>
+              <div class="settings-card">
+                <div class="settings-toggle-row">
+                  <div class="settings-toggle-label">
+                    <div>${t('settings.chrome.enable')}</div>
+                    <div class="settings-toggle-desc">${t('settings.chrome.enableDesc')}</div>
+                  </div>
+                  <label class="settings-toggle">
+                    <input type="checkbox" id="chrome-bridge-toggle" ${settings.chromeBridgeEnabled ? 'checked' : ''}>
+                    <span class="settings-toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="chrome-bridge-status" id="chrome-bridge-status" data-state="loading">
+                  <span class="chrome-bridge-dot"></span>
+                  <span class="chrome-bridge-text">${t('settings.chrome.checking')}</span>
+                  <button class="chrome-bridge-action" id="chrome-bridge-install" hidden>${t('settings.chrome.installExtension')}</button>
+                </div>
               </div>
             </div>
             <div class="settings-group">
@@ -1418,10 +1563,26 @@ class SettingsPanel extends BasePanel {
         tab.classList.add('active');
         container.querySelector(`.settings-panel[data-panel="${tab.dataset.tab}"]`)?.classList.add('active');
         if (tab.dataset.tab === 'agents') self.loadAgentsColorPanel();
+        // Account usage is only read once its panel is on screen: each account
+        // costs a credential-store read, which prompts for the Keychain on macOS.
+        if (tab.dataset.tab === 'claude') self._loadAccountsUsage();
       };
     });
 
     if (initialTab === 'agents') this.loadAgentsColorPanel();
+
+    // Status needs an IPC round-trip (it stats browser profile dirs), so the
+    // markup renders a "checking" placeholder and this fills it in.
+    this.refreshChromeBridgeStatus();
+    const chromeInstallBtn = document.getElementById('chrome-bridge-install');
+    if (chromeInstallBtn) {
+      chromeInstallBtn.onclick = async () => {
+        await this.api.chrome.openStore();
+        // The user installs in the browser, so we cannot know when it lands.
+        // Re-check on a short delay and skip the cache.
+        setTimeout(() => this.refreshChromeBridgeStatus(true), 3000);
+      };
+    }
 
     this._ctx.ShortcutsManager.setupShortcutsPanelHandlers();
 
@@ -1820,6 +1981,8 @@ class SettingsPanel extends BasePanel {
         : null;
       const autoClaudeMdToggle = document.getElementById('auto-claude-md-toggle');
       const newAutoClaudeMd = autoClaudeMdToggle ? autoClaudeMdToggle.checked : true;
+      const chromeBridgeToggle = document.getElementById('chrome-bridge-toggle');
+      const newChromeBridgeEnabled = chromeBridgeToggle ? chromeBridgeToggle.checked : false;
       const hooksToggle = document.getElementById('hooks-enabled-toggle');
       const newHooksEnabled = hooksToggle ? hooksToggle.checked : settings.hooksEnabled;
       const context1MToggle = document.getElementById('enable-1m-context-toggle');
@@ -1890,6 +2053,7 @@ class SettingsPanel extends BasePanel {
         discordRpcEnabled: newDiscordRpcEnabled,
         discordRpcShowProject: newDiscordRpcShowProject,
         enhancePrompts: newEnhancePrompts,
+        chromeBridgeEnabled: newChromeBridgeEnabled,
         autoClaudeMdUpdate: newAutoClaudeMd,
         maxTurns: newMaxTurns,
         telemetryEnabled: newTelemetryEnabled,
@@ -1963,6 +2127,24 @@ class SettingsPanel extends BasePanel {
             launchAtStartupToggle.checked = !requestedLaunchAtStartup;
             showError(t('settings.launchAtStartupError'), 5000);
           }
+        }
+
+        if (newChromeBridgeEnabled !== settings.chromeBridgeEnabled) {
+          try {
+            // Turning it on installs the native messaging host so Chrome can
+            // reach us; turning it off removes only the manifests we wrote.
+            const result = newChromeBridgeEnabled
+              ? await self.api.chrome.installHost()
+              : await self.api.chrome.removeHost();
+            if (result && result.success === false) {
+              throw new Error(result.error || t('common.errorOccurred'));
+            }
+          } catch (e) {
+            console.error('Error toggling Claude in Chrome:', e);
+            self._sideEffectFailed = true;
+            showError(e.message || t('settings.chrome.toggleError'), 5000);
+          }
+          self.refreshChromeBridgeStatus();
         }
 
         if (newHooksEnabled !== settings.hooksEnabled) {
@@ -2155,26 +2337,35 @@ class SettingsPanel extends BasePanel {
         const bound = getProjectsForAccount(a.id);
         return `
         <div class="account-row${a.id === defaultId ? ' active' : ''}" data-id="${a.id}">
-          <button type="button" class="account-row-color${color ? '' : ' account-row-color--none'}"
-                  data-action="color" data-id="${a.id}" data-color="${color || ''}"
-                  ${color ? `style="background:${color}"` : ''}
-                  title="${escapeHtml(t('accounts.colorTitle') || 'Account colour')}"
-                  aria-label="${escapeHtml(t('accounts.colorTitle') || 'Account colour')}"></button>
-          <div class="account-row-main">
-            <div class="account-row-name">${escapeHtml(a.name)}</div>
-            <div class="account-row-meta">${escapeHtml((a.fingerprint || '').slice(0, 8))}${bound.length ? ` &middot; ${escapeHtml(t('accounts.boundProjects', { count: bound.length }))}` : ''}</div>
+          <div class="account-row-head">
+            <button type="button" class="account-row-color${color ? '' : ' account-row-color--none'}"
+                    data-action="color" data-id="${a.id}" data-color="${color || ''}"
+                    ${color ? `style="background:${color}"` : ''}
+                    title="${escapeHtml(t('accounts.colorTitle') || 'Account colour')}"
+                    aria-label="${escapeHtml(t('accounts.colorTitle') || 'Account colour')}"></button>
+            <div class="account-row-main">
+              <div class="account-row-name">${escapeHtml(a.name)}</div>
+              <div class="account-row-meta">${escapeHtml((a.fingerprint || '').slice(0, 8))}${bound.length ? ` &middot; ${escapeHtml(t('accounts.boundProjects', { count: bound.length }))}` : ''}</div>
+            </div>
+            <div class="account-row-buttons">
+              ${a.id === defaultId
+                ? `<span class="account-row-status">${escapeHtml(t('accounts.isDefault') || 'Default')}</span>`
+                : `<button class="btn btn-secondary btn-sm" data-action="set-default" data-id="${a.id}">${escapeHtml(t('accounts.makeDefault') || 'Make default')}</button>`}
+              <button class="btn btn-secondary btn-sm" data-action="rename" data-id="${a.id}">${escapeHtml(t('common.rename') || 'Rename')}</button>
+              <button class="btn btn-secondary btn-sm" data-action="remove" data-id="${a.id}">${escapeHtml(t('common.delete') || 'Delete')}</button>
+            </div>
           </div>
-          <div class="account-row-buttons">
-            ${a.id === defaultId
-              ? `<span class="account-row-status">${escapeHtml(t('accounts.isDefault') || 'Default')}</span>`
-              : `<button class="btn btn-secondary btn-sm" data-action="set-default" data-id="${a.id}">${escapeHtml(t('accounts.makeDefault') || 'Make default')}</button>`}
-            <button class="btn btn-secondary btn-sm" data-action="rename" data-id="${a.id}">${escapeHtml(t('common.rename') || 'Rename')}</button>
-            <button class="btn btn-secondary btn-sm" data-action="remove" data-id="${a.id}">${escapeHtml(t('common.delete') || 'Delete')}</button>
-          </div>
+          <div class="account-row-usage" data-usage-for="${a.id}"></div>
         </div>`;
       }).join('');
+      // Repaint from whatever was last fetched: a rename or a colour change
+      // rebuilds the list, and blanking the bars each time would make the
+      // section flicker between two states that are both current.
+      this._paintAccountsUsage(listEl);
+      this._loadAccountsUsage();
       if (captureBtn) captureBtn.disabled = !hasCredentials;
     };
+    this._renderAccountsList = renderList;
 
     listEl.onclick = async (e) => {
       const btn = e.target.closest('button[data-action]');
@@ -2297,11 +2488,66 @@ class SettingsPanel extends BasePanel {
       };
     }
 
+    const refreshBtn = container.querySelector('#btn-accounts-usage-refresh');
+    if (refreshBtn) {
+      refreshBtn.onclick = async () => {
+        refreshBtn.disabled = true;
+        try {
+          await this._loadAccountsUsage({ force: true });
+        } finally {
+          refreshBtn.disabled = false;
+        }
+      };
+    }
+
     // Live refresh when accounts change elsewhere (e.g. via switch modal)
     const unsub = this.api.accounts.onChanged(() => renderList());
     this._cleanups.push(unsub);
 
     await renderList();
+  }
+
+  /**
+   * Fetch the usage figures of every stored account.
+   *
+   * Reading an account's credential store costs a Keychain read on macOS, so
+   * the sweep is skipped while the Claude tab is off screen — the figures are
+   * fetched when the tab that shows them is opened, not when Settings is.
+   *
+   * @param {{force?: boolean}} [opts] - force also bypasses the main-process
+   *   cache, for the explicit refresh button
+   */
+  async _loadAccountsUsage({ force = false } = {}) {
+    const listEl = document.getElementById('claude-accounts-list');
+    if (!listEl?.isConnected) return;
+    if (!force && !listEl.closest('.settings-panel')?.classList.contains('active')) return;
+    if (this._accountsUsageInFlight) return;
+
+    this._accountsUsageInFlight = true;
+    try {
+      const res = await this.api.accounts.usage(force ? 0 : undefined);
+      if (res?.success) this._accountsUsage = res.data || {};
+    } catch (err) {
+      console.warn('[SettingsPanel] account usage failed:', err?.message);
+    } finally {
+      this._accountsUsageInFlight = false;
+    }
+    this._paintAccountsUsage();
+  }
+
+  /**
+   * Paint the cached figures into the account rows.
+   *
+   * Kept apart from the fetch so a list rebuild — a rename, a colour change —
+   * can repaint what is already known without waiting on the API.
+   *
+   * @param {Element} [listEl]
+   */
+  _paintAccountsUsage(listEl = document.getElementById('claude-accounts-list')) {
+    if (!listEl) return;
+    for (const slot of listEl.querySelectorAll('.account-row-usage[data-usage-for]')) {
+      slot.innerHTML = buildAccountUsageHtml(this._accountsUsage?.[slot.dataset.usageFor]);
+    }
   }
 
   // ── BasePanel lifecycle ──

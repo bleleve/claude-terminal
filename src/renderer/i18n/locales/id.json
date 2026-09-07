@@ -932,6 +932,20 @@
       "description": "Wawasan real-time dari Claude Code (pelacakan waktu, notifikasi, statistik dasbor)",
       "toggleError": "Gagal memperbarui Smart Hooks."
     },
+    "chrome": {
+      "title": "Claude di Chrome",
+      "enable": "Izinkan Claude menggunakan peramban Anda",
+      "enableDesc": "Sesi obrolan dapat membuka tab, mengeklik, mengetik, membaca halaman, dan memeriksa konsol melalui ekstensi peramban Claude.",
+      "checking": "Memeriksa integrasi peramban…",
+      "connected": "Terhubung — Claude dapat mengendalikan {browser}.",
+      "readyDisabled": "Ekstensi ditemukan di {browser}. Aktifkan agar Claude dapat menggunakannya.",
+      "extensionMissing": "Ekstensi peramban Claude belum terpasang.",
+      "installExtension": "Pasang",
+      "unsupported": "Kendali peramban tidak tersedia di platform ini.",
+      "cliMissing": "Biner Claude Code bawaan tidak ditemukan, sehingga kendali peramban tidak dapat dimulai.",
+      "hostFailed": "Tidak dapat mendaftarkan konektor peramban. Tidak ada peramban yang didukung ditemukan.",
+      "toggleError": "Gagal memperbarui integrasi peramban."
+    },
     "advanced": "Lanjutan",
     "restoreTerminalSessions": "Ingat kondisi terminal terakhir",
     "restoreTerminalSessionsDesc": "Pulihkan tab terminal dan sesi Claude dari sesi sebelumnya saat aplikasi dijalankan",
@@ -1742,6 +1756,8 @@
     "initializingRuntime": "Mencari runtime...",
     "interrupted": "Terhenti",
     "permissionWaitingSince": "Menunggu {seconds} detik",
+    "permissionExpired": "Kedaluwarsa: tidak ada jawaban dalam 5 menit",
+    "permissionAnsweredElsewhere": "Dijawab di tempat lain",
     "permissionNotification": "Permintaan izin untuk {tool} sedang menunggu jawaban Anda",
     "resuming": "Melanjutkan percakapan...",
     "conversationResumed": "Percakapan dilanjutkan",
@@ -3791,6 +3807,7 @@
     "emptyHint": "Belum ada akun tersimpan. Buka terminal, jalankan \"claude /login\", lalu klik \"Simpan akun saat ini\".",
     "limitReached": "Batas penggunaan tercapai pada akun yang aktif.",
     "switched": "Akun diganti. Melanjutkan…",
+    "switchedNoResume": "Akun diganti. Percakapan sebelumnya tidak bisa dilanjutkan — dilanjutkan tanpa konteksnya.",
     "removeConfirm": "Hapus akun tersimpan ini? Kredensialnya akan dihapus dari penyimpanan lokal.",
     "switchError": "Gagal mengganti akun",
     "renameError": "Gagal mengganti nama akun",
@@ -3815,7 +3832,11 @@
     "switchWhileRunning": "{count} sesi sudah berjalan untuk proyek ini dan tetap memakai akunnya. Perubahan berlaku untuk sesi berikutnya. Lanjutkan?",
     "colorNone": "Tanpa warna",
     "chooseForProjectTitle": "Akun Claude",
-    "chooseForProject": "Akun mana yang dipakai {project}? Bisa diubah nanti dari tabnya."
+    "chooseForProject": "Akun mana yang dipakai {project}? Bisa diubah nanti dari tabnya.",
+    "usageLoading": "Membaca penggunaan…",
+    "usageUnavailable": "Penggunaan tidak tersedia — jalankan \"claude /login\" pada akun ini",
+    "usageStale": "API tidak dapat memastikan angka ini",
+    "usageRefresh": "Segarkan penggunaan"
   },
   "usage": {
     "stale": "Data penggunaan mungkin sudah tidak terbaru - pemuatan terakhir gagal. {error}"

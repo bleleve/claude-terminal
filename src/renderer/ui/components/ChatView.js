@@ -119,7 +119,7 @@ const { updateTerminal, getTerminal } = require('../../state/terminals.state');
 const { saveTerminalSessions } = require('../../services/TerminalSessionService');
 
 const { matchModel, resolveModelSelection, hasOneMContext, DEFAULT_ALIAS } = require('../../../shared/model-options');
-const { contextTokensFromUsage } = require('../../../shared/context-usage');
+const { contextTokensFromMessage } = require('../../../shared/context-usage');
 const ModelCatalog = require('../../services/ModelCatalogClient');
 
 // Catalog access is shared with the project-settings and parallel-run pickers
@@ -3388,12 +3388,52 @@ class ChatView extends BaseComponent {
 
   // Centralized respond helper: forwards to the SDK and clears the
   // `pendingPermission` marker on the terminal entry so MCP `tab_status`
-  // and `tab_wait` reflect the resolution.
-  function _respondPermission(payload) {
-    try { api.chat.respondPermission(payload); } catch (_) {}
-    if (terminalId) {
-      try { updateTerminal(terminalId, { pendingPermission: null }); } catch (_) {}
+  // and `tab_wait` reflect the resolution. Resolves to false when the main
+  // process had nothing pending under that id any more (timed out, aborted,
+  // or answered from another surface), so the caller can say so on the card.
+  async function _respondPermission(payload) {
+    _clearTerminalPendingPermission();
+    try {
+      const accepted = await api.chat.respondPermission(payload);
+      return accepted !== false;
+    } catch (_) {
+      return false;
     }
+  }
+
+  function _clearTerminalPendingPermission() {
+    if (!terminalId) return;
+    try { updateTerminal(terminalId, { pendingPermission: null }); } catch (_) {}
+  }
+
+  // A prompt this card was showing is settled, and not by this card: it expired,
+  // the turn was interrupted, or another surface (Control Tower, remote PWA,
+  // MCP) answered first. Freeze the card and say which, instead of leaving live
+  // buttons — or an approval that went nowhere.
+  function markCardStale(card, reason = 'expired') {
+    if (!card) return;
+    _clearPermTimers(card.dataset.requestId);
+    card.classList.remove('allowed', 'denied', 'approved', 'rejected');
+    card.classList.add('resolved', 'stale');
+    card.querySelectorAll('button').forEach(b => {
+      b.disabled = true;
+      b.classList.add('disabled');
+      b.classList.remove('chosen');
+    });
+    const header = card.querySelector('.chat-perm-header, .chat-plan-header, .chat-question-header');
+    if (!header) return;
+    let label = card.querySelector('.chat-perm-timer');
+    if (!label) {
+      label = document.createElement('span');
+      label.className = 'chat-perm-timer';
+      header.appendChild(label);
+    }
+    label.classList.add('stale');
+    label.textContent = reason === 'answered'
+      ? (t('chat.permissionAnsweredElsewhere') || 'Answered elsewhere')
+      : reason === 'aborted'
+        ? (t('chat.interrupted') || 'Interrupted')
+        : (t('chat.permissionExpired') || 'Expired: no answer within 5 minutes');
   }
 
   function handlePermissionClick(btn) {
@@ -3425,11 +3465,12 @@ class ChatView extends BaseComponent {
       b.classList.add('disabled');
     });
 
+    let result;
     if (action === 'allow' || action === 'always-allow') {
       btn.classList.add('chosen');
       card.classList.add('resolved', 'allowed');
       const inputData = JSON.parse(card.dataset.toolInput || '{}');
-      const result = { behavior: 'allow', updatedInput: inputData };
+      result = { behavior: 'allow', updatedInput: inputData };
       if (action === 'always-allow') {
         // Use SDK suggestions for granular permissions (e.g. acceptEdits)
         // Fallback to bypassPermissions only if no suggestions available
@@ -3444,30 +3485,30 @@ class ChatView extends BaseComponent {
           }];
         }
       }
-      _respondPermission({ requestId, result });
     } else {
       // deny or deny-send: include feedback message if provided
       const feedbackInput = card.querySelector('.chat-perm-feedback-input');
       const message = feedbackInput?.value?.trim() || 'User denied this action';
       card.querySelector('.chat-perm-btn.deny')?.classList.add('chosen');
       card.classList.add('resolved', 'denied');
-      _respondPermission({
-        requestId,
-        result: { behavior: 'deny', message }
-      });
+      result = { behavior: 'deny', message };
     }
 
-    // Reset status — SDK will continue processing
-    setStatus('thinking', t('chat.thinking'));
+    _respondPermission({ requestId, result }).then((accepted) => {
+      if (!accepted) { markCardStale(card); return; }
 
-    // Collapse card after resolution
-    setTimeout(() => {
-      card.style.maxHeight = card.scrollHeight + 'px';
-      requestAnimationFrame(() => {
-        card.classList.add('collapsing');
-        card.style.maxHeight = '0';
-      });
-    }, 400);
+      // Reset status — SDK will continue processing
+      setStatus('thinking', t('chat.thinking'));
+
+      // Collapse card after resolution
+      setTimeout(() => {
+        card.style.maxHeight = card.scrollHeight + 'px';
+        requestAnimationFrame(() => {
+          card.classList.add('collapsing');
+          card.style.maxHeight = '0';
+        });
+      }, 400);
+    });
   }
 
   // ── Plan handling ──
@@ -3501,56 +3542,55 @@ class ChatView extends BaseComponent {
       b.classList.add('disabled');
     });
 
+    let result;
     if (action === 'allow') {
       btn.classList.add('chosen');
       card.classList.add('resolved', 'approved');
       const inputData = JSON.parse(card.dataset.toolInput || '{}');
-      _respondPermission({
-        requestId,
-        result: { behavior: 'allow', updatedInput: inputData }
-      });
+      result = { behavior: 'allow', updatedInput: inputData };
     } else {
       // deny or deny-send: include feedback if provided
       const feedbackInput = card.querySelector('.chat-plan-feedback-input');
       const message = feedbackInput?.value?.trim() || 'User rejected the plan';
       card.querySelector('.chat-plan-btn.reject')?.classList.add('chosen');
       card.classList.add('resolved', 'rejected');
-      _respondPermission({
-        requestId,
-        result: { behavior: 'deny', message }
-      });
+      result = { behavior: 'deny', message };
     }
 
-    // Reset status - SDK will continue processing
-    setStatus('thinking', t('chat.thinking'));
+    _respondPermission({ requestId, result }).then((accepted) => {
+      if (!accepted) { markCardStale(card); return; }
 
-    // Collapse: if ExitPlanMode with plan content, keep plan visible, only hide buttons
-    const isExitPlan = card.dataset.toolName === 'ExitPlanMode' && card.querySelector('.chat-plan-content');
-    if (isExitPlan) {
-      setTimeout(() => {
-        const actions = card.querySelector('.chat-plan-actions');
-        const feedback = card.querySelector('.chat-plan-feedback');
-        for (const row of [actions, feedback]) {
-          if (!row) continue;
-          row.style.maxHeight = row.scrollHeight + 'px';
-          row.style.overflow = 'hidden';
-          row.style.transition = 'max-height 0.35s ease, opacity 0.3s, padding 0.35s';
+      // Reset status - SDK will continue processing
+      setStatus('thinking', t('chat.thinking'));
+
+      // Collapse: if ExitPlanMode with plan content, keep plan visible, only hide buttons
+      const isExitPlan = card.dataset.toolName === 'ExitPlanMode' && card.querySelector('.chat-plan-content');
+      if (isExitPlan) {
+        setTimeout(() => {
+          const actions = card.querySelector('.chat-plan-actions');
+          const feedback = card.querySelector('.chat-plan-feedback');
+          for (const row of [actions, feedback]) {
+            if (!row) continue;
+            row.style.maxHeight = row.scrollHeight + 'px';
+            row.style.overflow = 'hidden';
+            row.style.transition = 'max-height 0.35s ease, opacity 0.3s, padding 0.35s';
+            requestAnimationFrame(() => {
+              row.style.maxHeight = '0';
+              row.style.opacity = '0';
+              row.style.padding = '0 16px';
+            });
+          }
+        }, 600);
+      } else {
+        setTimeout(() => {
+          card.style.maxHeight = card.scrollHeight + 'px';
           requestAnimationFrame(() => {
-            row.style.maxHeight = '0';
-            row.style.opacity = '0';
-            row.style.padding = '0 16px';
+            card.classList.add('collapsing');
+            card.style.maxHeight = '0';
           });
-        }
-      }, 600);
-    } else {
-      setTimeout(() => {
-        card.style.maxHeight = card.scrollHeight + 'px';
-        requestAnimationFrame(() => {
-          card.classList.add('collapsing');
-          card.style.maxHeight = '0';
-        });
-      }, 600);
-    }
+        }, 600);
+      }
+    });
   }
 
   // ── Tool card expansion ──
@@ -3823,10 +3863,11 @@ class ChatView extends BaseComponent {
         behavior: 'allow',
         updatedInput: { questions: questionsData, answers }
       }
+    }).then((accepted) => {
+      if (!accepted) { markCardStale(card); return; }
+      // Reset status — SDK will continue processing
+      setStatus('thinking', t('chat.thinking'));
     });
-
-    // Reset status — SDK will continue processing
-    setStatus('thinking', t('chat.thinking'));
   }
 
   // ── DOM helpers ──
@@ -6104,25 +6145,68 @@ class ChatView extends BaseComponent {
       </div>`;
   }
 
-  function renderContextBreakdown(usage) {
-    const breakdown = usage.breakdown || usage.categories || {};
-    const total = usage.total || Object.values(breakdown).reduce((a, b) => a + (Number(b) || 0), 0);
-    const limit = usage.limit || currentContextLimit();
-    const entries = Object.entries(breakdown)
-      .filter(([, v]) => Number(v) > 0)
-      .sort((a, b) => Number(b[1]) - Number(a[1]));
-    if (!entries.length) return;
+  /**
+   * Rows the CLI reports that are not occupancy: what is left, and the slice it
+   * holds back for a compaction. Both belong to the window, neither is in use,
+   * and listing them next to "Messages" would read as if they were.
+   */
+  const CONTEXT_FREE_ROW = /^(free|autocompact|compaction)/i;
 
-    contextPopover.innerHTML = contextSummaryHtml(total, limit) + entries.map(([key, value]) => {
-      const v = Number(value) || 0;
-      const pct = total > 0 ? Math.min(100, (v / total) * 100) : 0;
+  /**
+   * Categories, from whichever shape the CLI answered in.
+   *
+   * `getContextUsage()` returns `categories: [{ name, tokens, isDeferred }]`.
+   * The map-of-numbers this used to read never existed on that response, so
+   * `Object.entries` walked an array, `Number({...})` came back NaN, every row
+   * was filtered out and the overlay stayed on its header — the breakdown has
+   * simply never drawn. Both shapes are accepted so an older CLI still renders.
+   */
+  function contextUsageRows(usage) {
+    const raw = usage.categories || usage.breakdown || {};
+    const rows = Array.isArray(raw)
+      ? raw.map(c => ({
+          name: String(c?.name || ''),
+          tokens: Number(c?.tokens) || 0,
+          kind: c?.kind,
+          deferred: !!c?.isDeferred
+        }))
+      : Object.entries(raw).map(([name, tokens]) => ({
+          name: name.replace(/_/g, ' '),
+          tokens: Number(tokens) || 0
+        }));
+    return rows
+      .filter(r => r.tokens > 0
+        && !r.deferred
+        && (r.kind ? r.kind === 'used' : !CONTEXT_FREE_ROW.test(r.name)))
+      .sort((a, b) => b.tokens - a.tokens);
+  }
+
+  function renderContextBreakdown(usage) {
+    const rows = contextUsageRows(usage);
+    if (!rows.length) return;
+    const summed = rows.reduce((a, r) => a + r.tokens, 0);
+    const total = Number(usage.totalTokens) || Number(usage.total) || summed;
+    // The window the ring is drawn against stays the model's, so the overlay
+    // cannot disagree with what sits behind it. The CLI's own `rawMaxTokens` is
+    // the autocompact window, which is a different question.
+    const limit = currentContextLimit();
+
+    contextPopover.innerHTML = contextSummaryHtml(total, limit) + rows.map(row => {
+      const pct = summed > 0 ? Math.min(100, (row.tokens / summed) * 100) : 0;
       return `
         <div class="ccp-row">
-          <span class="ccp-label">${escapeHtml(key.replace(/_/g, ' '))}</span>
+          <span class="ccp-label">${escapeHtml(row.name)}</span>
           <div class="ccp-bar"><div class="ccp-fill" style="width:${pct.toFixed(1)}%"></div></div>
-          <span class="ccp-value">${escapeHtml(formatTokenCount(v))}</span>
+          <span class="ccp-value">${escapeHtml(formatTokenCount(row.tokens))}</span>
         </div>`;
     }).join('');
+
+    // The CLI counted the window itself — that beats the last turn's usage, and
+    // the ring should not keep showing a figure the overlay just corrected.
+    if (total > 0) {
+      inputTokens = total;
+      setContextGauge(total, limit);
+    }
   }
 
   /**
@@ -6275,6 +6359,13 @@ class ChatView extends BaseComponent {
           ? t('chat.compacted', { tokens: preTokens.toLocaleString() }) || `Conversation compacted (${preTokens.toLocaleString()} tokens before)`
           : t('chat.compactedSimple') || 'Conversation compacted';
         appendSystemNotice(notice, 'compact');
+        // The window just emptied; without this the ring stays full until the
+        // next turn's first frame reports the new prefix.
+        const postTokens = message.compact_metadata?.post_tokens;
+        if (postTokens > 0) {
+          inputTokens = postTokens;
+          updateStatusInfo();
+        }
         setStreaming(false);
       } else if (message.subtype === 'task_started') {
         const taskId = message.task_id;
@@ -6354,6 +6445,16 @@ class ChatView extends BaseComponent {
 
     // Full assistant message (backup for non-streaming or tool use detection)
     if (message.type === 'assistant') {
+      // One API call's input side is the window occupancy at that moment; the
+      // result message's usage is the turn's total over every call it made, so
+      // reading the gauge off the result made a tool-heavy turn stack several
+      // ~300K prefixes into "1.1M / 1M (109%)". Streamed frames of one call
+      // repeat that call's usage — the compare keeps the repaint to one.
+      const frameTokens = contextTokensFromMessage(message);
+      if (frameTokens > 0 && frameTokens !== inputTokens) {
+        inputTokens = frameTokens;
+        updateStatusInfo();
+      }
       handleAssistantMessage(message);
       return;
     }
@@ -6367,8 +6468,9 @@ class ChatView extends BaseComponent {
 
     // Result — update stats. Also detect SDK errors.
     if (message.type === 'result') {
-      const turnTokens = contextTokensFromUsage(message.usage);
-      if (turnTokens > 0) inputTokens = turnTokens;
+      // No gauge update here: `message.usage` is the turn's total across every
+      // API call it made, not what occupies the window. The assistant frames
+      // above carry that.
       if (message.model) model = message.model;
       updateStatusInfo();
 
@@ -7117,10 +7219,35 @@ class ChatView extends BaseComponent {
         sessionId = null;
         return;
       }
+      // `resume` only accepts the CLI's own session UUID. Our `sessionId` is an
+      // app-local `chat-…` handle the CLI has never heard of: handing it over
+      // makes the CLI refuse the resume outright, and the tab carries on with an
+      // empty context while the whole transcript is still on screen.
+      // Before the SDK's init message there is nothing to resume but the id this
+      // tab was opened on.
+      const realSid = sdkSessionId || resumeSessionId;
       // The binding is read at spawn time, so the restart has to carry the new
       // account explicitly — lastStartOpts still holds the one that ran out.
-      const restartOpts = { ...lastStartOpts, accountId: newId, prompt: '', resumeSessionId: sessionId };
-      appendSystemNotice(t('accounts.switched') || 'Account switched. Resuming…', 'info');
+      // Everything that belonged to the turn that opened the tab is dropped: the
+      // restart sends no prompt, so replaying its images, mentions or message
+      // uuid would post the opening message a second time. A fork's truncation
+      // point goes too — it names a message of the session being resumed, not of
+      // the fork that came out of it.
+      const restartOpts = {
+        ...lastStartOpts,
+        accountId: newId,
+        prompt: '',
+        images: [],
+        mentions: [],
+        userMessageUuid: null,
+        forkSession: false,
+        resumeSessionAt: null,
+        resumeDropsTurn: null,
+        resumeSessionId: realSid || null,
+      };
+      appendSystemNotice(realSid
+        ? (t('accounts.switched') || 'Account switched. Resuming…')
+        : (t('accounts.switchedNoResume') || 'Account switched. The previous conversation could not be resumed — continuing without its context.'), 'info');
       setStreaming(true);
       appendThinkingIndicator();
       const res = await api.chat.start(restartOpts);
@@ -7299,6 +7426,30 @@ class ChatView extends BaseComponent {
     _permTimers.set(requestId, { pulseTimer, notifTimer, counterId });
   });
   unsubscribers.push(unsubPerm);
+
+  // ── IPC: Permission settled without this card ──
+  // The main process closed the prompt on its own (timeout, interrupted turn)
+  // or another surface answered it (Control Tower, remote PWA, MCP). Freeze the
+  // card so it cannot be answered twice, and stop its reminder timers.
+  const unsubPermResolved = api.chat.onPermissionResolved((data) => {
+    if (data.sessionId !== sessionId) return;
+    const { requestId, reason } = data;
+    _clearPermTimers(requestId);
+    let card = null;
+    try {
+      const id = CSS.escape(requestId);
+      card = messagesEl.querySelector(
+        `.chat-perm-card[data-request-id="${id}"], .chat-plan-card[data-request-id="${id}"], .chat-question-card[data-request-id="${id}"]`
+      );
+    } catch (_) {}
+    if (!card || card.classList.contains('resolved')) return;
+    _clearTerminalPendingPermission();
+    markCardStale(card, reason);
+    // The SDK carries on after a timeout or an answer; an interrupted turn ends
+    // through chat-done, which sets its own status.
+    if (reason !== 'aborted') setStatus('thinking', t('chat.thinking'));
+  });
+  unsubscribers.push(unsubPermResolved);
 
   // The CLI refused a guarded fork: the discarded range held more than the turn we
   // named — typically a prompt queued mid-turn that this view never rendered. The

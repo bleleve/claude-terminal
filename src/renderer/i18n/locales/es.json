@@ -929,6 +929,20 @@
       "description": "Información en tiempo real de Claude Code (seguimiento de tiempo, notificaciones, estadísticas)",
       "toggleError": "No se pudieron actualizar los hooks inteligentes."
     },
+    "chrome": {
+      "title": "Claude en Chrome",
+      "enable": "Permitir que Claude use tu navegador",
+      "enableDesc": "Las sesiones de chat pueden abrir pestañas, hacer clic, escribir, leer páginas e inspeccionar la consola mediante la extensión de Claude.",
+      "checking": "Comprobando la integración con el navegador…",
+      "connected": "Conectado: Claude puede controlar {browser}.",
+      "readyDisabled": "Extensión detectada en {browser}. Actívalo para que Claude pueda usarla.",
+      "extensionMissing": "La extensión de Claude para el navegador no está instalada.",
+      "installExtension": "Instalar",
+      "unsupported": "El control del navegador no está disponible en esta plataforma.",
+      "cliMissing": "Falta el binario de Claude Code incluido, por lo que el control del navegador no puede iniciarse.",
+      "hostFailed": "No se pudo registrar el conector del navegador. No se encontró ningún navegador compatible.",
+      "toggleError": "No se pudo actualizar la integración con el navegador."
+    },
     "advanced": "Avanzado",
     "restoreTerminalSessions": "Recordar estados de terminal",
     "restoreTerminalSessionsDesc": "Restaurar las pestañas de terminal y sesiones de Claude de la sesión anterior al iniciar",
@@ -1824,6 +1838,8 @@
     "initializingRuntime": "Buscando el runtime...",
     "interrupted": "Interrumpido",
     "permissionWaitingSince": "Esperando desde hace {seconds}s",
+    "permissionExpired": "Expirada: sin respuesta en 5 minutos",
+    "permissionAnsweredElsewhere": "Respondida en otro lugar",
     "permissionNotification": "Un permiso para {tool} espera tu respuesta",
     "denyFeedbackPlaceholder": "Explica por qué (opcional)...",
     "sendFeedback": "Denegar con comentario",
@@ -3791,6 +3807,7 @@
     "emptyHint": "Aún no hay cuentas guardadas. Abre un terminal, ejecuta \"claude /login\", luego haz clic en \"Guardar la cuenta actual\".",
     "limitReached": "Límite de uso alcanzado en la cuenta activa.",
     "switched": "Cuenta cambiada. Reanudando…",
+    "switchedNoResume": "Cuenta cambiada. No se pudo reanudar la conversación anterior — se continúa sin su contexto.",
     "removeConfirm": "¿Eliminar esta cuenta guardada? Las credenciales se borrarán del almacenamiento local.",
     "switchError": "No se pudo cambiar de cuenta",
     "renameError": "No se pudo renombrar la cuenta",
@@ -3815,7 +3832,11 @@
     "switchWhileRunning": "{count} sesión(es) ya están en curso para este proyecto y conservan su cuenta actual. El cambio se aplicará a las sesiones que inicies después. ¿Continuar?",
     "colorNone": "Sin color",
     "chooseForProjectTitle": "Cuenta de Claude",
-    "chooseForProject": "¿Con qué cuenta debe ejecutarse {project}? Puedes cambiarlo luego desde su pestaña."
+    "chooseForProject": "¿Con qué cuenta debe ejecutarse {project}? Puedes cambiarlo luego desde su pestaña.",
+    "usageLoading": "Leyendo el uso…",
+    "usageUnavailable": "Uso no disponible: ejecuta «claude /login» en esta cuenta",
+    "usageStale": "La API no pudo confirmar estas cifras",
+    "usageRefresh": "Actualizar el uso"
   },
   "usage": {
     "stale": "Datos de uso posiblemente desactualizados - la última actualización falló. {error}"

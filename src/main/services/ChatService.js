@@ -12,6 +12,8 @@ const ModelCatalogService = require('./ModelCatalogService');
 const AccountManager = require('./AccountManager');
 const { isCliFailureText } = require('../../shared/cli-failure-text');
 const remoteControlService = require('./RemoteControlService');
+const chromeBridgeService = require('./ChromeBridgeService');
+const { getSdkCliPath } = require('../utils/sdkCli');
 
 let sdkPromise = null;
 let resolvedRuntime = null;
@@ -96,31 +98,6 @@ async function loadSDK() {
     sdkPromise = import('@anthropic-ai/claude-agent-sdk');
   }
   return sdkPromise;
-}
-
-/**
- * Resolve the path to the SDK's native CLI binary.
- *
- * As of @anthropic-ai/claude-agent-sdk 0.3 the SDK no longer ships a `cli.js`;
- * it spawns a platform-specific native binary shipped in the optional dependency
- * `@anthropic-ai/claude-agent-sdk-<platform>-<arch>` (e.g. `claude.exe` on
- * Windows). That package is pulled into the asarUnpack closure automatically
- * (resolve-unpack-deps walks optionalDependencies — see electron-builder.config.js).
- *
- * We resolve it explicitly so the spawn behaves identically in dev and in the
- * packaged app.asar.unpacked layout. If the expected binary is missing (e.g. a
- * musl Linux build), we return null so the SDK self-resolves via
- * require.resolve, which handles the glibc/musl split on its own.
- */
-function getSdkCliPath() {
-  const ext = process.platform === 'win32' ? '.exe' : '';
-  const pkg = `claude-agent-sdk-${process.platform}-${process.arch}`;
-  const binRelative = path.join('node_modules', '@anthropic-ai', pkg, `claude${ext}`);
-  const base = app.isPackaged
-    ? app.getAppPath().replace('app.asar', 'app.asar.unpacked')
-    : app.getAppPath();
-  const binPath = path.join(base, binRelative);
-  return fs.existsSync(binPath) ? binPath : null;
 }
 
 /**
@@ -342,6 +319,11 @@ function _sameDeltaTarget(a, b, field) {
     && (a.parent_tool_use_id || null) === (b.parent_tool_use_id || null)
     && (a.session_id || null) === (b.session_id || null);
 }
+
+// Ordinary tool prompts auto-deny after this long so an unattended session does
+// not block forever. Interactive tools (plan review, questions) are exempt.
+const PERMISSION_TIMEOUT_MS = 5 * 60 * 1000;
+const PERMISSION_TIMEOUT_MESSAGE = 'No answer from the user within 5 minutes. Ask again if the action is still needed.';
 
 class ChatService {
   constructor() {
@@ -809,6 +791,20 @@ class ChatService {
       // Arrives via task_progress system messages with a `summary` field.
       options.agentProgressSummaries = true;
 
+      // Claude in Chrome: hand the session the browser-automation MCP server.
+      //
+      // Skipped for a self-restricting session (see RESTRICTED_SESSION_MAX_TURNS):
+      // it runs unattended off a possibly-misheard transcription, and its
+      // allowlist would withhold the browser tools anyway, so spawning the
+      // server would only cost a process.
+      if (!allowedTools?.length) {
+        const chrome = chromeBridgeService.getSessionConfig();
+        if (chrome) {
+          options.mcpServers = { ...(options.mcpServers || {}), ...chrome.mcpServers };
+          options.systemPrompt = this._appendSystemPrompt(options.systemPrompt, chrome.systemPrompt);
+        }
+      }
+
       // Ephemeral session: skip writing transcript to ~/.claude/projects/
       // The session cannot be resumed later but leaves no trace on disk.
       if (persistSession === false) {
@@ -938,6 +934,26 @@ class ChatService {
    * @param {Array} mentions - Array of { label, content } resolved context blocks
    * @returns {string|Array}
    */
+  /**
+   * Add a section to a session's system prompt, whatever shape it currently has.
+   *
+   * The SDK accepts three: a preset object (the default), a preset object the
+   * renderer already appended a custom prompt to, and a bare string (a fully
+   * custom prompt). Appending must preserve the preset, so a string is the only
+   * case we concatenate directly.
+   *
+   * @param {object|string|undefined} current
+   * @param {string} extra
+   * @returns {object|string}
+   */
+  _appendSystemPrompt(current, extra) {
+    if (typeof current === 'string') {
+      return current ? `${current}\n\n${extra}` : extra;
+    }
+    const base = current || { type: 'preset', preset: 'claude_code' };
+    return { ...base, append: base.append ? `${base.append}\n\n${extra}` : extra };
+  }
+
   _buildContent(text, images, mentions = []) {
     const hasImages = images && images.length > 0;
     const hasMentions = mentions && mentions.length > 0;
@@ -992,18 +1008,25 @@ class ChatService {
     }
 
     const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const PERMISSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+    // Plan reviews and questions exist to wait for the human — the CLI itself
+    // waits on them indefinitely — so they never time out. Only ordinary tool
+    // prompts auto-deny, so an unattended session does not block forever.
+    const timesOut = !INTERACTIVE_TOOLS.includes(toolName);
 
     return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        if (this.pendingPermissions.has(requestId)) {
-          this.pendingPermissions.delete(requestId);
-          console.warn(`[ChatService] Permission ${requestId} timed out after 5 minutes, denying`);
-          resolve({ behavior: 'deny' });
-        }
-      }, PERMISSION_TIMEOUT_MS);
+      const timeoutId = timesOut ? setTimeout(() => {
+        if (!this.pendingPermissions.has(requestId)) return;
+        this.pendingPermissions.delete(requestId);
+        console.warn(`[ChatService] Permission ${requestId} (${toolName}) timed out after ${PERMISSION_TIMEOUT_MS / 60000} minutes, denying`);
+        // The CLI validates this shape: a deny without `message` is rejected as
+        // "The canUseTool callback returned an invalid permission result" and
+        // reaches the model as a harness error instead of a denial.
+        resolve({ behavior: 'deny', message: PERMISSION_TIMEOUT_MESSAGE });
+        this._notifyPermissionResolved(sessionId, requestId, toolName, 'timeout');
+      }, PERMISSION_TIMEOUT_MS) : null;
 
-      this.pendingPermissions.set(requestId, { resolve, reject, sessionId, timeoutId });
+      this.pendingPermissions.set(requestId, { resolve, reject, sessionId, toolName, timeoutId });
 
       this._send('chat-permission-request', {
         sessionId,
@@ -1032,35 +1055,46 @@ class ChatService {
 
       if (options.signal) {
         options.signal.addEventListener('abort', () => {
+          if (!this.pendingPermissions.has(requestId)) return;
           clearTimeout(timeoutId);
           this.pendingPermissions.delete(requestId);
           reject(new Error('Aborted'));
+          this._notifyPermissionResolved(sessionId, requestId, toolName, 'aborted');
         }, { once: true });
       }
     });
   }
 
   /**
-   * Resolve a pending permission request (called from IPC)
+   * Tell every surface that may be showing a prompt (chat card, Control Tower,
+   * remote PWA) that it is settled, so none of them keeps offering an answer
+   * that has nothing left to resolve. `reason` is 'answered' | 'timeout' | 'aborted'.
+   */
+  _notifyPermissionResolved(sessionId, requestId, toolName, reason) {
+    this._send('chat-permission-resolved', { sessionId, requestId, toolName, reason });
+  }
+
+  /**
+   * Resolve a pending permission request (called from IPC, the remote server
+   * and the Control Tower).
+   * @returns {boolean} false when nothing was pending under that id — it timed
+   *   out, was aborted, or another surface already answered it.
    */
   resolvePermission(requestId, result) {
     const pending = this.pendingPermissions.get(requestId);
-    if (pending) {
-      this.pendingPermissions.delete(requestId);
-      clearTimeout(pending.timeoutId);
-      // Check that session is still alive before resolving — the SDK will try to
-      // write the response to ProcessTransport which may already be closed.
-      const session = this.sessions.get(pending.sessionId);
-      if (!session) {
-        console.warn(`[ChatService] Permission ${requestId} resolved but session ${pending.sessionId} already closed, ignoring`);
-        return;
-      }
-      pending.resolve(result);
-      // Answered here, so any surface that was also showing this prompt can
-      // retract it — the pending entry is gone and a second answer would have
-      // nothing to resolve.
-      this._emitEvent('chat-permission-resolved', { sessionId: pending.sessionId, requestId });
+    if (!pending) return false;
+    this.pendingPermissions.delete(requestId);
+    clearTimeout(pending.timeoutId);
+    // Check that session is still alive before resolving — the SDK will try to
+    // write the response to ProcessTransport which may already be closed.
+    const session = this.sessions.get(pending.sessionId);
+    if (!session) {
+      console.warn(`[ChatService] Permission ${requestId} resolved but session ${pending.sessionId} already closed, ignoring`);
+      return false;
     }
+    pending.resolve(result);
+    this._notifyPermissionResolved(pending.sessionId, requestId, pending.toolName, 'answered');
+    return true;
   }
 
   /**
@@ -1281,7 +1315,9 @@ class ChatService {
 
   /**
    * Get a detailed breakdown of context window usage (SDK 0.2.86+).
-   * Returns { total, breakdown: { system, conversation, tools, ... }, limit, percent }
+   * Passed through as the SDK returns it:
+   * { categories: [{ name, tokens, color, isDeferred }], totalTokens, maxTokens,
+   *   rawMaxTokens, percentage, model, memoryFiles, mcpTools, ... }
    * or null if unavailable for this session.
    */
   async getContextUsage(sessionId) {

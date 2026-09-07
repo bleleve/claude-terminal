@@ -932,6 +932,20 @@
       "description": "来自 Claude Code 的实时见解（时间跟踪、通知、仪表板统计数据）",
       "toggleError": "更新智能 Hooks 失败。"
     },
+    "chrome": {
+      "title": "Claude 控制 Chrome",
+      "enable": "允许 Claude 使用你的浏览器",
+      "enableDesc": "聊天会话可通过 Claude 浏览器扩展打开标签页、点击、输入、读取页面并查看控制台。",
+      "checking": "正在检查浏览器集成…",
+      "connected": "已连接 — Claude 可以控制 {browser}。",
+      "readyDisabled": "在 {browser} 中检测到扩展。开启后 Claude 即可使用。",
+      "extensionMissing": "尚未安装 Claude 浏览器扩展。",
+      "installExtension": "安装",
+      "unsupported": "当前平台不支持浏览器控制。",
+      "cliMissing": "缺少随应用附带的 Claude Code 二进制文件，无法启动浏览器控制。",
+      "hostFailed": "无法注册浏览器连接器，未找到受支持的浏览器。",
+      "toggleError": "更新浏览器集成失败。"
+    },
     "advanced": "高级",
     "restoreTerminalSessions": "记住最后的终端状态",
     "restoreTerminalSessionsDesc": "启动时从上一个会话恢复终端选项卡和 Claude 会话",
@@ -1742,6 +1756,8 @@
     "initializingRuntime": "正在搜索运行时...",
     "interrupted": "被打断",
     "permissionWaitingSince": "等待{seconds}",
+    "permissionExpired": "已过期：5 分钟内未响应",
+    "permissionAnsweredElsewhere": "已在其他位置响应",
     "permissionNotification": "{tool} 的权限请求正在等待您的回复",
     "resuming": "继续谈话...",
     "conversationResumed": "谈话继续",
@@ -3791,6 +3807,7 @@
     "emptyHint": "尚未保存账户。打开终端，运行“claude /login”，然后单击“保存当前账户”。",
     "limitReached": "活动账户已达到使用限制。",
     "switched": "账号已切换。正在恢复…",
+    "switchedNoResume": "账号已切换。无法恢复之前的对话 — 将在缺少其上下文的情况下继续。",
     "removeConfirm": "删除这个已保存的账户吗？凭据将从本地存储中删除。",
     "switchError": "切换账号失败",
     "renameError": "账户重命名失败",
@@ -3815,7 +3832,11 @@
     "switchWhileRunning": "该项目已有 {count} 个会话在运行，它们将保留当前账户。更改仅对之后启动的会话生效。是否继续？",
     "colorNone": "无颜色",
     "chooseForProjectTitle": "Claude 账户",
-    "chooseForProject": "{project} 使用哪个账户运行？之后可从其标签页更改。"
+    "chooseForProject": "{project} 使用哪个账户运行？之后可从其标签页更改。",
+    "usageLoading": "正在读取用量…",
+    "usageUnavailable": "无法获取用量 — 请对该账号运行 \"claude /login\"",
+    "usageStale": "API 无法确认这些数据",
+    "usageRefresh": "刷新用量"
   },
   "usage": {
     "stale": "使用情况数据可能已过时 - 上次刷新失败。 {error}"

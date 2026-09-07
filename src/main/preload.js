@@ -569,6 +569,7 @@ contextBridge.exposeInMainWorld('electron_api', {
   // ==================== ACCOUNTS (multi Claude OAuth) ====================
   accounts: {
     list: () => ipcRenderer.invoke('accounts-list'),
+    usage: (maxAgeMs) => ipcRenderer.invoke('accounts-usage', { maxAgeMs }),
     capture: (name) => ipcRenderer.invoke('accounts-capture', { name }),
     switch: (id) => ipcRenderer.invoke('accounts-switch', { id }),
     setDefault: (id) => ipcRenderer.invoke('accounts-set-default', { id }),
@@ -580,12 +581,20 @@ contextBridge.exposeInMainWorld('electron_api', {
   },
 
   // ==================== CHAT (Agent SDK) ====================
+  // Claude in Chrome: drive the user's browser through the official extension.
+  chrome: {
+    status: (params) => ipcRenderer.invoke('chrome-status', params || {}),
+    installHost: () => ipcRenderer.invoke('chrome-install-host'),
+    removeHost: () => ipcRenderer.invoke('chrome-remove-host'),
+    openStore: () => ipcRenderer.invoke('chrome-open-store')
+  },
+
   chat: {
     start: (params) => ipcRenderer.invoke('chat-start', params),
     send: (params) => ipcRenderer.invoke('chat-send', params),
     close: (params) => ipcRenderer.send('chat-close', params),
     interrupt: (params) => ipcRenderer.send('chat-interrupt', params),
-    respondPermission: (params) => ipcRenderer.send('chat-permission-response', params),
+    respondPermission: (params) => ipcRenderer.invoke('chat-permission-response', params),
     alwaysAllow: (params) => ipcRenderer.send('chat-always-allow', params),
     setModel: (params) => ipcRenderer.invoke('chat-set-model', params),
     setEffort: (params) => ipcRenderer.invoke('chat-set-effort', params),
@@ -598,6 +607,7 @@ contextBridge.exposeInMainWorld('electron_api', {
     onIdle: createListener('chat-idle'),
     onInitializing: createListener('chat-initializing'),
     onPermissionRequest: createListener('chat-permission-request'),
+    onPermissionResolved: createListener('chat-permission-resolved'),
     onForkRejected: createListener('chat-fork-rejected'),
     generateTabName: (params) => ipcRenderer.invoke('chat-generate-tab-name', params),
     loadHistory: (params) => ipcRenderer.invoke('chat-load-history', params),
