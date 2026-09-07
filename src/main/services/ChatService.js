@@ -1219,7 +1219,9 @@ class ChatService {
 
   /**
    * Get a detailed breakdown of context window usage (SDK 0.2.86+).
-   * Returns { total, breakdown: { system, conversation, tools, ... }, limit, percent }
+   * Passed through as the SDK returns it:
+   * { categories: [{ name, tokens, color, isDeferred }], totalTokens, maxTokens,
+   *   rawMaxTokens, percentage, model, memoryFiles, mcpTools, ... }
    * or null if unavailable for this session.
    */
   async getContextUsage(sessionId) {
