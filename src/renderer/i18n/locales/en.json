@@ -109,6 +109,10 @@
     "closeProjectTitle": "Close {name}?",
     "closeProjectMessage": "This project has {count} open session(s). Closing its tab ends them.",
     "closeProjectConfirm": "Close and end sessions",
+    "closeProjectMessageEmpty": "Its tab will be closed. The project itself is not deleted.",
+    "closeOthersTitle": "Close {count} other project(s)?",
+    "closeOthersMessage": "Their tabs will be closed and {count} running session(s) ended.",
+    "closeOthersMessageEmpty": "Their tabs will be closed. The projects themselves are not deleted.",
     "moreActions": "More actions"
   },
   "terminals": {
@@ -1752,6 +1756,8 @@
     "initializingRuntime": "Searching for runtime...",
     "interrupted": "Interrupted",
     "permissionWaitingSince": "Waiting for {seconds}s",
+    "permissionExpired": "Expired: no answer within 5 minutes",
+    "permissionAnsweredElsewhere": "Answered elsewhere",
     "permissionNotification": "A permission request for {tool} is waiting for your response",
     "resuming": "Resuming conversation...",
     "conversationResumed": "Conversation resumed",
@@ -2461,6 +2467,8 @@
     "closeOthers": "Close Others",
     "closeToLeft": "Close Tabs to Left",
     "closeToRight": "Close Tabs to Right",
+    "closeTabTitle": "Close {name}?",
+    "closeTabMessage": "This tab will be closed. Any session running in it ends.",
     "closeAll": "Close All"
   },
   "telemetry": {
@@ -3783,6 +3791,7 @@
     "emptyHint": "No saved accounts yet. Open a terminal, run \"claude /login\", then click \"Save current account\".",
     "limitReached": "Usage limit reached on the active account.",
     "switched": "Account switched. Resuming…",
+    "switchedNoResume": "Account switched. The previous conversation could not be resumed — continuing without its context.",
     "removeConfirm": "Remove this saved account? The credentials will be deleted from local storage.",
     "switchError": "Failed to switch account",
     "renameError": "Failed to rename account",
@@ -3807,7 +3816,11 @@
     "switchWhileRunning": "{count} session(s) are already running for this project and keep their current account. The change applies to sessions started from now on. Continue?",
     "colorNone": "No colour",
     "chooseForProjectTitle": "Claude account",
-    "chooseForProject": "Which account should {project} run as? You can change this later from its tab."
+    "chooseForProject": "Which account should {project} run as? You can change this later from its tab.",
+    "usageLoading": "Reading usage…",
+    "usageUnavailable": "Usage unavailable — run \"claude /login\" on this account",
+    "usageStale": "The API could not confirm these figures",
+    "usageRefresh": "Refresh usage"
   },
   "usage": {
     "stale": "Usage data may be out of date - the last refresh failed. {error}"

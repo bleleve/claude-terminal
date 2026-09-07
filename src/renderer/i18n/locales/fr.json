@@ -109,6 +109,10 @@
     "closeProjectTitle": "Fermer {name} ?",
     "closeProjectMessage": "Ce projet a {count} session(s) ouverte(s). Fermer son onglet y met fin.",
     "closeProjectConfirm": "Fermer et terminer les sessions",
+    "closeProjectMessageEmpty": "Son onglet va être fermé. Le projet lui-même n'est pas supprimé.",
+    "closeOthersTitle": "Fermer {count} autre(s) projet(s) ?",
+    "closeOthersMessage": "Leurs onglets vont être fermés et {count} session(s) en cours terminée(s).",
+    "closeOthersMessageEmpty": "Leurs onglets vont être fermés. Les projets eux-mêmes ne sont pas supprimés.",
     "moreActions": "Plus d'actions"
   },
   "terminals": {
@@ -1752,6 +1756,8 @@
     "initializingRuntime": "Recherche du runtime...",
     "interrupted": "Interrompu",
     "permissionWaitingSince": "En attente depuis {seconds}s",
+    "permissionExpired": "Expirée : aucune réponse en 5 minutes",
+    "permissionAnsweredElsewhere": "Répondue ailleurs",
     "permissionNotification": "Une permission pour {tool} attend votre réponse",
     "resuming": "Reprise de la conversation...",
     "conversationResumed": "Conversation reprise",
@@ -2461,6 +2467,8 @@
     "closeOthers": "Fermer les autres",
     "closeToLeft": "Fermer les onglets à gauche",
     "closeToRight": "Fermer les onglets à droite",
+    "closeTabTitle": "Fermer {name} ?",
+    "closeTabMessage": "Cet onglet va être fermé. Toute session en cours y sera terminée.",
     "closeAll": "Tout fermer"
   },
   "telemetry": {
@@ -3783,6 +3791,7 @@
     "emptyHint": "Aucun compte enregistré. Ouvrez un terminal, lancez \"claude /login\", puis cliquez sur \"Sauvegarder le compte actuel\".",
     "limitReached": "Limite d'usage atteinte sur le compte actif.",
     "switched": "Compte changé. Reprise…",
+    "switchedNoResume": "Compte changé. La conversation précédente n'a pas pu être reprise — la suite se fera sans son contexte.",
     "removeConfirm": "Supprimer ce compte enregistré ? Les identifiants seront effacés du stockage local.",
     "switchError": "Impossible de changer de compte",
     "renameError": "Impossible de renommer le compte",
@@ -3807,7 +3816,11 @@
     "switchWhileRunning": "{count} session(s) tournent déjà pour ce projet et gardent leur compte actuel. Le changement s’appliquera aux sessions démarrées ensuite. Continuer ?",
     "colorNone": "Aucune couleur",
     "chooseForProjectTitle": "Compte Claude",
-    "chooseForProject": "Sur quel compte {project} doit-il tourner ? Modifiable ensuite depuis son onglet."
+    "chooseForProject": "Sur quel compte {project} doit-il tourner ? Modifiable ensuite depuis son onglet.",
+    "usageLoading": "Lecture de la consommation…",
+    "usageUnavailable": "Consommation indisponible — lancez « claude /login » sur ce compte",
+    "usageStale": "L'API n'a pas pu confirmer ces chiffres",
+    "usageRefresh": "Actualiser la consommation"
   },
   "usage": {
     "stale": "Données d'usage peut-être obsolètes - la dernière actualisation a échoué. {error}"

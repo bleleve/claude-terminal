@@ -2850,31 +2850,59 @@ function selectProjectFromBar(projectIndex) {
   applyProjectContext(projectIndex);
 }
 
+// A project close-confirmation dialog is up; further × clicks are ignored.
+let _closeProjectConfirmOpen = false;
+
 /**
- * Close a project tab. Sessions belong to the project, so a tab with live
- * terminals asks first rather than silently killing running Claude sessions.
+ * Terminals belonging to a project, worktree tabs included.
  * @param {Object} project
+ * @returns {string[]} Terminal ids
  */
-async function closeProjectFromBar(project) {
-  const projectIndex = getProjectIndex(project.id);
-  const openTerminalIds = [];
+function openTerminalIdsForProject(project) {
+  const ids = [];
   terminalsState.get().terminals.forEach((termData, id) => {
     if (termData.project && (termData.project.path === project.path ||
       (termData.parentProjectId && termData.parentProjectId === project.id))) {
-      openTerminalIds.push(id);
+      ids.push(id);
     }
   });
+  return ids;
+}
 
-  if (openTerminalIds.length > 0) {
-    const confirmed = await ModalComponent.showConfirm({
-      title: t('projects.closeProjectTitle', { name: project.name }),
-      message: t('projects.closeProjectMessage', { count: openTerminalIds.length }),
-      confirmLabel: t('projects.closeProjectConfirm'),
-      danger: true,
-    });
+/**
+ * Close a project tab. Closing is never silent: sessions belong to the
+ * project, so the tab always asks first rather than dropping live Claude
+ * sessions on a stray click.
+ * @param {Object} project
+ * @param {Object} [options]
+ * @param {boolean} [options.skipConfirm] - Caller already asked (bulk close)
+ */
+async function closeProjectFromBar(project, { skipConfirm = false } = {}) {
+  const openTerminalIds = openTerminalIdsForProject(project);
+
+  if (!skipConfirm) {
+    // The dialog is modal: a × click on another project tab while it is up
+    // would stack a second overlay that Escape/Enter answers at the same time.
+    if (_closeProjectConfirmOpen) return;
+    const hasSessions = openTerminalIds.length > 0;
+    _closeProjectConfirmOpen = true;
+    let confirmed = false;
+    try {
+      confirmed = await ModalComponent.showConfirm({
+        title: t('projects.closeProjectTitle', { name: project.name }),
+        message: hasSessions
+          ? t('projects.closeProjectMessage', { count: openTerminalIds.length })
+          : t('projects.closeProjectMessageEmpty'),
+        confirmLabel: hasSessions ? t('projects.closeProjectConfirm') : t('projects.closeProject'),
+        danger: true,
+      });
+    } finally {
+      _closeProjectConfirmOpen = false;
+    }
     if (!confirmed) return;
-    openTerminalIds.forEach(id => TerminalManager.closeTerminal(id));
   }
+
+  openTerminalIds.forEach(id => TerminalManager.closeTerminal(id));
 
   const nextIndex = closeProjectTab(project.id);
   TerminalManager.filterByProject(nextIndex);
@@ -3119,8 +3147,22 @@ function showProjectTabContextMenu(project, x, y) {
       if (action === "close") {
         await closeProjectFromBar(project);
       } else if (action === "close-others") {
-        for (const other of getOpenProjects()) {
-          if (other.id !== project.id) await closeProjectFromBar(other);
+        // One prompt for the batch: asking per project would put N dialogs in
+        // front of a single decision.
+        const others = getOpenProjects().filter(other => other.id !== project.id);
+        if (others.length === 0) return;
+        const sessionCount = others.reduce((n, other) => n + openTerminalIdsForProject(other).length, 0);
+        const confirmed = await ModalComponent.showConfirm({
+          title: t("projects.closeOthersTitle", { count: others.length }),
+          message: sessionCount > 0
+            ? t("projects.closeOthersMessage", { count: sessionCount })
+            : t("projects.closeOthersMessageEmpty"),
+          confirmLabel: t("projects.closeOtherProjects"),
+          danger: true,
+        });
+        if (!confirmed) return;
+        for (const other of others) {
+          await closeProjectFromBar(other, { skipConfirm: true });
         }
       }
     },
@@ -3756,7 +3798,11 @@ document.querySelectorAll('.nav-tab[data-tab]').forEach(tab => {
 // ========== PINNED TABS SYSTEM ==========
 // Canonical order — must mirror the grouping in index.html, since the groups
 // carry meaning (whether the project tab drives the screen).
-const _ALL_TABS_ORDER = ['claude', 'artifacts', 'dashboard', 'files', 'git', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
+// 'artifacts' is deliberately absent: its nav button is commented out in
+// index.html because the screen cannot be populated (see the note there). Both
+// the customize modal and the More dropdown are built from this list, so
+// leaving it in would offer a tab that no longer exists in the DOM.
+const _ALL_TABS_ORDER = ['claude', 'dashboard', 'files', 'git', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
 
 
 

@@ -109,6 +109,10 @@
     "closeProjectTitle": "Tutup {name}?",
     "closeProjectMessage": "Proyek ini memiliki {count} sesi terbuka. Menutup tabnya akan mengakhirinya.",
     "closeProjectConfirm": "Tutup dan akhiri sesi",
+    "closeProjectMessageEmpty": "Tabnya akan ditutup. Proyeknya sendiri tidak dihapus.",
+    "closeOthersTitle": "Tutup {count} proyek lainnya?",
+    "closeOthersMessage": "Tab mereka akan ditutup dan {count} sesi yang berjalan akan diakhiri.",
+    "closeOthersMessageEmpty": "Tab mereka akan ditutup. Proyeknya sendiri tidak dihapus.",
     "moreActions": "Aksi lainnya"
   },
   "terminals": {
@@ -1752,6 +1756,8 @@
     "initializingRuntime": "Mencari runtime...",
     "interrupted": "Terhenti",
     "permissionWaitingSince": "Menunggu {seconds} detik",
+    "permissionExpired": "Kedaluwarsa: tidak ada jawaban dalam 5 menit",
+    "permissionAnsweredElsewhere": "Dijawab di tempat lain",
     "permissionNotification": "Permintaan izin untuk {tool} sedang menunggu jawaban Anda",
     "resuming": "Melanjutkan percakapan...",
     "conversationResumed": "Percakapan dilanjutkan",
@@ -2461,6 +2467,8 @@
     "closeOthers": "Tutup Tab Lain",
     "closeToLeft": "Tutup Tab di Sebelah Kiri",
     "closeToRight": "Tutup Tab di Sebelah Kanan",
+    "closeTabTitle": "Tutup {name}?",
+    "closeTabMessage": "Tab ini akan ditutup. Sesi apa pun yang berjalan di dalamnya akan berakhir.",
     "closeAll": "Tutup Semua"
   },
   "telemetry": {
@@ -3783,6 +3791,7 @@
     "emptyHint": "Belum ada akun tersimpan. Buka terminal, jalankan \"claude /login\", lalu klik \"Simpan akun saat ini\".",
     "limitReached": "Batas penggunaan tercapai pada akun yang aktif.",
     "switched": "Akun diganti. Melanjutkan…",
+    "switchedNoResume": "Akun diganti. Percakapan sebelumnya tidak bisa dilanjutkan — dilanjutkan tanpa konteksnya.",
     "removeConfirm": "Hapus akun tersimpan ini? Kredensialnya akan dihapus dari penyimpanan lokal.",
     "switchError": "Gagal mengganti akun",
     "renameError": "Gagal mengganti nama akun",
@@ -3807,7 +3816,11 @@
     "switchWhileRunning": "{count} sesi sudah berjalan untuk proyek ini dan tetap memakai akunnya. Perubahan berlaku untuk sesi berikutnya. Lanjutkan?",
     "colorNone": "Tanpa warna",
     "chooseForProjectTitle": "Akun Claude",
-    "chooseForProject": "Akun mana yang dipakai {project}? Bisa diubah nanti dari tabnya."
+    "chooseForProject": "Akun mana yang dipakai {project}? Bisa diubah nanti dari tabnya.",
+    "usageLoading": "Membaca penggunaan…",
+    "usageUnavailable": "Penggunaan tidak tersedia — jalankan \"claude /login\" pada akun ini",
+    "usageStale": "API tidak dapat memastikan angka ini",
+    "usageRefresh": "Segarkan penggunaan"
   },
   "usage": {
     "stale": "Data penggunaan mungkin sudah tidak terbaru - pemuatan terakhir gagal. {error}"

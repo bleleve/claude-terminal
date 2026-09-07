@@ -109,6 +109,10 @@
     "closeProjectTitle": "¿Cerrar {name}?",
     "closeProjectMessage": "Este proyecto tiene {count} sesión(es) abierta(s). Cerrar su pestaña las finaliza.",
     "closeProjectConfirm": "Cerrar y finalizar sesiones",
+    "closeProjectMessageEmpty": "Se cerrará su pestaña. El proyecto en sí no se elimina.",
+    "closeOthersTitle": "¿Cerrar {count} proyecto(s) más?",
+    "closeOthersMessage": "Se cerrarán sus pestañas y finalizarán {count} sesión(es) en curso.",
+    "closeOthersMessageEmpty": "Se cerrarán sus pestañas. Los proyectos en sí no se eliminan.",
     "moreActions": "Más acciones"
   },
   "terminals": {
@@ -1834,6 +1838,8 @@
     "initializingRuntime": "Buscando el runtime...",
     "interrupted": "Interrumpido",
     "permissionWaitingSince": "Esperando desde hace {seconds}s",
+    "permissionExpired": "Expirada: sin respuesta en 5 minutos",
+    "permissionAnsweredElsewhere": "Respondida en otro lugar",
     "permissionNotification": "Un permiso para {tool} espera tu respuesta",
     "denyFeedbackPlaceholder": "Explica por qué (opcional)...",
     "sendFeedback": "Denegar con comentario",
@@ -2458,6 +2464,8 @@
     "closeOthers": "Cerrar las demás",
     "closeToLeft": "Cerrar pestañas a la izquierda",
     "closeToRight": "Cerrar pestañas a la derecha",
+    "closeTabTitle": "¿Cerrar {name}?",
+    "closeTabMessage": "Se cerrará esta pestaña. Cualquier sesión en curso finalizará.",
     "closeAll": "Cerrar todo"
   },
   "telemetry": {
@@ -3783,6 +3791,7 @@
     "emptyHint": "Aún no hay cuentas guardadas. Abre un terminal, ejecuta \"claude /login\", luego haz clic en \"Guardar la cuenta actual\".",
     "limitReached": "Límite de uso alcanzado en la cuenta activa.",
     "switched": "Cuenta cambiada. Reanudando…",
+    "switchedNoResume": "Cuenta cambiada. No se pudo reanudar la conversación anterior — se continúa sin su contexto.",
     "removeConfirm": "¿Eliminar esta cuenta guardada? Las credenciales se borrarán del almacenamiento local.",
     "switchError": "No se pudo cambiar de cuenta",
     "renameError": "No se pudo renombrar la cuenta",
@@ -3807,7 +3816,11 @@
     "switchWhileRunning": "{count} sesión(es) ya están en curso para este proyecto y conservan su cuenta actual. El cambio se aplicará a las sesiones que inicies después. ¿Continuar?",
     "colorNone": "Sin color",
     "chooseForProjectTitle": "Cuenta de Claude",
-    "chooseForProject": "¿Con qué cuenta debe ejecutarse {project}? Puedes cambiarlo luego desde su pestaña."
+    "chooseForProject": "¿Con qué cuenta debe ejecutarse {project}? Puedes cambiarlo luego desde su pestaña.",
+    "usageLoading": "Leyendo el uso…",
+    "usageUnavailable": "Uso no disponible: ejecuta «claude /login» en esta cuenta",
+    "usageStale": "La API no pudo confirmar estas cifras",
+    "usageRefresh": "Actualizar el uso"
   },
   "usage": {
     "stale": "Datos de uso posiblemente desactualizados - la última actualización falló. {error}"

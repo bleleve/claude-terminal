@@ -109,6 +109,10 @@
     "closeProjectTitle": "关闭 {name}？",
     "closeProjectMessage": "该项目有 {count} 个打开的会话。关闭其标签页将结束这些会话。",
     "closeProjectConfirm": "关闭并结束会话",
+    "closeProjectMessageEmpty": "其标签页将被关闭。项目本身不会被删除。",
+    "closeOthersTitle": "关闭其他 {count} 个项目？",
+    "closeOthersMessage": "它们的标签页将被关闭，并结束 {count} 个正在运行的会话。",
+    "closeOthersMessageEmpty": "它们的标签页将被关闭。项目本身不会被删除。",
     "moreActions": "更多操作"
   },
   "terminals": {
@@ -1752,6 +1756,8 @@
     "initializingRuntime": "正在搜索运行时...",
     "interrupted": "被打断",
     "permissionWaitingSince": "等待{seconds}",
+    "permissionExpired": "已过期：5 分钟内未响应",
+    "permissionAnsweredElsewhere": "已在其他位置响应",
     "permissionNotification": "{tool} 的权限请求正在等待您的回复",
     "resuming": "继续谈话...",
     "conversationResumed": "谈话继续",
@@ -2461,6 +2467,8 @@
     "closeOthers": "关闭其他",
     "closeToLeft": "关闭左侧选项卡",
     "closeToRight": "关闭右侧选项卡",
+    "closeTabTitle": "关闭 {name}？",
+    "closeTabMessage": "此标签页将被关闭，其中正在运行的会话也会结束。",
     "closeAll": "关闭全部"
   },
   "telemetry": {
@@ -3783,6 +3791,7 @@
     "emptyHint": "尚未保存账户。打开终端，运行“claude /login”，然后单击“保存当前账户”。",
     "limitReached": "活动账户已达到使用限制。",
     "switched": "账号已切换。正在恢复…",
+    "switchedNoResume": "账号已切换。无法恢复之前的对话 — 将在缺少其上下文的情况下继续。",
     "removeConfirm": "删除这个已保存的账户吗？凭据将从本地存储中删除。",
     "switchError": "切换账号失败",
     "renameError": "账户重命名失败",
@@ -3807,7 +3816,11 @@
     "switchWhileRunning": "该项目已有 {count} 个会话在运行，它们将保留当前账户。更改仅对之后启动的会话生效。是否继续？",
     "colorNone": "无颜色",
     "chooseForProjectTitle": "Claude 账户",
-    "chooseForProject": "{project} 使用哪个账户运行？之后可从其标签页更改。"
+    "chooseForProject": "{project} 使用哪个账户运行？之后可从其标签页更改。",
+    "usageLoading": "正在读取用量…",
+    "usageUnavailable": "无法获取用量 — 请对该账号运行 \"claude /login\"",
+    "usageStale": "API 无法确认这些数据",
+    "usageRefresh": "刷新用量"
   },
   "usage": {
     "stale": "使用情况数据可能已过时 - 上次刷新失败。 {error}"
