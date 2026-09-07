@@ -270,7 +270,7 @@ Base class `State.js`: observable, `subscribe()`, batched notifications via `req
 | `KanbanPanel` | Kanban board (tasks by column) |
 | `CloudPanel` | Cloud sync with per-entity toggles, project upload/download, diff modal |
 | `ConnectivityPanel` | Unified local remote + cloud connectivity status (Local / Cloud / claude.ai sub-tabs) |
-| `ClaudeRemotePanel` | Claude Remote Control settings: mirroring, remote driving, `--rc` for terminal tabs |
+| `ClaudeRemotePanel` | Claude Remote Control master switch and preferences (remote driving, `--rc` for terminal tabs). Sharing itself is per conversation, from the chat footer |
 
 ### Features (`src/renderer/features/`)
 
@@ -483,7 +483,7 @@ OS credential store (via keytar)       # GitHub token (Windows Credential Manage
 - **Persistence:** atomic writes (temp + rename), `.bak` backup files, corruption recovery
 - **Updates:** generic provider, 30 min periodic checks, differential packages
 - **Remote control (local):** WS server with PIN auth, QR code, PWA in `remote-ui/`
-- **Remote Control (claude.ai):** opt-in (`claudeRemoteControlEnabled`). Attaches each chat session to `@anthropic-ai/claude-agent-sdk/bridge` so it appears at claude.ai/code and in the Claude mobile app. The bridge export is ESM-only and `@alpha` — loaded through `src/main/utils/claudeBridge.js`, which resolves it out of `app.asar.unpacked` and feature-detects every function it uses. `claudeRemoteControlDrive` decides between a read-only mirror (`outboundOnly`) and full driving; `claudeRemoteControlTerminals` adds `--rc` to the CLI in terminal tabs. Honours the managed-settings `disableRemoteControl` kill switch
+- **Remote Control (claude.ai):** decided per conversation, never globally. `claudeRemoteControlEnabled` only says the feature may be used; a session reaches claude.ai when the user asks for it in that tab, via the footer button or the local `/remote-control` command (`enableForSession` / `disableForSession`). Nothing is backfilled: claude.ai joins from the moment it is enabled. Attaches the session to `@anthropic-ai/claude-agent-sdk/bridge` so it appears at claude.ai/code and in the Claude mobile app. The bridge export is ESM-only and `@alpha` — loaded through `src/main/utils/claudeBridge.js`, which resolves it out of `app.asar.unpacked` and feature-detects every function it uses. `claudeRemoteControlDrive` decides between a read-only mirror (`outboundOnly`) and full driving; `claudeRemoteControlTerminals` adds `--rc` to the CLI in terminal tabs. Honours the managed-settings `disableRemoteControl` kill switch
 - **Cloud sync:** self-hosted Docker relay, per-entity toggles, file watcher, conflict diff modal
 - **Claude in Chrome:** opt-in (`chromeBridgeEnabled`). Adds the `claude-in-chrome` MCP server — 22 browser tools — to chat sessions by spawning the bundled SDK binary with `--claude-in-chrome-mcp`; Chrome reaches it through a native messaging host manifest whose name (`com.anthropic.claude_code_browser_extension`) is fixed by the extension and therefore shared with Claude Code, so an existing working manifest is adopted, never overwritten
 - **Parallel tasks:** git worktrees per sub-task, AI merge agent, persisted run state

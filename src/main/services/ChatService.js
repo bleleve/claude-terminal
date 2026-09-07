@@ -852,23 +852,6 @@ class ChatService {
 
       this._emitLifecycle('start', sessionId, { projectId, cwd });
 
-      // Claude Remote Control: mirror the session to claude.ai when the user
-      // opted in. Deliberately not awaited — attaching costs two HTTP round
-      // trips, and none of them is a reason to make a local session slower to
-      // start or able to fail.
-      //
-      // Internal sessions are skipped: a workflow agent step registers an
-      // interceptor, runs unattended and belongs to machinery the user never
-      // started, so mirroring it would only clutter their claude.ai session list.
-      if (!this._sessionInterceptors?.has(sessionId)) {
-        remoteControlService.onSessionStarted(sessionId, {
-          cwd: effectiveCwd, projectId, accountId, model,
-          // The opening prompt is relayed as `chat-user-message` far earlier in
-          // this method, before the mirror exists to hear it, so it is handed
-          // over explicitly instead.
-          initialPrompt: prompt,
-        });
-      }
       // Free catalog refresh: the SDK caches the init handshake, so reading it
       // here costs no extra round trip. Detached on purpose — a model list is
       // never worth delaying or failing a session start over.
