@@ -2215,6 +2215,7 @@
     "notAllowed": "Kontrol Jarak Jauh dimatikan.",
     "notAllowedHint": "Izinkan di Pengaturan → Claude → Kontrol Jarak Jauh.",
     "goToTab": "Ke tab",
+    "tabGone": "Tab itu sudah tidak terbuka.",
     "stopSharing": "Hentikan",
     "stateRunning": "Bekerja",
     "stateIdle": "Diam",
