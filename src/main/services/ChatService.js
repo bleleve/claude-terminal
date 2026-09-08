@@ -905,6 +905,13 @@ class ChatService {
     }
 
     try {
+      // Held until the turn it opens reports a result. A spend cap raised
+      // in-band leaves the session alive, so this message can be typed while
+      // the account-switch offer is up and be waiting in the queue — or be
+      // mid-flight — when the switch aborts the process. Nothing has reached
+      // the transcript at that point, so resuming brings back everything
+      // except this; prepareSwitchAccount hands it back to be sent again.
+      session.pendingUserMessage = { text, images, mentions, userMessageUuid: userMessageUuid || null };
       session.messageQueue.push({
         type: 'user',
         message: { role: 'user', content: this._buildContent(text, images, mentions) },
@@ -1607,6 +1614,10 @@ class ChatService {
             pendingAccountLimit = text;
           }
         } else if (message.type === 'result') {
+          // The turn closed, so the message that opened it is on disk and in
+          // the transcript — an error result included, since the renderer
+          // showed it. Only an unanswered message is worth sending again.
+          if (session) session.pendingUserMessage = null;
           if (message.is_error || message.subtype !== 'success') {
             const errors = Array.isArray(message.errors) ? message.errors.filter(Boolean) : [];
             inbandError = errors.join('\n')
@@ -1742,6 +1753,11 @@ class ChatService {
       cwd: session.cwd || null,
       projectId: session.projectId || null,
       accountId: session.accountId || null,
+      // A message still waiting on its turn: closeSession is about to abort
+      // the process out from under it, and the resume that follows only
+      // brings back what the CLI wrote down. Handed to the caller so the
+      // restart can send it rather than let it disappear with the account.
+      pendingUserMessage: session.pendingUserMessage || null,
     } : null;
     this.closeSession(sessionId);
     return ctx;
