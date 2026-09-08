@@ -1106,9 +1106,9 @@
     "separatorAllProjects": "Semua proyek",
     "separatorCapabilities": "Kemampuan",
     "separatorSystem": "Sistem",
-    "tooltipArtifacts": "Artefak yang diterbitkan ke claude.ai dari proyek ini",
     "tabFiles": "Berkas",
     "tooltipFiles": "Berkas",
+    "tooltipArtifacts": "Artefak yang diterbitkan ke claude.ai dari proyek ini",
     "tooltipBackgroundTasks": "Tugas latar belakang"
   },
   "memory": {
@@ -1801,6 +1801,7 @@
     "slashReview": "Tinjau sebuah pull request",
     "attachFile": "Lampirkan file",
     "attachUnsupported": "{name} tidak dapat dilampirkan: format tidak didukung",
+    "attachSecret": "{name} tampak seperti berkas kredensial dan tidak dilampirkan",
     "attachTooLarge": "{name} terlalu besar untuk dilampirkan (maks {max})",
     "attachTooMany": "Maksimal {max} file per pesan",
     "attachReadFailed": "Tidak dapat membaca {name}",
@@ -3638,11 +3639,20 @@
     "running": "Berjalan",
     "finished": "Selesai",
     "noneRunning": "Tidak ada yang berjalan.",
+    "empty": "Belum ada tugas latar belakang.",
+    "clear": "Hapus",
     "typeAgent": "Agen",
     "typeShell": "Bash",
     "typeWorkflow": "Workflow",
     "typeMonitor": "Monitor",
-    "typeTask": "Tugas"
+    "typeTask": "Tugas",
+    "statusRunning": "Berjalan",
+    "statusCompleted": "Selesai",
+    "statusFailed": "Gagal",
+    "statusStopped": "Dihentikan",
+    "statusEnded": "Berakhir",
+    "sessionGroup": "Sesi",
+    "typeSession": "Sesi"
   },
   "kanban": {
     "tab": "Kanban",

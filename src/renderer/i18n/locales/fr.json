@@ -1201,9 +1201,9 @@
     "separatorAllProjects": "Tous les projets",
     "separatorCapabilities": "Capacités",
     "separatorSystem": "Système",
-    "tooltipArtifacts": "Artefacts publiés sur claude.ai depuis ce projet",
     "tabFiles": "Fichiers",
     "tooltipFiles": "Fichiers",
+    "tooltipArtifacts": "Artefacts publiés sur claude.ai depuis ce projet",
     "tooltipBackgroundTasks": "Tâches de fond"
   },
   "memory": {
@@ -1801,6 +1801,7 @@
     "slashReview": "Revoir une pull request",
     "attachFile": "Joindre un fichier",
     "attachUnsupported": "{name} ne peut pas être joint : format non supporté",
+    "attachSecret": "{name} ressemble à un fichier d'identifiants et n'a pas été joint",
     "attachTooLarge": "{name} est trop volumineux pour être joint (max {max})",
     "attachTooMany": "{max} fichiers au maximum par message",
     "attachReadFailed": "Impossible de lire {name}",
@@ -3638,11 +3639,20 @@
     "running": "En cours",
     "finished": "Terminé",
     "noneRunning": "Rien en cours.",
+    "empty": "Aucune tâche de fond pour l'instant.",
+    "clear": "Effacer",
     "typeAgent": "Agent",
     "typeShell": "Bash",
     "typeWorkflow": "Workflow",
     "typeMonitor": "Moniteur",
-    "typeTask": "Tâche"
+    "typeTask": "Tâche",
+    "statusRunning": "En cours",
+    "statusCompleted": "Terminé",
+    "statusFailed": "Échec",
+    "statusStopped": "Arrêté",
+    "statusEnded": "Terminé",
+    "sessionGroup": "Session",
+    "typeSession": "Session"
   },
   "kanban": {
     "tab": "Kanban",

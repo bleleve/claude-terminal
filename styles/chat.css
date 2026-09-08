@@ -3731,28 +3731,41 @@ hr.chat-plan-separator {
   margin-right: 4px;
 }
 
-/* The footer carries the model and the context gauge — the things you check
-   before spending a turn. It stays on the AA text ramp: hierarchy comes from
-   the ramp step, not from an opacity multiplier. */
+/* The footer carries the model, the context gauge and the running cost — the
+   things you check before spending a turn. It stays on the AA text ramp: no
+   opacity multiplier on top of the tokens, hierarchy comes from the ramp step. */
 .chat-status-text {
   font-size: var(--font-xs);
   color: var(--text-muted);
 }
 
-/* No opacity here: this is the popover's offset parent, and group opacity on
-   the parent would dim .chat-context-popover along with it. */
+/* No opacity on this element: it is the popover's offset parent, and group
+   opacity would dim .chat-context-popover along with it (see #109). The rested
+   dim lives on the ring SVG below, which the popover does not inherit. */
 .chat-status-tokens {
   position: relative;
   display: inline-flex;
   align-items: center;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
+  /* Group opacity stays off this element — it is the overlay's offset parent
+     (see the comment above); the rested dim lives on the ring. */
   outline: none;
   transition: color 0.15s;
+}
+
+.chat-status-tokens .chat-ctx-ring {
+  opacity: 0.4;
+  transition: opacity 0.15s;
 }
 
 .chat-status-tokens:hover,
 .chat-status-tokens:focus-visible {
   color: var(--text-primary);
+}
+
+.chat-status-tokens:hover .chat-ctx-ring,
+.chat-status-tokens:focus-visible .chat-ctx-ring {
+  opacity: 1;
 }
 
 /* ── Context gauge ──

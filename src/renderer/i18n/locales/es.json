@@ -1103,9 +1103,9 @@
     "separatorAllProjects": "Todos los proyectos",
     "separatorCapabilities": "Capacidades",
     "separatorSystem": "Sistema",
-    "tooltipArtifacts": "Artefactos publicados en claude.ai desde este proyecto",
     "tabFiles": "Archivos",
     "tooltipFiles": "Archivos",
+    "tooltipArtifacts": "Artefactos publicados en claude.ai desde este proyecto",
     "tooltipBackgroundTasks": "Tareas en segundo plano"
   },
   "memory": {
@@ -1791,6 +1791,7 @@
     "slashReview": "Revisar una pull request",
     "attachFile": "Adjuntar un archivo",
     "attachUnsupported": "{name} no se puede adjuntar: formato no admitido",
+    "attachSecret": "{name} parece un archivo de credenciales y no se adjuntó",
     "attachTooLarge": "{name} es demasiado grande para adjuntarlo (máx. {max})",
     "attachTooMany": "Como máximo {max} archivos por mensaje",
     "attachReadFailed": "No se pudo leer {name}",
@@ -3635,11 +3636,20 @@
     "running": "En curso",
     "finished": "Terminadas",
     "noneRunning": "Nada en curso.",
+    "empty": "Aún no hay tareas en segundo plano.",
+    "clear": "Borrar",
     "typeAgent": "Agente",
     "typeShell": "Bash",
     "typeWorkflow": "Workflow",
     "typeMonitor": "Monitor",
-    "typeTask": "Tarea"
+    "typeTask": "Tarea",
+    "statusRunning": "En curso",
+    "statusCompleted": "Completada",
+    "statusFailed": "Fallida",
+    "statusStopped": "Detenida",
+    "statusEnded": "Finalizada",
+    "sessionGroup": "Sesión",
+    "typeSession": "Sesión"
   },
   "kanban": {
     "tab": "Kanban",

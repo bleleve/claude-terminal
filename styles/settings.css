@@ -3112,6 +3112,7 @@
   color: var(--text-muted);
   padding: 2px 0;
 }
+
 /* ── Claude in Chrome status ──────────────────────────────────────────────── */
 
 .chrome-bridge-status {

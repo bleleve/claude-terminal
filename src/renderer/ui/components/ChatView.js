@@ -22,6 +22,7 @@ const {
   classifyFile,
   shouldInlineText,
   formatBytes,
+  acceptAttribute,
   MAX_IMAGE_BYTES,
   MAX_PDF_BYTES,
 } = require('../../utils/attachments');
@@ -149,8 +150,8 @@ const EFFORT_OPTIONS = [
 // ── Markdown Renderer (delegated to MarkdownRenderer service) ──
 
 const MarkdownRenderer = require('../../services/MarkdownRenderer');
-const ArtifactService = require('../../services/ArtifactService');
 const DiffRenderer = require('../../services/DiffRenderer');
+const ArtifactService = require('../../services/ArtifactService');
 
 function renderMarkdown(text) {
   return MarkdownRenderer.render(text);
@@ -581,7 +582,7 @@ class ChatView extends BaseComponent {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
           </button>
           <div class="chat-input" contenteditable="true" role="textbox" data-placeholder="${escapeHtml(t('chat.placeholder'))}" spellcheck="false"></div>
-          <input type="file" class="chat-file-input" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.markdown,.mdx,.txt,.csv,.tsv,.json,.jsonc,.yaml,.yml,.toml,.ini,.cfg,.conf,.env,.xml,.html,.css,.scss,.js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.rb,.go,.rs,.java,.kt,.c,.h,.cpp,.cs,.php,.swift,.sh,.bash,.ps1,.sql,.graphql,.proto,.lua,.log,.patch,.diff" multiple style="display:none" />
+          <input type="file" class="chat-file-input" accept="${acceptAttribute()}" multiple style="display:none" />
           <div class="chat-input-actions">
             <button class="chat-bg-btn" title="${escapeHtml(t('chat.runInBackground') || 'Run in background')}" style="display:none">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1020,10 +1021,11 @@ class ChatView extends BaseComponent {
   // The mirror can also end without the user touching it — a dead transport, a
   // switched account, the master switch going off — so the button follows the
   // service rather than only its own last click.
-  api.remoteControl?.onSessionStatus?.(({ sessionId: sid, mirrored, lastError }) => {
+  const unsubRemoteStatus = api.remoteControl?.onSessionStatus?.(({ sessionId: sid, mirrored, lastError }) => {
     if (!sid || sid !== sessionId) return;
     paintRemoteBtn(!!mirrored, lastError || null);
   });
+  if (unsubRemoteStatus) unsubscribers.push(unsubRemoteStatus);
 
   // ── Attach interactive markdown block handlers (sort, collapse, preview, etc.) ──
   // Delegation is per-container and postProcess() does not set it up, so every
@@ -1054,6 +1056,22 @@ class ChatView extends BaseComponent {
   const MAX_IMAGE_SIZE = MAX_IMAGE_BYTES;
   const MAX_PENDING_IMAGES = 5;
   const MAX_PENDING_DOCUMENTS = 5;
+  const MAX_PENDING_TEXTS = 10;
+  // What all inlined text files together may add to one turn. Ten files at the
+  // 128 KB per-file ceiling is 1.3 MB of context nobody asked to pay for, and
+  // a dropped folder reaches that without the user noticing they dropped one.
+  const MAX_TOTAL_INLINE_TEXT_BYTES = 512 * 1024;
+
+  // Reads are asynchronous, but addFiles() loops synchronously — so a cap
+  // tested against the landed count alone reads zero for every file of a
+  // batch: drop eight images and all eight pass the test, then five land and
+  // three vanish without a word. The reservation is taken in the loop and
+  // released when the read settles, so the count the cap sees is the count
+  // that will exist.
+  let inflightImages = 0;
+  let inflightDocuments = 0;
+  let inflightTexts = 0;
+  let inlinedTextBytes = 0;
 
   // ── Contenteditable helpers ──
 
@@ -2017,6 +2035,9 @@ class ChatView extends BaseComponent {
         case 'image': addImageFile(file); break;
         case 'pdf': addPdfFile(file); break;
         case 'text': addTextFile(file); break;
+        case 'secret':
+          attachmentToast(t('chat.attachSecret', { name: file.name }));
+          break;
         default:
           attachmentToast(t('chat.attachUnsupported', { name: file.name }));
       }
@@ -2024,7 +2045,7 @@ class ChatView extends BaseComponent {
   }
 
   function addImageFile(file) {
-    if (pendingImages.length >= MAX_PENDING_IMAGES) {
+    if (pendingImages.length + inflightImages >= MAX_PENDING_IMAGES) {
       attachmentToast(t('chat.attachTooMany', { max: MAX_PENDING_IMAGES }));
       return;
     }
@@ -2032,13 +2053,18 @@ class ChatView extends BaseComponent {
       attachmentToast(t('chat.attachTooLarge', { name: file.name, max: formatBytes(MAX_IMAGE_SIZE) }));
       return;
     }
+    inflightImages++;
     const reader = new FileReader();
     reader.onload = () => {
-      if (pendingImages.length >= MAX_PENDING_IMAGES) return;
+      inflightImages--;
       const dataUrl = reader.result;
       const base64 = dataUrl.split(',')[1];
       pendingImages.push({ base64, mediaType: file.type || 'image/png', name: file.name, dataUrl });
       renderImagePreview();
+    };
+    reader.onerror = () => {
+      inflightImages--;
+      attachmentToast(t('chat.attachReadFailed', { name: file.name }), 'error');
     };
     reader.readAsDataURL(file);
   }
@@ -2058,18 +2084,23 @@ class ChatView extends BaseComponent {
       }
       return;
     }
-    if (countPdfAttachments() >= MAX_PENDING_DOCUMENTS) {
+    if (countPdfAttachments() + inflightDocuments >= MAX_PENDING_DOCUMENTS) {
       attachmentToast(t('chat.attachTooMany', { max: MAX_PENDING_DOCUMENTS }));
       return;
     }
+    inflightDocuments++;
     const reader = new FileReader();
     reader.onload = () => {
-      if (countPdfAttachments() >= MAX_PENDING_DOCUMENTS) return;
+      inflightDocuments--;
       addAttachmentChip(file.name, {
         kind: 'pdf',
         name: file.name,
         base64: String(reader.result).split(',')[1],
       });
+    };
+    reader.onerror = () => {
+      inflightDocuments--;
+      attachmentToast(t('chat.attachReadFailed', { name: file.name }), 'error');
     };
     reader.readAsDataURL(file);
   }
@@ -2085,8 +2116,24 @@ class ChatView extends BaseComponent {
       addPathAttachment(file);
       return;
     }
+    // Images and PDFs were capped; text was not, so a dropped folder inlined
+    // every file in it. A file that would break either ceiling is handed over
+    // as a path when it has one — the agent's Read tool opens it on demand —
+    // and refused out loud when it does not.
+    const overBudget = inlinedTextBytes + file.size > MAX_TOTAL_INLINE_TEXT_BYTES;
+    if (countTextAttachments() + inflightTexts >= MAX_PENDING_TEXTS || overBudget) {
+      if (file.path) {
+        addPathAttachment(file);
+      } else {
+        attachmentToast(t('chat.attachTooMany', { max: MAX_PENDING_TEXTS }));
+      }
+      return;
+    }
+    inflightTexts++;
+    inlinedTextBytes += file.size;
     const reader = new FileReader();
     reader.onload = () => {
+      inflightTexts--;
       addAttachmentChip(file.name, {
         kind: 'text',
         name: file.name,
@@ -2095,6 +2142,8 @@ class ChatView extends BaseComponent {
       });
     };
     reader.onerror = () => {
+      inflightTexts--;
+      inlinedTextBytes -= file.size;
       attachmentToast(t('chat.attachReadFailed', { name: file.name }), 'error');
     };
     reader.readAsText(file);
@@ -3132,6 +3181,10 @@ class ChatView extends BaseComponent {
 
   function countPdfAttachments() {
     return pendingMentions.filter(m => m.type === 'attachment' && m.data?.kind === 'pdf').length;
+  }
+
+  function countTextAttachments() {
+    return pendingMentions.filter(m => m.type === 'attachment' && m.data?.kind === 'text').length;
   }
 
   function renderMentionChips() {
@@ -4944,8 +4997,8 @@ class ChatView extends BaseComponent {
   // assistant message, so count it by id.
   const recordedToolUseIds = new Set();
 
-  // Artifacts this session produced. Declared alongside the file tally because
-  // recordFileChange() feeds both, and both are session-scoped.
+  // Artifacts this session produced. Session-scoped like the tally below, and
+  // fed from the same recordFileChange() the tool stream already drives.
   const artifactRegistry = ArtifactService.createRegistry({
     project,
     getSessionId: () => sessionId,
@@ -4985,15 +5038,17 @@ class ChatView extends BaseComponent {
     capturePublishedArtifact(input, url);
   }
 
-  function recordFileChange(toolName, input, toolUseId) {
+  function recordFileChange(toolName, input, toolUseId = null) {
     if (!input || !toolName) return;
+    // A subagent tool_use arrives twice, once streamed and once in the full
+    // assistant message — the id keeps publishes and tallies counted once.
     if (toolUseId) {
       if (recordedToolUseIds.has(toolUseId)) return;
       recordedToolUseIds.add(toolUseId);
     }
 
     // The `Artifact` tool publishes an .html/.md file to claude.ai. Unlike every
-    // other document this one is explicit, so it is captured from the tool call
+    // other extract this one is explicit, so it is captured from the tool call
     // rather than inferred from the transcript — and deferred until the result
     // arrives, both to pick up the published URL and to skip failed publishes.
     if (ArtifactService.isArtifactPublish(toolName, input)) {
@@ -5002,7 +5057,7 @@ class ChatView extends BaseComponent {
       return;
     }
 
-    // A `Write` authors a complete file, which is a document in its own right.
+    // A `Write` authors a complete file, which is an artifact in its own right.
     // `Edit`/`MultiEdit` only amend an existing one — that is what the Changes
     // tab is for, and mirroring them here would just duplicate it.
     const fileArtifact = ArtifactService.fromFileTool(toolName, input);
@@ -6968,6 +7023,25 @@ class ChatView extends BaseComponent {
       .finally(() => { contextUsageBusy = false; });
   }
 
+  /**
+   * Ask the session for its own count of the window where the stream carries
+   * no figure of its own: a compact boundary without `post_tokens`. A frame
+   * that lands while the request is in flight describes a later state and
+   * wins — the ring only moves if nothing else has moved it meanwhile.
+   */
+  function refreshContextGaugeFromSession() {
+    if (!sessionId) return;
+    const before = inputTokens;
+    window.electron_api.chat.getContextUsage({ sessionId })
+      .then(result => {
+        const total = Number(result?.usage?.totalTokens);
+        if (!result?.success || !(total > 0) || inputTokens !== before) return;
+        inputTokens = total;
+        updateStatusInfo();
+      })
+      .catch(() => {});
+  }
+
   function hideContextBreakdown() {
     contextPopover.hidden = true;
   }
@@ -7097,11 +7171,16 @@ class ChatView extends BaseComponent {
           : t('chat.compactedSimple') || 'Conversation compacted';
         appendSystemNotice(notice, 'compact');
         // The window just emptied; without this the ring stays full until the
-        // next turn's first frame reports the new prefix.
-        const postTokens = message.compact_metadata?.post_tokens;
+        // next turn's first frame reports the new prefix. The boundary says
+        // what survived on CLIs new enough to report it. An older one says
+        // nothing, and a manual /compact ends the turn, so no frame would come
+        // along to bring the ring down — ask the session for its count instead.
+        const postTokens = contextTokensFromMessage(message);
         if (postTokens > 0) {
           inputTokens = postTokens;
           updateStatusInfo();
+        } else {
+          refreshContextGaugeFromSession();
         }
         setStreaming(false);
       } else if (message.subtype === 'task_started') {
@@ -7959,40 +8038,42 @@ class ChatView extends BaseComponent {
       // fork's truncation point goes too: it names a message of the session
       // being resumed, not of the fork that came out of it.
       //
-      // Whether the opening turn rides along depends on whether it survived
-      // anywhere. With a session to resume it is already on disk, and sending it
-      // again would post it twice. Without one it exists nowhere but the bubble
-      // on screen — a limit refused before the SDK's init message means no
-      // session file was ever written — so the restart has to carry it or the
-      // prompt dies with the account that refused it. Its uuid goes along to keep
-      // that bubble matching the message that finally gets recorded.
-      const replayOpeningTurn = !realSid;
-      // The same reasoning one turn later. A cap reported in-band leaves the
-      // session running, so a follow-up can be sent while the offer is on
-      // screen and still be unanswered when the switch aborts the process —
-      // and an unanswered message is one the CLI never recorded, so the
-      // resume comes back complete except for it. Main hands it over on the
-      // way out; it rides along whether or not there is a session to resume.
-      const queuedMessage = prep.context?.pendingUserMessage || null;
-      const replaySource = queuedMessage || (replayOpeningTurn ? lastStartOpts : null);
+      // Two different things can need re-sending, and only one of them applies
+      // at a time.
+      //
+      // Messages the CLI never wrote down. The offer leaves the composer
+      // usable, so a follow-up can be sent while it is on screen and still be
+      // waiting when the switch aborts the process. Main hands those back — and
+      // only those: anything the CLI acknowledged is in the transcript the
+      // resume brings back, so replaying it would post it twice.
+      //
+      // The opening turn, when there is no session to resume at all. A limit
+      // refused before the SDK's init message means no session file was ever
+      // written, so that turn exists nowhere but the bubble on screen.
+      //
+      // Their uuids ride along so the bubbles already on screen stay matched to
+      // the messages that finally get recorded.
+      const queued = prep.context?.pendingUserMessages || [];
+      const replayOpeningTurn = !realSid && queued.length === 0;
+      const first = queued[0] || (replayOpeningTurn ? lastStartOpts : null);
       const restartOpts = {
         ...lastStartOpts,
         accountId: newId,
-        prompt: (replaySource?.prompt ?? replaySource?.text) || '',
-        images: replaySource?.images || [],
-        mentions: replaySource?.mentions || [],
-        userMessageUuid: replaySource?.userMessageUuid || null,
+        prompt: first?.prompt ?? first?.text ?? '',
+        images: first?.images || [],
+        mentions: first?.mentions || [],
+        userMessageUuid: first?.userMessageUuid || null,
         forkSession: false,
         resumeSessionAt: null,
         resumeDropsTurn: null,
         resumeSessionId: realSid || null,
       };
-      // A turn that carried nothing leaves the restart with nothing to send:
-      // the session comes up idle, waiting for the user to type.
-      const replayed = Boolean(replaySource) && Boolean(
+      // A restart with nothing to send comes up idle, waiting for the user to
+      // type — so nothing should be spinning at it.
+      const replayed = Boolean(
         (restartOpts.prompt || '').trim() || restartOpts.images.length || restartOpts.mentions.length
       );
-      const notice = queuedMessage
+      const notice = queued.length
         ? (t('accounts.switchedQueuedResent') || 'Account switched. Your last message never reached the previous account, so it is being sent again.')
         : realSid
           ? (t('accounts.switched') || 'Account switched. Resuming…')
@@ -8010,6 +8091,20 @@ class ChatView extends BaseComponent {
       if (!res.success) {
         appendError(res.error || t('chat.errorOccurred'));
         setStreaming(false);
+      } else {
+        // A restart carries one prompt. Anything else that was still queued
+        // goes back on the new session in the order it was typed, rather than
+        // being dropped for being second.
+        for (const m of queued.slice(1)) {
+          const sent = await api.chat.send({
+            sessionId,
+            text: m.text,
+            images: m.images || [],
+            mentions: m.mentions || [],
+            userMessageUuid: m.userMessageUuid || null,
+          });
+          if (!sent.success) appendError(sent.error || t('chat.errorOccurred'));
+        }
       }
     } finally {
       switchingAccount = false;
@@ -8023,10 +8118,23 @@ class ChatView extends BaseComponent {
     if (sid !== sessionId) return;
     // A limit reported in-band leaves the session alive, so the switch has to
     // close it — and that abort comes back as an interrupted `done` under the
-    // same handle. It is our own doing, not a turn ending: honouring it would
-    // stamp an interrupted marker across the transcript and stop the spinner
-    // the restart has just started.
-    if (switchingAccount) return;
+    // same handle. It is our own doing, not a turn ending: the interrupted
+    // marker must not be stamped across the transcript, and the spinner the
+    // restart has just started must not be cleared. The turn's cards are a
+    // different matter — they really are over, and leaving them spinning is
+    // what the plain `return` used to do.
+    if (switchingAccount) {
+      isAborting = false;
+      finalizeStreamBlock();
+      resolveAllPendingCards();
+      for (const [, card] of toolCards) completeToolCard(card);
+      toolCards.clear();
+      for (const [idx, info] of taskToolIndices) {
+        completeSubagentCard(info.card);
+        taskToolIndices.delete(idx);
+      }
+      return;
+    }
     const wasInterrupted = interrupted || isAborting;
     isAborting = false;
     removeThinkingIndicator();
@@ -8202,6 +8310,11 @@ class ChatView extends BaseComponent {
     if (data.sessionId !== sessionId) return;
     const { requestId, reason } = data;
     _clearPermTimers(requestId);
+    // Before the card lookup: on a long conversation the card may have been
+    // pruned from the DOM, and the terminal entry would then keep a
+    // `pendingPermission` nothing will ever clear — leaving the MCP's
+    // `tab_status` / `tab_wait` waiting on a prompt that is already settled.
+    _clearTerminalPendingPermission();
     let card = null;
     try {
       const id = CSS.escape(requestId);
@@ -8210,7 +8323,6 @@ class ChatView extends BaseComponent {
       );
     } catch (_) {}
     if (!card || card.classList.contains('resolved')) return;
-    _clearTerminalPendingPermission();
     markCardStale(card, reason);
     // The SDK carries on after a timeout or an answer; an interrupted turn ends
     // through chat-done, which sets its own status.

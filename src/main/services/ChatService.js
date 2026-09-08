@@ -10,12 +10,19 @@ const { app } = require('electron');
 const { execFileSync } = require('child_process');
 const ModelCatalogService = require('./ModelCatalogService');
 const AccountManager = require('./AccountManager');
+const chromeBridgeService = require('./ChromeBridgeService');
+const remoteControlService = require('./RemoteControlService');
+const { getSdkCliPath } = require('../utils/sdkCli');
 const { isCliFailureText } = require('../../shared/cli-failure-text');
 const { isApiErrorMessage } = require('../../shared/api-error');
 const { isPermissionMode } = require('../../shared/permission-modes');
-const remoteControlService = require('./RemoteControlService');
-const chromeBridgeService = require('./ChromeBridgeService');
-const { getSdkCliPath } = require('../utils/sdkCli');
+
+/**
+ * SDKAssistantMessageError codes that mean *this account* cannot run the turn
+ * and another one could. A refusal, an overloaded upstream or a bad request
+ * are not on the list: switching accounts would not help.
+ */
+const ACCOUNT_LIMIT_ERROR_CODES = ['billing_error', 'rate_limit', 'account_on_hold'];
 
 let sdkPromise = null;
 let resolvedRuntime = null;
@@ -857,16 +864,16 @@ class ChatService {
 
       this._emitLifecycle('start', sessionId, { projectId, cwd });
 
+      // The background-task level is per CLI process and nothing is emitted at
+      // startup, so the host owns the reset. Without it, a resumed tab would
+      // keep showing tasks that belonged to the process that just went away.
+      this._send('chat-background-tasks', { sessionId, tasks: [] });
       // Free catalog refresh: the SDK caches the init handshake, so reading it
       // here costs no extra round trip. Detached on purpose — a model list is
       // never worth delaying or failing a session start over.
       queryStream.initializationResult?.()
         .then(init => ModelCatalogService.ingestInitResult(init))
         .catch(() => {});
-      // The background-task level is per CLI process and nothing is emitted at
-      // startup, so the host owns the reset. Without it, a resumed tab would
-      // keep showing tasks that belonged to the process that just went away.
-      this._send('chat-background-tasks', { sessionId, tasks: [] });
       this._processStream(sessionId, queryStream);
       return sessionId;
     } catch (err) {
@@ -894,13 +901,18 @@ class ChatService {
     }
 
     try {
-      // Held until the turn it opens reports a result. A spend cap raised
-      // in-band leaves the session alive, so this message can be typed while
-      // the account-switch offer is up and be waiting in the queue — or be
-      // mid-flight — when the switch aborts the process. Nothing has reached
-      // the transcript at that point, so resuming brings back everything
-      // except this; prepareSwitchAccount hands it back to be sent again.
-      session.pendingUserMessage = { text, images, mentions, userMessageUuid: userMessageUuid || null };
+      // Held until the CLI says it has written this message down. The
+      // account-switch offer leaves the composer usable, so a message can
+      // still be waiting in the queue — or be mid-flight — when the switch
+      // aborts the process, and nothing of it has reached the transcript at
+      // that point; prepareSwitchAccount hands those back to be sent again.
+      //
+      // A list, not a slot: two messages can be typed while the offer is on
+      // screen, and the second overwriting the first is how the first
+      // disappeared.
+      (session.pendingUserMessages ||= []).push({
+        text, images, mentions, userMessageUuid: userMessageUuid || null,
+      });
       session.messageQueue.push({
         type: 'user',
         message: { role: 'user', content: this._buildContent(text, images, mentions, documents) },
@@ -924,6 +936,21 @@ class ChatService {
   }
 
   /**
+   * Build message content: plain string if text-only, content blocks array if
+   * images, documents or mentions are attached.
+   *
+   * Three block types, each one the CLI already understands: `text` for
+   * mentions and attached text files, `image` for base64 images, and
+   * `document` for base64 PDFs — the last being the exact shape the Claude
+   * Code binary builds itself when its Read tool opens a PDF.
+   *
+   * @param {string} text
+   * @param {Array} images - Array of { base64, mediaType } objects
+   * @param {Array} mentions - Array of { label, content } resolved context blocks
+   * @param {Array} documents - Array of { base64, mediaType } PDF attachments
+   * @returns {string|Array}
+   */
+  /**
    * Add a section to a session's system prompt, whatever shape it currently has.
    *
    * The SDK accepts three: a preset object (the default), a preset object the
@@ -943,21 +970,6 @@ class ChatService {
     return { ...base, append: base.append ? `${base.append}\n\n${extra}` : extra };
   }
 
-  /**
-   * Build message content: plain string if text-only, content blocks array if
-   * images, documents or mentions are attached.
-   *
-   * Three block types, each one the CLI already understands: `text` for
-   * mentions and attached text files, `image` for base64 images, and
-   * `document` for base64 PDFs — the last being the exact shape the Claude
-   * Code binary builds itself when its Read tool opens a PDF.
-   *
-   * @param {string} text
-   * @param {Array} images - Array of { base64, mediaType } objects
-   * @param {Array} mentions - Array of { label, content } resolved context blocks
-   * @param {Array} documents - Array of { base64, mediaType } PDF attachments
-   * @returns {string|Array}
-   */
   _buildContent(text, images, mentions = [], documents = []) {
     const hasImages = images && images.length > 0;
     const hasMentions = mentions && mentions.length > 0;
@@ -1604,31 +1616,45 @@ class ChatService {
         // flagged `is_error` or carrying an error subtype. Fork-guard refusals
         // never reach this point (`continue` above) — the renderer auto-resumes
         // those, so they are not a session outcome.
-        if (message.type === 'assistant' && message.error) {
-          inbandError = `API error: ${message.error}`;
-        } else if (message.type === 'assistant') {
-          // The other in-band shape: a refusal handed back as ordinary
-          // assistant text, with no `error` field and no throw — only a flag.
-          // A spend cap arrives this way, and because the stream stays open the
-          // tab keeps its process, which keeps the credentials of the account
-          // that just ran out. Every retry then hits the same wall, which is
-          // why quitting the app used to be the only way through.
+        if (message.type === 'assistant') this._ackUserMessages(session, message);
+
+        if (message.type === 'assistant' && (message.error || isApiErrorMessage(message))) {
+          // An in-band failure: the CLI answers the turn with an ordinary
+          // assistant message reporting the error, and leaves the stream open —
+          // so the tab keeps the process it was spawned with, and that process
+          // keeps the credentials of the account that just ran out. Every retry
+          // then hits the same wall, which is why quitting the app used to be
+          // the only way through a spend cap.
+          //
+          // It arrives two ways and the two must be handled together, not one
+          // in the other's `else`: a typed `error` code on the frame
+          // (SDKAssistantMessageError, what the current SDK sends), or the flag
+          // with the failure as text (what the transcript carries, and what an
+          // older producer sends). Testing the code first and the flag second
+          // in one branch is what keeps the coded case from shadowing the
+          // limit check entirely.
           const text = assistantText(message);
-          if (isApiErrorMessage(message)) {
-            inbandError = text || 'API error';
-            if (this._isUsageLimitError(text)) pendingAccountLimit = text;
-          } else if (this._isCliFailureText(text) && this._isUsageLimitError(text)) {
-            // Same failure, no flag on it. Losing the offer to a renamed field
-            // is how this bug got here, so the CLI's own phrasing gets a second
-            // look — anchored (isCliFailureText), because Claude *discussing* a
-            // spend limit has to stay an ordinary reply.
+          const code = typeof message.error === 'string' ? message.error : '';
+          inbandError = code ? `API error: ${code}` : (text || 'API error');
+          if (ACCOUNT_LIMIT_ERROR_CODES.includes(code) || this._isUsageLimitError(text)) {
+            pendingAccountLimit = text || inbandError;
+          }
+        } else if (message.type === 'assistant') {
+          // The same failure with nothing on it — no code, no flag. The CLI's
+          // own phrasing gets a second look, anchored (isCliFailureText),
+          // because Claude *discussing* a spend limit has to stay an ordinary
+          // reply.
+          const text = assistantText(message);
+          if (this._isCliFailureText(text) && this._isUsageLimitError(text)) {
             pendingAccountLimit = text;
           }
         } else if (message.type === 'result') {
-          // The turn closed, so the message that opened it is on disk and in
-          // the transcript — an error result included, since the renderer
-          // showed it. Only an unanswered message is worth sending again.
-          if (session) session.pendingUserMessage = null;
+          // Older producers do not stamp the prompt uuid on their replies, so a
+          // closed turn is the only acknowledgement they give. Sessions that do
+          // stamp are left alone here: a message queued *behind* the turn that
+          // just closed has not been written down yet, and clearing it would
+          // lose it.
+          if (session && !session.stampsUserMessageUuids) session.pendingUserMessages = [];
           if (message.is_error || message.subtype !== 'success') {
             const errors = Array.isArray(message.errors) ? message.errors.filter(Boolean) : [];
             inbandError = errors.join('\n')
@@ -1758,17 +1784,43 @@ class ChatService {
    * it (with `resumeSessionId`) under freshly swapped credentials. Returns the
    * cwd / projectId / model context the caller should reuse.
    */
+  /**
+   * Drop the pending messages the CLI has just acknowledged.
+   *
+   * `user_message_uuid` is stamped on the first reply frame of the turn that
+   * consumed a prompt (and `user_message_uuids` on a batch the host merged into
+   * one turn). That stamp is the one reliable "this is written down": once it
+   * lands the message is in the transcript, a resume brings it back, and
+   * sending it again would post it twice.
+   *
+   * Which is what used to happen. The clear was on the result message, and a
+   * usage limit refused mid-turn throws instead of producing one — so the very
+   * message that caused the limit survived as pending and was replayed on top
+   * of a resume that already held it.
+   */
+  _ackUserMessages(session, message) {
+    if (!session) return;
+    const ids = Array.isArray(message.user_message_uuids) && message.user_message_uuids.length
+      ? message.user_message_uuids
+      : (message.user_message_uuid ? [message.user_message_uuid] : []);
+    if (!ids.length) return;
+    session.stampsUserMessageUuids = true;
+    if (!session.pendingUserMessages?.length) return;
+    session.pendingUserMessages = session.pendingUserMessages
+      .filter(m => !ids.includes(m.userMessageUuid));
+  }
+
   prepareSwitchAccount(sessionId) {
     const session = this.sessions.get(sessionId);
     const ctx = session ? {
       cwd: session.cwd || null,
       projectId: session.projectId || null,
       accountId: session.accountId || null,
-      // A message still waiting on its turn: closeSession is about to abort
-      // the process out from under it, and the resume that follows only
-      // brings back what the CLI wrote down. Handed to the caller so the
-      // restart can send it rather than let it disappear with the account.
-      pendingUserMessage: session.pendingUserMessage || null,
+      // Messages still waiting on a turn: closeSession is about to abort the
+      // process out from under them, and the resume that follows only brings
+      // back what the CLI wrote down. Handed to the caller so the restart can
+      // send them rather than let them disappear with the account.
+      pendingUserMessages: session.pendingUserMessages || [],
     } : null;
     this.closeSession(sessionId);
     return ctx;

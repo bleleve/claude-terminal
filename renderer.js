@@ -116,7 +116,7 @@ const {
 const registry = require('./src/project-types/registry');
 const { mergeTranslations } = require('./src/renderer/i18n');
 const ModalComponent = require('./src/renderer/ui/components/Modal');
-const { MemoryEditor, GitChangesPanel, ShortcutsManager, SettingsPanel, SkillsAgentsPanel, PluginsPanel, MarketplacePanel, McpPanel, WorkflowPanel, DatabasePanel, CloudPanel, ConnectivityPanel, ControlTowerPanel, SessionReplayPanel, ParallelTaskPanel, WorkspacePanel, ErrorLogPanel, ArtifactsPanel, FilesPanel } = require('./src/renderer/ui/panels');
+const { MemoryEditor, GitChangesPanel, ShortcutsManager, SettingsPanel, SkillsAgentsPanel, PluginsPanel, MarketplacePanel, McpPanel, WorkflowPanel, DatabasePanel, CloudPanel, ConnectivityPanel, ControlTowerPanel, SessionReplayPanel, ParallelTaskPanel, WorkspacePanel, ErrorLogPanel, FilesPanel, ArtifactsPanel } = require('./src/renderer/ui/panels');
 // Not re-exported by the panels index: ConnectivityPanel embeds it as a sub-tab,
 // but its polling lifecycle is driven from the tab registry below.
 const RemotePanel = require('./src/renderer/ui/panels/RemotePanel');
@@ -219,6 +219,12 @@ const { loadSessionData, clearProjectSessions, saveTerminalSessions } = require(
       }
     }
   }
+  // Before the session restore below: restoring a tab calls filterByProject(),
+  // which asks which navigation is mounted to decide whether the tools row has
+  // to name the project. Applied later, that question got answered wrong for
+  // every tab restored at boot.
+  applyNavigationMode(settingsState.get().navigationMode);
+
   // Booting straight onto Claude clicks no tab, so nothing would have set the
   // screen-scoped bits of the docked column.
   document.body.dataset.activeTab = document.body.dataset.activeTab || 'claude';
@@ -327,7 +333,6 @@ const { loadSessionData, clearProjectSessions, saveTerminalSessions } = require(
   if (settingsState.get().reduceMotion) {
     document.body.classList.add('reduce-motion');
   }
-  applyNavigationMode(settingsState.get().navigationMode);
   // Asked once, after the rest is on screen so the previews sit over the real app
   setTimeout(promptNavigationModeChoice, 1200);
   // Restore notification bell state from persisted settings
@@ -1430,7 +1435,8 @@ let _termSyncTimer = null;
 const { deriveTabStatus } = require('./src/renderer/state/terminals.state');
 
 function _buildTabsSnapshot() {
-  const terminals = terminalsState.get().terminals;
+  const termState = terminalsState.get();
+  const terminals = termState.terminals;
   const legacy = [];
   const rich = [];
   for (const [id, td] of terminals) {
@@ -1478,16 +1484,20 @@ function _buildTabsSnapshot() {
       details,
     });
   }
-  return { legacy, rich };
+  // The focused tab, so "the current conversation" is resolvable from outside.
+  // lastActivityAt is NOT a substitute: a tab building in the background beats
+  // the tab the user is actually looking at.
+  const activeTd = termState.activeTerminal != null ? terminals.get(termState.activeTerminal) : null;
+  return { legacy, rich, activeTabId: activeTd?.tabId || null };
 }
 
 function _writeTabsSnapshot() {
   try {
-    const { legacy, rich } = _buildTabsSnapshot();
+    const { legacy, rich, activeTabId } = _buildTabsSnapshot();
     const legacyPath = path.join(dataDir, 'terminals.json');
     const richPath = path.join(dataDir, 'tabs.json');
     fsp.writeFile(legacyPath, JSON.stringify(legacy, null, 2)).catch(() => {});
-    fsp.writeFile(richPath, JSON.stringify({ updatedAt: Date.now(), tabs: rich }, null, 2)).catch(() => {});
+    fsp.writeFile(richPath, JSON.stringify({ updatedAt: Date.now(), activeTabId, tabs: rich }, null, 2)).catch(() => {});
   } catch (_) {}
 }
 
@@ -3803,8 +3813,6 @@ document.querySelectorAll('.nav-tab[data-tab]').forEach(tab => {
 // the customize modal and the More dropdown are built from this list, so
 // leaving it in would offer a tab that no longer exists in the DOM.
 const _ALL_TABS_ORDER = ['claude', 'dashboard', 'files', 'git', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
-
-
 
 function applyPinnedTabs() {
   const pinned = settingsState.get().pinnedTabs || _ALL_TABS_ORDER;
