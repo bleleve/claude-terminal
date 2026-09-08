@@ -7714,28 +7714,38 @@ class ChatView extends BaseComponent {
       // prompt dies with the account that refused it. Its uuid goes along to keep
       // that bubble matching the message that finally gets recorded.
       const replayOpeningTurn = !realSid;
+      // The same reasoning one turn later. A cap reported in-band leaves the
+      // session running, so a follow-up can be sent while the offer is on
+      // screen and still be unanswered when the switch aborts the process —
+      // and an unanswered message is one the CLI never recorded, so the
+      // resume comes back complete except for it. Main hands it over on the
+      // way out; it rides along whether or not there is a session to resume.
+      const queuedMessage = prep.context?.pendingUserMessage || null;
+      const replaySource = queuedMessage || (replayOpeningTurn ? lastStartOpts : null);
       const restartOpts = {
         ...lastStartOpts,
         accountId: newId,
-        prompt: replayOpeningTurn ? (lastStartOpts.prompt || '') : '',
-        images: replayOpeningTurn ? (lastStartOpts.images || []) : [],
-        mentions: replayOpeningTurn ? (lastStartOpts.mentions || []) : [],
-        userMessageUuid: replayOpeningTurn ? (lastStartOpts.userMessageUuid || null) : null,
+        prompt: (replaySource?.prompt ?? replaySource?.text) || '',
+        images: replaySource?.images || [],
+        mentions: replaySource?.mentions || [],
+        userMessageUuid: replaySource?.userMessageUuid || null,
         forkSession: false,
         resumeSessionAt: null,
         resumeDropsTurn: null,
         resumeSessionId: realSid || null,
       };
-      // An opening turn that carried nothing leaves the restart with nothing to
-      // send: the session comes up idle, waiting for the user to type.
-      const replayed = replayOpeningTurn && Boolean(
+      // A turn that carried nothing leaves the restart with nothing to send:
+      // the session comes up idle, waiting for the user to type.
+      const replayed = Boolean(replaySource) && Boolean(
         (restartOpts.prompt || '').trim() || restartOpts.images.length || restartOpts.mentions.length
       );
-      const notice = realSid
-        ? (t('accounts.switched') || 'Account switched. Resuming…')
-        : replayed
-          ? (t('accounts.switchedResent') || 'Account switched. The previous conversation was never saved, so your message is being sent again on the new account.')
-          : (t('accounts.switchedNoResume') || 'Account switched. The previous conversation could not be resumed — continuing without its context.');
+      const notice = queuedMessage
+        ? (t('accounts.switchedQueuedResent') || 'Account switched. Your last message never reached the previous account, so it is being sent again.')
+        : realSid
+          ? (t('accounts.switched') || 'Account switched. Resuming…')
+          : replayed
+            ? (t('accounts.switchedResent') || 'Account switched. The previous conversation was never saved, so your message is being sent again on the new account.')
+            : (t('accounts.switchedNoResume') || 'Account switched. The previous conversation could not be resumed — continuing without its context.');
       appendSystemNotice(notice, 'info');
       // Only wait on a turn the SDK will actually run: with nothing queued the
       // spinner would sit there for the life of the tab.
