@@ -11,23 +11,11 @@ const { execFileSync } = require('child_process');
 const ModelCatalogService = require('./ModelCatalogService');
 const AccountManager = require('./AccountManager');
 const { isCliFailureText } = require('../../shared/cli-failure-text');
+const { isApiErrorMessage } = require('../../shared/api-error');
 const { isPermissionMode } = require('../../shared/permission-modes');
 const remoteControlService = require('./RemoteControlService');
 const chromeBridgeService = require('./ChromeBridgeService');
 const { getSdkCliPath } = require('../utils/sdkCli');
-
-/**
- * Is this assistant message the CLI reporting an API failure rather than
- * answering — a spend cap, a refusal, an overloaded upstream?
- *
- * The CLI carries the flag as `isApiErrorMessage` internally, which is the
- * spelling written to the ~/.claude/projects transcript, and serialises it to
- * stream-json as `is_api_error_message`. Which of the two survives to here is
- * the SDK's business, so both count.
- */
-function isApiErrorMessage(message) {
-  return message?.isApiErrorMessage === true || message?.is_api_error_message === true;
-}
 
 let sdkPromise = null;
 let resolvedRuntime = null;
