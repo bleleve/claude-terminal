@@ -86,7 +86,7 @@ Remote UI (PWA for mobile)
 | `terminal.ipc.js` | 4 | Create PTY (node-pty), input, resize, kill |
 | `git.ipc.js` | 69 | Status, branches, pull/push/merge/rebase, clone, stash, cherry-pick, revert, tag, blame, worktree, AI commit message, PR description, inline diff |
 | `github.ipc.js` | 26 | OAuth Device Flow, workflow runs, PRs, issues, reviews, GitHub Enterprise, repo search |
-| `chat.ipc.js` | 16 | Agent SDK streaming sessions, permissions, interrupt, model/effort switching, tab name generation, fork/rewind, skill/agent generation, session recap |
+| `chat.ipc.js` | 17 | Agent SDK streaming sessions, permissions, interrupt, model/effort/permission-mode switching, tab name generation, fork/rewind, skill/agent generation, session recap |
 | `chrome.ipc.js` | 4 | Claude in Chrome: status, install/remove native messaging host, open the extension page |
 | `dialog.ipc.js` | 21 | Window controls, file/folder dialogs, open in explorer/editor/browser, notifications, updates, startup, clipboard |
 | `explorer.ipc.js` | 3 | File explorer watcher (start/stop/onChanges) |
@@ -113,7 +113,7 @@ Remote UI (PWA for mobile)
 | `fivem.ipc.js` | - | Delegated to `src/project-types/fivem/` |
 | `index.js` | - | Orchestrator - registers all handlers |
 
-**Total: 265 IPC handlers across 27 files.**
+**Total: 266 IPC handlers across 27 files.**
 
 ### Services (`src/main/services/`)
 
@@ -483,6 +483,7 @@ OS credential store (via keytar)       # GitHub token (Windows Credential Manage
 - **Persistence:** atomic writes (temp + rename), `.bak` backup files, corruption recovery
 - **Updates:** generic provider, 30 min periodic checks, differential packages
 - **Remote control (local):** WS server with PIN auth, QR code, PWA in `remote-ui/`
+- **Model, effort and permission mode are per conversation:** the chat footer's chip (model · effort, right) and mode picker (left, as Claude Desktop places it) change the current tab only. The stored `chatModel` / `effortLevel` / `executionMode` are the defaults a new tab starts from, moved only through each menu's "Use for new conversations" row — a pick never writes them, so the last choice in one tab cannot silently become every later tab's. Modes are the SDK's (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `auto`), mapped to the legacy `executionMode` spellings in `src/shared/permission-modes.js`; `ChatService.setPermissionMode` switches mid-session and moves the app-side auto-approval with it. Fable is a hand-curated premium tier (`PREMIUM_FAMILIES` in `src/shared/model-options.js`, since the CLI catalog carries no cost on a subscription): violet chip and composer border, "Premium" badge in the menu, a tag on the tab, and a dismissible notice above the composer when a new tab inherits it. `max` effort turns the effort segment warning-coloured. Every (re)start and every mid-session switch leaves a line in the transcript
 - **Remote Control (claude.ai):** decided per conversation, never globally. `claudeRemoteControlEnabled` only says the feature may be used; a session reaches claude.ai when the user asks for it in that tab, via the footer button or the local `/remote-control` command (`enableForSession` / `disableForSession`). Nothing is backfilled: claude.ai joins from the moment it is enabled. Attaches the session to `@anthropic-ai/claude-agent-sdk/bridge` so it appears at claude.ai/code and in the Claude mobile app. The bridge export is ESM-only and `@alpha` — loaded through `src/main/utils/claudeBridge.js`, which resolves it out of `app.asar.unpacked` and feature-detects every function it uses. `claudeRemoteControlDrive` decides between a read-only mirror (`outboundOnly`) and full driving; `claudeRemoteControlTerminals` adds `--rc` to the CLI in terminal tabs. Honours the managed-settings `disableRemoteControl` kill switch
 - **Cloud sync:** self-hosted Docker relay, per-entity toggles, file watcher, conflict diff modal
 - **Claude in Chrome:** opt-in (`chromeBridgeEnabled`). Adds the `claude-in-chrome` MCP server — 22 browser tools — to chat sessions by spawning the bundled SDK binary with `--claude-in-chrome-mcp`; Chrome reaches it through a native messaging host manifest whose name (`com.anthropic.claude_code_browser_extension`) is fixed by the extension and therefore shared with Claude Code, so an existing working manifest is adopted, never overwritten
