@@ -200,6 +200,7 @@ npm install
 ### Files
 - A dedicated Files screen shows every file touched in a session, with per-session diffs rendered GitHub-style
 - Quickly review what Claude changed without leaving the chat context
+- Or keep the project tree docked beside the conversation, the way it was before the Files screen
 
 ### Accounts
 - Bind a separate Claude account to each project, with its own isolated credential store
