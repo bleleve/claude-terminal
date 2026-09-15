@@ -1015,15 +1015,7 @@ class McpPanel extends BasePanel {
 
   async _saveMcpToConfig(serverName, mcpConfig) {
     try {
-      let config = {};
-      if (await fileExists(this._claudeConfigFile)) {
-        config = JSON.parse(await fsp.readFile(this._claudeConfigFile, 'utf8'));
-      }
-      if (!config.mcpServers) {
-        config.mcpServers = {};
-      }
-      config.mcpServers[serverName] = mcpConfig;
-      await fsp.writeFile(this._claudeConfigFile, JSON.stringify(config, null, 2), 'utf8');
+      await this.api.mcp.saveServer(serverName, mcpConfig);
     } catch (e) {
       console.error('Error saving MCP to config:', e);
       throw new Error('Failed to save configuration: ' + e.message);
