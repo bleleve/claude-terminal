@@ -415,15 +415,17 @@ function _handleWsUpgrade(request, socket, head) {
 
     ws.on('message', (raw) => _handleClientMessage(ws, token, raw));
     ws.on('close', (code) => {
-      _connectedClients.delete(token);
-      _clientMeta.delete(token);
-      _sessionTokens.delete(token);
+      if (_connectedClients.get(token) === ws) {
+        _connectedClients.delete(token);
+        _clientMeta.delete(token);
+      }
       console.debug(`[Remote] WS disconnected (code: ${code}) — ${_connectedClients.size} client(s) remaining`);
     });
     ws.on('error', (e) => {
-      _connectedClients.delete(token);
-      _clientMeta.delete(token);
-      _sessionTokens.delete(token);
+      if (_connectedClients.get(token) === ws) {
+        _connectedClients.delete(token);
+        _clientMeta.delete(token);
+      }
       console.warn(`[Remote] WS error: ${e.message}`);
     });
 
