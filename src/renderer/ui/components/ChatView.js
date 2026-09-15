@@ -8959,6 +8959,9 @@ class ChatView extends BaseComponent {
     /** Called on every scroll: pull the next page in once the top is in reach. */
     function maybeLoadEarlier() {
       if (loadingEarlier || historyExhausted || !historyTopEl || !messagesEl.clientHeight) return;
+      // A revealed tab can still be at zero until its queued tail scroll runs.
+      // While pinned, only prefetch if the tail itself is close to the top.
+      if (!userHasScrolled && messagesEl.scrollHeight - messagesEl.clientHeight > HISTORY_PREFETCH_PX) return;
       if (messagesEl.scrollTop > HISTORY_PREFETCH_PX) return;
       loadEarlier();
     }

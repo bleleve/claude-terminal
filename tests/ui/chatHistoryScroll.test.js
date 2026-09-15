@@ -1,11 +1,15 @@
 // Exercise the shipped ChatView, including hidden restores and delayed layout.
 describe('restored conversation scrolling', () => {
-  let view, wrapper, messages, observers, calls, height, contentHeight, top;
-  const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(resolve => setTimeout(resolve, 0)); };
+  let view, wrapper, messages, observers, calls, height, contentHeight, top, frames, nextFrame;
+  const runFrame = () => { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(callback => callback()); };
+  const flush = async (paint = true) => { for (let i = 0; i < 8; i++) { await new Promise(resolve => setTimeout(resolve, 0)); if (paint) runFrame(); } };
   const resize = () => observers.forEach(observer => observer.callback([]));
   beforeEach(async () => {
     jest.resetModules();
     observers = []; calls = []; height = 0; contentHeight = 0; top = 0;
+    frames = new Map(); nextFrame = 0;
+    jest.spyOn(global, 'requestAnimationFrame').mockImplementation(callback => { frames.set(++nextFrame, callback); return nextFrame; });
+    jest.spyOn(global, 'cancelAnimationFrame').mockImplementation(id => frames.delete(id));
     global.ResizeObserver = class {
       constructor(callback) { this.callback = callback; this.observe = jest.fn(); this.unobserve = jest.fn(); this.disconnect = jest.fn(); observers.push(this); }
     };
@@ -27,9 +31,18 @@ describe('restored conversation scrolling', () => {
       scrollHeight: { get: () => height ? contentHeight : 0 },
       scrollTop: { get: () => top, set: value => { top = height ? Math.min(Math.max(value, 0), Math.max(contentHeight - height, 0)) : 0; } }
     });
-    await flush();
+    await flush(false);
   });
-  afterEach(() => { view?.destroy(); delete global.ResizeObserver; });
+  afterEach(() => { view?.destroy(); jest.restoreAllMocks(); delete global.ResizeObserver; });
+
+  test('a reveal between the initial scroll frame and history prefetch does not load another page', async () => {
+    runFrame(); // Hidden tail scroll is skipped; the second prefetch frame is queued.
+    height = 400; contentHeight = 2200;
+    view.focus(); // Its tail scroll is queued behind the older prefetch callback.
+    await flush();
+    expect(top).toBe(1800);
+    expect(calls.filter(call => call.method === 'loadHistory')).toHaveLength(1);
+  });
 
   test('revealing a history loaded while hidden lands at the end without fetching older pages', async () => {
     expect(calls.filter(call => call.method === 'loadHistory')).toHaveLength(1);
@@ -37,6 +50,21 @@ describe('restored conversation scrolling', () => {
     resize(); view.focus(); await flush();
     expect(top).toBe(1800);
     expect(calls.filter(call => call.method === 'loadHistory')).toHaveLength(1);
+  });
+
+  test('a short visible tail still prefetches earlier history', async () => {
+    height = 400; contentHeight = 600;
+    resize(); await flush();
+    expect(calls.filter(call => call.method === 'loadHistory')).toHaveLength(2);
+  });
+
+  test('scrolling upward near the top still fetches earlier history', async () => {
+    height = 400; contentHeight = 2200;
+    resize(); await flush();
+    messages.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+    messages.scrollTop = 500; messages.dispatchEvent(new Event('scroll'));
+    await flush();
+    expect(calls.filter(call => call.method === 'loadHistory')).toHaveLength(2);
   });
 
   test('late layout follows the tail, while reading upward survives resize and tab focus', async () => {
