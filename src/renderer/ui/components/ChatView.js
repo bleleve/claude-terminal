@@ -2082,7 +2082,7 @@ class ChatView extends BaseComponent {
    */
   function addPdfFile(file) {
     if (file.size > MAX_PDF_BYTES) {
-      if (file.path) {
+      if ((file.path || api.getPathForFile?.(file))) {
         addPathAttachment(file);
       } else {
         attachmentToast(t('chat.attachTooLarge', { name: file.name, max: formatBytes(MAX_PDF_BYTES) }));
@@ -2117,7 +2117,7 @@ class ChatView extends BaseComponent {
    * blob can only sit in the context being paid for.
    */
   function addTextFile(file) {
-    if (!shouldInlineText({ size: file.size, path: file.path })) {
+    if (!shouldInlineText({ size: file.size, path: (file.path || api.getPathForFile?.(file)) })) {
       addPathAttachment(file);
       return;
     }
@@ -2127,7 +2127,7 @@ class ChatView extends BaseComponent {
     // and refused out loud when it does not.
     const overBudget = inlinedTextBytes + file.size > MAX_TOTAL_INLINE_TEXT_BYTES;
     if (countTextAttachments() + inflightTexts >= MAX_PENDING_TEXTS || overBudget) {
-      if (file.path) {
+      if ((file.path || api.getPathForFile?.(file))) {
         addPathAttachment(file);
       } else {
         attachmentToast(t('chat.attachTooMany', { max: MAX_PENDING_TEXTS }));
@@ -2142,7 +2142,7 @@ class ChatView extends BaseComponent {
       addAttachmentChip(file.name, {
         kind: 'text',
         name: file.name,
-        path: file.path || '',
+        path: (file.path || api.getPathForFile?.(file)) || '',
         content: String(reader.result ?? ''),
       });
     };
@@ -2159,7 +2159,7 @@ class ChatView extends BaseComponent {
     addAttachmentChip(file.name, {
       kind: 'path',
       name: file.name,
-      path: file.path,
+      path: (file.path || api.getPathForFile?.(file)),
       size: file.size,
     });
   }
