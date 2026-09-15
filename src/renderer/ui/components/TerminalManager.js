@@ -35,6 +35,7 @@ const {
   heartbeat,
   stopProject,
   getProjectSettings: getProjectSettingsState,
+  getProjectAccount,
   generateTabId,
   getTerminalByTabId,
   updateTerminalByTabId,
@@ -1818,6 +1819,9 @@ class TerminalManager extends BaseComponent {
       cwd: overrideCwd || project.path,
       runClaude,
       skipPermissions,
+      // Only an explicit binding is sent: unbound projects run against the
+      // machine-wide login, which is what keeps `claude /login` capturable.
+      accountId: getProjectAccount(project.id),
       ...(resumeSessionId ? { resumeSessionId } : {})
     });
 
@@ -3173,7 +3177,8 @@ class TerminalManager extends BaseComponent {
       cwd: resumeCwd || project.path,
       runClaude: true,
       resumeSessionId: sessionId,
-      skipPermissions
+      skipPermissions,
+      accountId: getProjectAccount(project.id)
     });
 
     if (result && typeof result === 'object' && 'success' in result) {
@@ -3343,7 +3348,8 @@ class TerminalManager extends BaseComponent {
     const result = await this._api.terminal.create({
       cwd: project.path,
       runClaude: true,
-      skipPermissions: false
+      skipPermissions: false,
+      accountId: getProjectAccount(project.id)
     });
 
     if (result && typeof result === 'object' && 'success' in result) {
@@ -4272,6 +4278,10 @@ class TerminalManager extends BaseComponent {
         cwd,
         runClaude: true,
         skipPermissions: getSetting('skipPermissions') || false,
+        // The chat ran as the project's account; the CLI that takes over the
+        // same transcript has to authenticate as it too, or the resume lands
+        // on whichever login the machine-wide store holds.
+        accountId: getProjectAccount(project.id),
         // Continue the chat's conversation rather than opening a fresh one.
         ...(sessionId ? { resumeSessionId: sessionId } : {}),
         // Attribution for the output capture and the terminal_exit_code triggers.
