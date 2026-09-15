@@ -120,12 +120,8 @@ module.exports = {
     ],
     icon: "assets/icon.png",
     category: "Development",
-    synopsis: "Terminal for Claude Code projects",
-    desktop: {
-      Name: "Claude Terminal",
-      Comment: "Terminal for Claude Code projects",
-      Terminal: "false"
-    }
+    // electron-builder supplies Name/Comment/Terminal in the desktop entry.
+    synopsis: "Terminal for Claude Code projects"
   },
   // Fork-only: releases are published to (and auto-updates pulled from) the fork.
   // Overridable so an upstream build can still target Sterll/claude-terminal.

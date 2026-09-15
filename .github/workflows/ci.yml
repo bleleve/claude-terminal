@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, 'codex/**-fork']
 
 jobs:
   test:
@@ -52,3 +52,9 @@ jobs:
         run: |
           npm ci --prefix cloud
           npm test --prefix cloud
+
+      - name: Hub regressions
+        if: runner.os == 'Linux'
+        run: |
+          npm ci --prefix hub-worker
+          npm test --prefix hub-worker

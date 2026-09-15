@@ -4,6 +4,8 @@
  */
 
 const { app, globalShortcut, session, ipcMain } = require('electron');
+const rendererSecurity = require('./src/main/utils/rendererSecurity');
+rendererSecurity.install(ipcMain);
 
 // ============================================
 // FIX PATH on macOS/Linux - Apps launched from Finder/Dock have a minimal PATH
@@ -315,11 +317,11 @@ function bootstrapApp() {
     // an allowlist, not a passthrough, because the renderer displays
     // model-authored content and must not be able to ask for geolocation,
     // notifications or anything else on its own.
-    session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-      callback(permission === 'media');
+    session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+      callback(permission === 'media' && rendererSecurity.allowMicrophone(contents, details));
     });
-    session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-      return permission === 'media';
+    session.defaultSession.setPermissionCheckHandler((contents, permission, origin, details) => {
+      return permission === 'media' && rendererSecurity.allowMicrophone(contents, details, origin);
     });
 
     // Content Security Policy - allow only local file:// resources

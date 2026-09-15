@@ -52,7 +52,8 @@ function isSystemPath(p) {
   );
 }
 
-function throwIfBlocked(p) {
+function throwIfBlocked(p, write = false) {
+  if (!ipcRenderer.sendSync('fs-authorize', p, write)) throw new Error(`Access denied: path is outside authorized project/app data: ${p}`);
   if (isSystemPath(p)) {
     throw new Error(`Access denied: system path is protected: ${p}`);
   }
@@ -95,7 +96,7 @@ contextBridge.exposeInMainWorld('electron_nodeModules', {
       return fs.readFileSync(p, options);
     },
     writeFileSync: (p, data, options) => {
-      throwIfBlocked(p);
+      throwIfBlocked(p, true);
       fs.writeFileSync(p, data, options);
     },
     readdirSync: (p, options) => {
@@ -121,25 +122,25 @@ contextBridge.exposeInMainWorld('electron_nodeModules', {
       };
     },
     mkdirSync: (p, options) => {
-      throwIfBlocked(p);
+      throwIfBlocked(p, true);
       fs.mkdirSync(p, options);
     },
     rmSync: (p, options) => {
-      throwIfBlocked(p);
+      throwIfBlocked(p, true);
       fs.rmSync(p, options);
     },
     copyFileSync: (src, dest) => {
       throwIfBlocked(src);
-      throwIfBlocked(dest);
+      throwIfBlocked(dest, true);
       fs.copyFileSync(src, dest);
     },
     unlinkSync: (p) => {
-      throwIfBlocked(p);
+      throwIfBlocked(p, true);
       fs.unlinkSync(p);
     },
     renameSync: (oldPath, newPath) => {
-      throwIfBlocked(oldPath);
-      throwIfBlocked(newPath);
+      throwIfBlocked(oldPath, true);
+      throwIfBlocked(newPath, true);
       fs.renameSync(oldPath, newPath);
     },
     promises: {
@@ -173,25 +174,25 @@ contextBridge.exposeInMainWorld('electron_nodeModules', {
         }));
       },
       mkdir: (p, options) => {
-        throwIfBlocked(p);
+        throwIfBlocked(p, true);
         return fs.promises.mkdir(p, options);
       },
       writeFile: (p, data, options) => {
-        throwIfBlocked(p);
+        throwIfBlocked(p, true);
         return fs.promises.writeFile(p, data, options);
       },
       rename: (oldPath, newPath) => {
-        throwIfBlocked(oldPath);
-        throwIfBlocked(newPath);
+        throwIfBlocked(oldPath, true);
+        throwIfBlocked(newPath, true);
         return fs.promises.rename(oldPath, newPath);
       },
       unlink: (p) => {
-        throwIfBlocked(p);
+        throwIfBlocked(p, true);
         return fs.promises.unlink(p);
       },
       copyFile: (src, dest) => {
         throwIfBlocked(src);
-        throwIfBlocked(dest);
+        throwIfBlocked(dest, true);
         return fs.promises.copyFile(src, dest);
       }
     }
@@ -379,6 +380,7 @@ contextBridge.exposeInMainWorld('electron_api', {
     detectFramework: (params) => ipcRenderer.invoke('api-detect-framework', params),
     getPort: (params) => ipcRenderer.invoke('api-get-port', params),
     detectRoutes: (params) => ipcRenderer.invoke('api-detect-routes', params),
+    cancelRequest: (requestId) => ipcRenderer.invoke('api-cancel-request', requestId),
     testRequest: (params) => ipcRenderer.invoke('api-test-request', params),
     onData: createListener('api-data'),
     onExit: createListener('api-exit'),
@@ -387,6 +389,7 @@ contextBridge.exposeInMainWorld('electron_api', {
 
   // ==================== MCP ====================
   mcp: {
+    saveServer: (name, config) => ipcRenderer.invoke('mcp-save-server', { name, config }),
     saveConfig: (servers) => ipcRenderer.invoke('mcp-save-config', servers),
     start: (params) => ipcRenderer.invoke('mcp-start', params),
     stop: (params) => ipcRenderer.invoke('mcp-stop', params),

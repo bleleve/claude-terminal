@@ -33,7 +33,9 @@ app.whenReady().then(async () => {
   pty.onData(chunk => { output += chunk; });
   await new Promise((resolve, reject) => pty.onExit(({ exitCode }) => exitCode ? reject(new Error(`PTY exited ${exitCode}`)) : resolve()));
   assert.match(output, /PTY_SMOKE_OK/);
-  console.log('PASS native SQLite, keytar load, PTY and marked');
+  const childQuery = require('node:child_process').execFileSync(process.execPath, ['-e', `const db = new (require(${JSON.stringify(require.resolve('better-sqlite3'))}))(':memory:'); console.log(db.prepare('select 42 as value').get().value); db.close();`], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8' });
+  assert.equal(childQuery.trim(), '42');
+  console.log('PASS native SQLite in main and MCP runtime, keytar load, PTY and marked');
 
   const Scheduler = require('../src/main/services/WorkflowScheduler');
   scheduler = new Scheduler();
@@ -52,10 +54,12 @@ app.whenReady().then(async () => {
   const watchers = [...scheduler._fileWatchers.values(), ...scheduler._gitWatchers.values()];
   assert.equal(watchers.length, 2);
   await Promise.all(watchers.map(entry => once(entry.watcher, 'ready')));
+  // macOS may coalesce the directory's creation with the first write.
+  await wait(250);
   fs.writeFileSync(path.join(repo, 'src/ignored.txt'), 'ignore');
   fs.writeFileSync(path.join(repo, 'src/été.js'), 'match');
   fs.appendFileSync(path.join(repo, '.git/logs/HEAD'), 'old new User <u@example.test> 1 +0000\tcommit: smoke\n');
-  await until(() => events.some(e => e.id === 'file') && events.some(e => e.id === 'git'), 'File or Git trigger did not fire');
+  await until(() => events.some(e => e.id === 'file') && events.some(e => e.id === 'git'), 'File or Git trigger did not fire').catch(error => { console.error('Observed triggers:', events); throw error; });
   assert(events.filter(e => e.id === 'file').every(e => e.data.paths.every(p => p.endsWith('.js'))));
   scheduler.destroy(); scheduler = null;
   console.log('PASS real file/glob and Git watchers');
@@ -81,6 +85,38 @@ app.whenReady().then(async () => {
   await window.webContents.executeJavaScript('window.viewer.destroy()');
   window.destroy(); window = null;
   console.log('PASS shipped PDF viewer: open, pages, zoom, close');
+
+  const security = require('../src/main/utils/rendererSecurity');
+  const { ipcMain } = require('electron');
+  security.install(ipcMain);
+  const dataDir = path.join(temporary, '.claude-terminal');
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'allowed.txt'), 'allowed');
+  fs.writeFileSync(path.join(temporary, 'private.txt'), 'private');
+  const fixture = path.join(temporary, 'index.html'); fs.writeFileSync(fixture, '<p>Boundary smoke</p>');
+  window = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, sandbox: false, nodeIntegration: false, preload: path.resolve(__dirname, '../src/main/preload.js') } });
+  security.guardWindow(window, fixture);
+  await window.loadFile(fixture);
+  const boundary = await window.webContents.executeJavaScript(`(() => {
+    const fs = window.electron_nodeModules.fs;
+    const result = { allowed: fs.readFileSync(${JSON.stringify(path.join(dataDir, 'allowed.txt'))}, 'utf8') };
+    try { fs.readFileSync(${JSON.stringify(path.join(temporary, 'private.txt'))}, 'utf8'); } catch { result.denied = true; }
+    try { fs.writeFileSync(${JSON.stringify(path.resolve(__dirname, '../package.json'))}, 'blocked'); } catch { result.appWriteDenied = true; }
+    return result;
+  })()`);
+  assert.deepEqual(boundary, { allowed: 'allowed', denied: true, appWriteDenied: true });
+  window.destroy(); window = null;
+  for (const [htmlName, preload, apiName, read] of [
+    ['quick-picker.html', 'preload-quickpicker.js', 'pickerAPI', 'readProjects'],
+    ['notification.html', 'preload-notification.js', 'notifAPI', 'readSettingsAccentColor'],
+  ]) {
+    const page = path.join(temporary, htmlName); fs.writeFileSync(page, '<p>Sandbox smoke</p>');
+    window = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, preload: path.resolve(__dirname, '../src/main', preload) } });
+    security.guardWindow(window, page); await window.loadFile(page);
+    await window.webContents.executeJavaScript(`window.${apiName}.${read}()`);
+    window.destroy(); window = null;
+  }
+  console.log('PASS real preload path grants, read-only app files and sandboxed secondary preloads');
 
   // Stub only unrelated chat/catalog work; HTTP, WS, token and socket lifecycles are real.
   const Module = require('node:module'); const originalLoad = Module._load;
