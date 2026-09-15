@@ -37,6 +37,18 @@ test('new files below symlinked ancestors cannot escape a granted project', () =
   expect(security.permitted(outside)).toBe(true);
   expect(security.permitted(outside, true)).toBe(false);
 });
+test('equivalent file URL encoding keeps the exact document trusted', () => {
+  const page = path.join(temporary, 'app~1', 'index.html');
+  const chromiumUrl = pathToFileURL(page).href.replace(/%7E/gi, '~');
+  const wc = contents(chromiumUrl);
+  security.guardWindow({ webContents: wc }, page);
+  expect(security.isTrusted({ sender: wc, senderFrame: wc.mainFrame })).toBe(true);
+  const navigation = { preventDefault: jest.fn() };
+  wc.emit('will-navigate', navigation, chromiumUrl);
+  expect(navigation.preventDefault).not.toHaveBeenCalled();
+  wc.mainFrame.url = chromiumUrl.replace('index.html', 'other.html');
+  expect(security.isTrusted({ sender: wc, senderFrame: wc.mainFrame })).toBe(false);
+});
 test('microphone permission is limited to the main application document', () => {
   const page = path.join(temporary, 'index.html'), url = pathToFileURL(page).href;
   const wc = contents(url); security.guardWindow({ webContents: wc }, page);

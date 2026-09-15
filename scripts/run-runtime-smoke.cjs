@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-runtime-'));
+const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-runtime-~'));
 try {
   const result = spawnSync(require('electron'), [path.join(__dirname, 'runtime-smoke.cjs'), temporary], {
     stdio: 'inherit', timeout: 90000,

@@ -2,12 +2,16 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { pathToFileURL } = require('url');
+const { pathToFileURL, fileURLToPath } = require('url');
 const trusted = new WeakMap();
 let installed = false;
 
 function documentUrl(value) {
-  try { const url = new URL(value); url.hash = ''; url.search = ''; return url.href; }
+  try {
+    const url = new URL(value); url.hash = ''; url.search = '';
+    // Chromium leaves '~' literal while Node's pathToFileURL encodes it.
+    return url.protocol === 'file:' ? pathToFileURL(fileURLToPath(url)).href : url.href;
+  }
   catch { return ''; }
 }
 function guardWindow(window, htmlPath) {
