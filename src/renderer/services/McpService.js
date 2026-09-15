@@ -69,15 +69,8 @@ class McpService extends BaseService {
   }
 
   async saveMcps(mcps) {
-    const fsp = this.api.fs.promises;
     try {
-      let config = {};
-      try {
-        config = JSON.parse(await fsp.readFile(claudeConfigFile, 'utf8'));
-      } catch (e) {
-        if (e.code !== 'ENOENT') throw e;
-      }
-
+      const config = {};
       config.mcpServers = {};
       mcps.filter(mcp => mcp.scope !== 'project').forEach(mcp => {
         if (mcp.type === 'http') {
@@ -87,9 +80,7 @@ class McpService extends BaseService {
         }
       });
 
-      const tmpFile = claudeConfigFile + '.tmp';
-      await fsp.writeFile(tmpFile, JSON.stringify(config, null, 2));
-      await fsp.rename(tmpFile, claudeConfigFile);
+      await this.api.mcp.saveConfig(config.mcpServers);
     } catch (e) {
       console.error('Error saving MCPs:', e);
     }
