@@ -993,7 +993,19 @@
     "aboutGroup": "Tentang",
     "rerunSetup": "Panduan penyiapan",
     "rerunSetupDesc": "Ubah bahasa, warna aksen, editor, dan pengaturan hooks",
-    "rerunSetupBtn": "Jalankan ulang"
+    "rerunSetupBtn": "Jalankan ulang",
+    "secretBackups": "Cadangan rahasia lama",
+    "secureBackups": "Amankan cadangan lama",
+    "secureBackupsDesc": "Enkripsi salinan pemulihan sebelum menghapus kata sandi basis data lama. Kunci tetap di penyimpanan kredensial komputer ini.",
+    "secureBackupsAction": "Periksa dan amankan",
+    "recoverBackup": "Pulihkan cadangan terenkripsi",
+    "recoverBackupDesc": "Simpan isi asli ke berkas teks biasa terpisah di komputer ini.",
+    "recoverBackupAction": "Pulihkan…",
+    "backupMigrationResult": "{count} cadangan diamankan pada pemeriksaan terakhir.",
+    "backupRecovered": "Cadangan dipulihkan ke berkas yang dipilih.",
+    "searchPlaceholder": "Cari pengaturan…",
+    "searchCount": "{count} pengaturan ditemukan",
+    "searchEmpty": "Tidak ada pengaturan yang cocok"
   },
   "ui": {
     "notifications": "Notifikasi",
@@ -1590,7 +1602,8 @@
     "types": {
       "standalone": "Mandiri",
       "standaloneDesc": "Terminal Claude klasik"
-    }
+    },
+    "creationCancelled": "Operasi dibatalkan. Klik Buat untuk mencoba lagi dengan pilihan yang sama."
   },
   "plugins": {
     "title": "Plugin",
@@ -2052,7 +2065,14 @@
     "backToGrid": "Kembali ke ringkasan",
     "newSession": "Sesi baru",
     "renameSession": "Ganti nama sesi",
-    "openInClaude": "Buka di tampilan Claude"
+    "openInClaude": "Buka di tampilan Claude",
+    "incidentsTitle": "Perlu tindakan · semua proyek ({count})",
+    "incident_trigger": "Pemicu tidak tersedia",
+    "incident_run": "Eksekusi alur kerja terakhir gagal",
+    "incident_sync": "Konflik sinkronisasi",
+    "incidentOpen": "Buka",
+    "incidentRetry": "Coba lagi",
+    "incidentsUnavailable": "Tidak dapat memuat peringatan"
   },
   "remote": {
     "tabTitle": "Jarak Jauh",
@@ -2516,7 +2536,9 @@
     "redisMember": "Anggota",
     "redisScore": "Skor",
     "redisBytes": "{count} bita",
-    "redisItems": "{count} item"
+    "redisItems": "{count} item",
+    "exportCancelled": "Ekspor dibatalkan. Coba lagi dari awal dengan data yang sama.",
+    "exportRetry": "Ulangi ekspor"
   },
   "mdViewer": {
     "tableOfContents": "Daftar Isi",

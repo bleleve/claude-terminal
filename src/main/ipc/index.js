@@ -48,6 +48,7 @@ const { registerPreviewHandlers } = require('./preview.ipc');
  * @param {BrowserWindow} mainWindow - Main window reference
  */
 function registerAllHandlers(mainWindow) {
+  require('electron').ipcMain.handle('operation-cancel', require('../utils/cancellableOperation').cancel);
   // Set main window references where needed
   setDialogMainWindow(mainWindow);
   setUsageMainWindow(mainWindow);

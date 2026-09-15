@@ -192,7 +192,7 @@ function createMainWindow({ isDev = false } = {}) {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
       webviewTag: true,
       preload: path.join(__dirname, '..', 'preload.js')
     }
