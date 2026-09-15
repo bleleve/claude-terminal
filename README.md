@@ -269,6 +269,7 @@ npm install
 - Q&A cards highlight question-and-answer exchanges for easy review
 
 ### Dashboard
+- Open the selected project directly from the topbar; actions and cached data appear immediately while Git, code statistics and GitHub data load progressively
 - Per-project overview: current branch, commits ahead/behind, recent commits, contributors
 - Code statistics: lines of code by language, file count, commit count
 - Active terminals count
