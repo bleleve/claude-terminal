@@ -5,12 +5,18 @@
 
 const { ipcMain } = require('electron');
 const mcpService = require('../services/McpService');
+const { updateClaudeConfig } = require('../utils/claudeConfig');
 const { sendFeaturePing } = require('../services/TelemetryService');
 
 /**
  * Register MCP IPC handlers
  */
 function registerMcpHandlers() {
+  ipcMain.handle('mcp-save-config', async (_event, servers) => {
+    if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error('Invalid MCP configuration');
+    await updateClaudeConfig(config => { config.mcpServers = servers; });
+    return { success: true };
+  });
   // Start MCP process
   ipcMain.handle('mcp-start', async (event, { id, command, args, env }) => {
     sendFeaturePing('mcp:start');

@@ -521,15 +521,28 @@ describe('DatabaseService MCP provisioning', () => {
     expect(fs.existsSync(claudeFile)).toBe(true);
   });
 
-  test('provisionGlobalMcp handles corrupted claude.json', async () => {
+  test('provisionGlobalMcp preserves corrupted claude.json instead of replacing it', async () => {
     const claudeFile = path.join(tmpHome, '.claude.json');
     fs.writeFileSync(claudeFile, '{not valid json!!!', 'utf8');
-
     const result = await databaseService.provisionGlobalMcp();
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
+    expect(fs.readFileSync(claudeFile, 'utf8')).toBe('{not valid json!!!');
+  });
 
-    const config = JSON.parse(fs.readFileSync(claudeFile, 'utf8'));
-    expect(config.mcpServers['claude-terminal']).toBeDefined();
+  test('provisioning excludes database passwords from the MCP configuration', async () => {
+    await databaseService.saveConnections([{ id: 'secure', type: 'mysql', password: 'sensitive-value' }]);
+    expect((await databaseService.provisionGlobalMcp()).success).toBe(true);
+    const content = fs.readFileSync(path.join(tmpHome, '.claude.json'), 'utf8');
+    expect(content).not.toContain('CT_DB_PASS');
+    expect(content).not.toContain('sensitive-value');
+  });
+
+  test('MongoDB URI credentials migrate to the keychain without losing host or database', async () => {
+    await databaseService.saveConnections([{ id: 'mongo', type: 'mongodb', connectionString: 'mongodb://user:p%40ss@host1:27017,host2:27017/db?replicaSet=rs' }]);
+    const [connection] = await databaseService.loadConnections();
+    expect(connection.connectionString).toBe('mongodb://host1:27017,host2:27017/db?replicaSet=rs');
+    expect(connection.username).toBe('user');
+    expect(require('keytar').setPassword).toHaveBeenCalledWith('claude-terminal-db', 'db-mongo', 'p@ss');
   });
 
   test('provisionGlobalMcp overwrites previous claude-terminal entry', async () => {
