@@ -21,7 +21,7 @@
     "postinstall": "electron-rebuild -f -w node-pty,keytar,better-sqlite3",
     "lab": "node scripts/workflow-lab/run-lab.js",
     "lab:audit": "node scripts/workflow-lab/audit-slots.js",
-    "test:runtime": "electron scripts/runtime-smoke.cjs"
+    "test:runtime": "node scripts/run-runtime-smoke.cjs"
   },
   "keywords": [
     "claude",

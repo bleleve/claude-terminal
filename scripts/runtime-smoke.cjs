@@ -7,10 +7,17 @@ const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const { pathToFileURL } = require('node:url');
 const { app, BrowserWindow } = require('electron');
-const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-runtime-'));
+const temporary = process.argv[2];
+if (!temporary) throw new Error('Run npm run test:runtime so the parent can clean up the profile after Electron exits');
 const originalHome = os.homedir;
 os.homedir = () => temporary;
 app.on('window-all-closed', () => {});
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('preload-error', (_event, file, error) => console.error('Preload failed:', file, error));
+  contents.on('console-message', details => {
+    if (details.level === 'error') console.error('Renderer:', details.message);
+  });
+});
 app.setPath('userData', path.join(temporary, 'electron'));
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, message) {
@@ -100,12 +107,15 @@ app.whenReady().then(async () => {
   window = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, sandbox: false, nodeIntegration: false, preload: path.resolve(__dirname, '../src/main/preload.js') } });
   security.guardWindow(window, fixture);
   await window.loadFile(fixture);
+  console.log('Boundary fixture:', window.webContents.getURL(), 'permitted:', security.permitted(path.join(dataDir, 'allowed.txt')));
   const boundary = await window.webContents.executeJavaScript(`(() => {
+    try {
     const fs = window.electron_nodeModules.fs;
     const result = { allowed: fs.readFileSync(${JSON.stringify(path.join(dataDir, 'allowed.txt'))}, 'utf8') };
     try { fs.readFileSync(${JSON.stringify(path.join(temporary, 'private.txt'))}, 'utf8'); } catch { result.denied = true; }
     try { fs.writeFileSync(${JSON.stringify(path.resolve(__dirname, '../package.json'))}, 'blocked'); } catch { result.appWriteDenied = true; }
     return result;
+    } catch (error) { return { error: error.message }; }
   })()`);
   assert.deepEqual(boundary, { allowed: 'allowed', denied: true, appWriteDenied: true });
   window.destroy(); window = null;
@@ -160,8 +170,8 @@ app.whenReady().then(async () => {
 
 async function finish(code) {
   clearTimeout(deadline);
-  scheduler?.destroy(); if (remote) await remote.stop(); window?.destroy();
-  os.homedir = originalHome;
-  fs.rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-  app.exit(code);
+  try {
+    scheduler?.destroy(); if (remote) await remote.stop(); window?.destroy();
+    os.homedir = originalHome;
+  } finally { app.exit(code); }
 }
