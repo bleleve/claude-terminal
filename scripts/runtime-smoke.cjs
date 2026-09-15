@@ -26,8 +26,11 @@ app.whenReady().then(async () => {
   assert.equal(db.prepare('select 42 as value').get().value, 42); db.close();
   assert.equal(typeof require('keytar').getPassword, 'function');
   assert.match(require('marked').marked('**ok**'), /strong/);
-  const pty = require('node-pty').spawn(process.execPath, ['-e', 'console.log("PTY_SMOKE_OK")'], {
-    cwd: temporary, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  // Exercise a console shell in the PTY; Electron's Windows executable is a GUI binary.
+  const windows = process.platform === 'win32';
+  const pty = require('node-pty').spawn(windows ? process.env.ComSpec || 'cmd.exe' : '/bin/sh',
+    windows ? '/d /c echo PTY_SMOKE_OK' : ['-c', 'printf PTY_SMOKE_OK'], {
+    cwd: temporary, env: process.env,
   });
   let output = '';
   pty.onData(chunk => { output += chunk; });
