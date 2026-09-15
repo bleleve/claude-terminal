@@ -993,7 +993,19 @@
     "aboutGroup": "关于",
     "rerunSetup": "设置向导",
     "rerunSetupDesc": "更改语言、强调色、编辑器和钩子设置",
-    "rerunSetupBtn": "重新运行"
+    "rerunSetupBtn": "重新运行",
+    "secretBackups": "旧版敏感备份",
+    "secureBackups": "保护旧备份",
+    "secureBackupsDesc": "删除旧数据库密码前，先加密保存可恢复的副本。密钥保留在此电脑的系统钥匙串中。",
+    "secureBackupsAction": "检查并保护",
+    "recoverBackup": "恢复加密备份",
+    "recoverBackupDesc": "将原始内容保存到此电脑上的单独明文文件。",
+    "recoverBackupAction": "恢复…",
+    "backupMigrationResult": "上次检查已保护 {count} 个备份。",
+    "backupRecovered": "备份已恢复到所选文件。",
+    "searchPlaceholder": "搜索设置…",
+    "searchCount": "找到 {count} 项设置",
+    "searchEmpty": "没有匹配的设置"
   },
   "ui": {
     "notifications": "通知",
@@ -1590,7 +1602,8 @@
     "types": {
       "standalone": "独立式",
       "standaloneDesc": "经典Claude Terminal"
-    }
+    },
+    "creationCancelled": "操作已取消。点击创建可使用相同选项重试。"
   },
   "plugins": {
     "title": "插件",
@@ -2052,7 +2065,14 @@
     "backToGrid": "返回概览",
     "newSession": "新会话",
     "renameSession": "重命名会话",
-    "openInClaude": "在Claude视图中打开"
+    "openInClaude": "在Claude视图中打开",
+    "incidentsTitle": "待处理 · 所有项目 ({count})",
+    "incident_trigger": "触发器不可用",
+    "incident_run": "工作流最近一次运行失败",
+    "incident_sync": "同步冲突",
+    "incidentOpen": "打开",
+    "incidentRetry": "重试",
+    "incidentsUnavailable": "无法加载警报"
   },
   "remote": {
     "tabTitle": "远程",
@@ -2516,7 +2536,9 @@
     "redisMember": "会员",
     "redisScore": "分数",
     "redisBytes": "{count} 字节",
-    "redisItems": "{count} 项目"
+    "redisItems": "{count} 项目",
+    "exportCancelled": "导出已取消。重试将使用相同数据从头开始。",
+    "exportRetry": "重新导出"
   },
   "mdViewer": {
     "tableOfContents": "目录",

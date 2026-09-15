@@ -4,213 +4,40 @@
  */
 
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
-const path = require('path');
-const fs = require('fs');
-
-// Répertoires système bloqués en lecture et écriture (par plateforme)
-// Sur Windows, on utilise process.env.SystemRoot pour éviter de hardcoder le drive (C:, D:, etc.)
-function buildBlockedPrefixes() {
-  if (process.platform === 'win32') {
-    const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
-    const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files';
-    const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
-    const programData = process.env.ProgramData || 'C:\\ProgramData';
-    return [systemRoot, programFiles, programFilesX86, programData];
-  }
-  if (process.platform === 'darwin') {
-    return ['/etc', '/bin', '/sbin', '/usr', '/sys', '/proc', '/dev', '/Library/System', '/System'];
-  }
-  return ['/etc', '/bin', '/sbin', '/usr', '/sys', '/proc', '/boot', '/dev', '/lib', '/lib64'];
+// Only Electron is available in this sandbox. All I/O stays behind guarded IPC.
+const bootstrap = ipcRenderer.sendSync('renderer-bootstrap');
+function unwrap(reply) {
+  if (!reply?.ok) throw Object.assign(new Error(reply?.error?.message || 'Access denied'), { code: reply?.error?.code });
+  return reply.value;
 }
-
-const SYSTEM_BLOCKED_PREFIXES = buildBlockedPrefixes();
-
-/**
- * Résout un chemin en suivant les symlinks si le chemin existe,
- * sinon retombe sur path.resolve() (pour les opérations d'écriture sur chemins non existants).
- */
-function safeResolve(p) {
-  try {
-    return fs.realpathSync(p);
-  } catch {
-    return path.resolve(p);
-  }
+function restore(method, value, args) {
+  const entry = item => ({ ...item, isDirectory: () => item.directory, isFile: () => item.file });
+  if (method === 'stat') return entry(value);
+  if (method === 'readdir' && args[1]?.withFileTypes) return value.map(entry);
+  return value;
 }
-
-/**
- * Vérifie si un chemin cible un répertoire système critique.
- * Bloque : null bytes, chemins UNC/Device Windows (\\), chemins système.
- */
-function isSystemPath(p) {
-  if (!p || typeof p !== 'string') return true;
-  if (p.includes('\0')) return true;
-  // Bloquer les chemins UNC (\\server\share) et Device Paths (\\.\PhysicalDrive0) sur Windows
-  if (process.platform === 'win32' && p.startsWith('\\\\')) return true;
-  const resolved = safeResolve(p);
-  return SYSTEM_BLOCKED_PREFIXES.some(prefix =>
-    resolved.toLowerCase().startsWith(prefix.toLowerCase())
-  );
+const fileApi = { promises: {} };
+for (const method of ['exists', 'readFile', 'writeFile', 'readdir', 'stat', 'mkdir', 'rm', 'copyFile', 'unlink', 'rename', 'access']) {
+  fileApi[method + 'Sync'] = (...args) => restore(method, unwrap(ipcRenderer.sendSync('renderer-fs-sync', method, args)), args);
+  if (method !== 'exists') fileApi.promises[method] = async (...args) => restore(method, unwrap(await ipcRenderer.invoke('renderer-fs', method, args)), args);
 }
-
-function throwIfBlocked(p, write = false) {
-  if (!ipcRenderer.sendSync('fs-authorize', p, write)) throw new Error(`Access denied: path is outside authorized project/app data: ${p}`);
-  if (isSystemPath(p)) {
-    throw new Error(`Access denied: system path is protected: ${p}`);
-  }
+// Cache repeated pure path calculations; use the host's native path semantics
+// for drive letters, UNC names and separators on every supported platform.
+const pathApi = { sep: bootstrap.sep }, pathCache = new Map();
+for (const method of ['join', 'dirname', 'basename', 'relative', 'resolve']) {
+  pathApi[method] = (...args) => {
+    const key = JSON.stringify([method, args]);
+    if (pathCache.has(key)) return pathCache.get(key);
+    const value = unwrap(ipcRenderer.sendSync('renderer-path', method, args));
+    if (pathCache.size >= 1024) pathCache.clear();
+    pathCache.set(key, value);
+    return value;
+  };
 }
-
-// Expose Node.js modules that are needed in renderer
-// Note: For better security, these operations should eventually be moved to main process
-//
-// EXPOSED (and nothing else):
-//   - path      : pure string helpers, no I/O
-//   - fs        : a hand-picked subset (sync + promises), every path argument
-//                 guarded by throwIfBlocked() against system directories
-//   - os        : homedir() only
-//   - process   : USERPROFILE / HOME / APPDATA, resourcesPath, platform
-//   - __dirname : app root, for locating bundled resources
-//
-// NEVER EXPOSE `child_process` (nor `vm`, `module`, `net`, or a raw `require`).
-// The renderer displays untrusted content - markdown from Claude responses,
-// repository files, marketplace/plugin metadata, remote-control payloads. A
-// single injection there would turn an exposed exec/spawn into arbitrary code
-// execution on the user's machine, and the path guards above would not help
-// because a command string is not a path. Anything that must run a process
-// belongs in the main process behind a dedicated, validated IPC handler.
 contextBridge.exposeInMainWorld('electron_nodeModules', {
-  path: {
-    join: (...args) => path.join(...args),
-    dirname: (p) => path.dirname(p),
-    basename: (p, ext) => path.basename(p, ext),
-    relative: (from, to) => path.relative(from, to),
-    resolve: (...args) => path.resolve(...args),
-    sep: path.sep
-  },
-  fs: {
-    existsSync: (p) => {
-      throwIfBlocked(p);
-      return fs.existsSync(p);
-    },
-    readFileSync: (p, options) => {
-      throwIfBlocked(p);
-      return fs.readFileSync(p, options);
-    },
-    writeFileSync: (p, data, options) => {
-      throwIfBlocked(p, true);
-      fs.writeFileSync(p, data, options);
-    },
-    readdirSync: (p, options) => {
-      throwIfBlocked(p);
-      const result = fs.readdirSync(p, options);
-      if (options && options.withFileTypes) {
-        return result.map(e => ({
-          name: e.name,
-          isDirectory: () => e.isDirectory(),
-          isFile: () => e.isFile()
-        }));
-      }
-      return result;
-    },
-    statSync: (p) => {
-      throwIfBlocked(p);
-      const stat = fs.statSync(p);
-      return {
-        isDirectory: () => stat.isDirectory(),
-        isFile: () => stat.isFile(),
-        size: stat.size,
-        mtime: stat.mtime
-      };
-    },
-    mkdirSync: (p, options) => {
-      throwIfBlocked(p, true);
-      fs.mkdirSync(p, options);
-    },
-    rmSync: (p, options) => {
-      throwIfBlocked(p, true);
-      fs.rmSync(p, options);
-    },
-    copyFileSync: (src, dest) => {
-      throwIfBlocked(src);
-      throwIfBlocked(dest, true);
-      fs.copyFileSync(src, dest);
-    },
-    unlinkSync: (p) => {
-      throwIfBlocked(p, true);
-      fs.unlinkSync(p);
-    },
-    renameSync: (oldPath, newPath) => {
-      throwIfBlocked(oldPath, true);
-      throwIfBlocked(newPath, true);
-      fs.renameSync(oldPath, newPath);
-    },
-    promises: {
-      access: (p, mode) => {
-        throwIfBlocked(p);
-        return fs.promises.access(p, mode);
-      },
-      readdir: async (p, options) => {
-        throwIfBlocked(p);
-        const result = await fs.promises.readdir(p, options);
-        if (options && options.withFileTypes) {
-          return result.map(e => ({
-            name: e.name,
-            isDirectory: () => e.isDirectory(),
-            isFile: () => e.isFile()
-          }));
-        }
-        return result;
-      },
-      readFile: (p, options) => {
-        throwIfBlocked(p);
-        return fs.promises.readFile(p, options);
-      },
-      stat: (p) => {
-        throwIfBlocked(p);
-        return fs.promises.stat(p).then(stat => ({
-          isDirectory: () => stat.isDirectory(),
-          isFile: () => stat.isFile(),
-          size: stat.size,
-          mtime: stat.mtime
-        }));
-      },
-      mkdir: (p, options) => {
-        throwIfBlocked(p, true);
-        return fs.promises.mkdir(p, options);
-      },
-      writeFile: (p, data, options) => {
-        throwIfBlocked(p, true);
-        return fs.promises.writeFile(p, data, options);
-      },
-      rename: (oldPath, newPath) => {
-        throwIfBlocked(oldPath, true);
-        throwIfBlocked(newPath, true);
-        return fs.promises.rename(oldPath, newPath);
-      },
-      unlink: (p) => {
-        throwIfBlocked(p, true);
-        return fs.promises.unlink(p);
-      },
-      copyFile: (src, dest) => {
-        throwIfBlocked(src);
-        throwIfBlocked(dest, true);
-        return fs.promises.copyFile(src, dest);
-      }
-    }
-  },
-  os: {
-    homedir: () => require('os').homedir()
-  },
-  process: {
-    env: {
-      USERPROFILE: process.env.USERPROFILE,
-      HOME: process.env.HOME,
-      APPDATA: process.env.APPDATA
-    },
-    resourcesPath: process.resourcesPath || '',
-    platform: process.platform
-  },
-  // __dirname from preload (src/main) - calculate app root by going up two levels
-  __dirname: path.join(__dirname, '..', '..')
+  path: pathApi, fs: fileApi, os: { homedir: () => bootstrap.homedir },
+  process: { env: bootstrap.env, resourcesPath: bootstrap.resourcesPath, platform: bootstrap.platform },
+  __dirname: bootstrap.appRoot
 });
 
 // Helper to create safe IPC listener that returns unsubscribe function
@@ -224,6 +51,7 @@ function createListener(channel) {
 
 // Expose protected API to renderer
 contextBridge.exposeInMainWorld('electron_api', {
+  operations: { cancel: id => ipcRenderer.invoke('operation-cancel', id), onProgress: createListener('operation-progress') },
   getPathForFile: file => webUtils.getPathForFile(file),
   // ==================== TERMINAL ====================
   terminal: {
@@ -380,6 +208,7 @@ contextBridge.exposeInMainWorld('electron_api', {
     detectFramework: (params) => ipcRenderer.invoke('api-detect-framework', params),
     getPort: (params) => ipcRenderer.invoke('api-get-port', params),
     detectRoutes: (params) => ipcRenderer.invoke('api-detect-routes', params),
+    onRequestProgress: createListener('api-request-progress'),
     cancelRequest: (requestId) => ipcRenderer.invoke('api-cancel-request', requestId),
     testRequest: (params) => ipcRenderer.invoke('api-test-request', params),
     onData: createListener('api-data'),
@@ -555,6 +384,8 @@ contextBridge.exposeInMainWorld('electron_api', {
 
   // ==================== PROJECT ====================
   project: {
+    initGit: params => ipcRenderer.invoke('project-init-git', params),
+    scaffold: params => ipcRenderer.invoke('project-scaffold', params),
     scanTodos: (projectPath) => ipcRenderer.invoke('scan-todos', projectPath),
     stats: (projectPath) => ipcRenderer.invoke('project-stats', projectPath),
     onQuickActionRun: createListener('quickaction:run'),
@@ -797,6 +628,10 @@ contextBridge.exposeInMainWorld('electron_api', {
 
   // ==================== DATABASE ====================
   database: {
+    secureBackups: () => ipcRenderer.invoke('database-secure-backups'),
+    backupStatus: () => ipcRenderer.invoke('database-backup-status'),
+    recoverBackup: () => ipcRenderer.invoke('database-recover-backup'),
+    exportTable: params => ipcRenderer.invoke('database-export', params),
     testConnection:  (config)  => ipcRenderer.invoke('database-test-connection', config),
     connect:         (params)  => ipcRenderer.invoke('database-connect', params),
     disconnect:      (params)  => ipcRenderer.invoke('database-disconnect', params),
@@ -852,6 +687,9 @@ contextBridge.exposeInMainWorld('electron_api', {
 
   // ==================== WORKFLOW AUTOMATION ====================
   workflow: {
+    getTriggerStatuses: () => ipcRenderer.invoke('workflow-trigger-status'),
+    retryTrigger: id => ipcRenderer.invoke('workflow-retry-trigger', { id }),
+    onTriggerStatus: createListener('workflow-trigger-status'),
     // CRUD
     list:             ()             => ipcRenderer.invoke('workflow-list'),
     get:              (id)           => ipcRenderer.invoke('workflow-get', { id }),

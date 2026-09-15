@@ -993,7 +993,19 @@
     "aboutGroup": "About",
     "rerunSetup": "Setup wizard",
     "rerunSetupDesc": "Change language, accent color, editor, and hooks settings",
-    "rerunSetupBtn": "Re-run"
+    "rerunSetupBtn": "Re-run",
+    "searchPlaceholder": "Search settings…",
+    "searchCount": "{count} matching settings",
+    "searchEmpty": "No matching setting",
+    "secretBackups": "Legacy secret backups",
+    "secureBackups": "Secure old backups",
+    "secureBackupsDesc": "Encrypt a recovery copy before removing old database passwords. The key stays in this computer’s OS keychain.",
+    "secureBackupsAction": "Check and secure",
+    "recoverBackup": "Recover an encrypted backup",
+    "recoverBackupDesc": "Save the original contents to a separate plaintext file on this computer.",
+    "recoverBackupAction": "Recover…",
+    "backupMigrationResult": "{count} backups secured during the last check.",
+    "backupRecovered": "Backup recovered to the selected file."
   },
   "ui": {
     "notifications": "Notifications",
@@ -1590,7 +1602,8 @@
     "types": {
       "standalone": "Standalone",
       "standaloneDesc": "Classic Claude terminal"
-    }
+    },
+    "creationCancelled": "Operation cancelled. Create again to retry with the same choices."
   },
   "plugins": {
     "title": "Plugins",
@@ -2052,7 +2065,14 @@
     "backToGrid": "Back to overview",
     "newSession": "New session",
     "renameSession": "Rename session",
-    "openInClaude": "Open in Claude view"
+    "openInClaude": "Open in Claude view",
+    "incidentsTitle": "Needs attention · all projects ({count})",
+    "incident_trigger": "Trigger unavailable",
+    "incident_run": "Latest workflow run failed",
+    "incident_sync": "Synchronization conflict",
+    "incidentOpen": "Open",
+    "incidentRetry": "Retry",
+    "incidentsUnavailable": "Could not load operational alerts"
   },
   "remote": {
     "tabTitle": "Remote",
@@ -2516,7 +2536,9 @@
     "redisMember": "Member",
     "redisScore": "Score",
     "redisBytes": "{count} bytes",
-    "redisItems": "{count} items"
+    "redisItems": "{count} items",
+    "exportCancelled": "Export cancelled. Retry to start again with the same data.",
+    "exportRetry": "Retry export"
   },
   "mdViewer": {
     "tableOfContents": "Table of Contents",
