@@ -837,6 +837,16 @@ class SettingsPanel extends BasePanel {
               </div>
               <div class="settings-toggle-row">
                 <div class="settings-toggle-label">
+                  <div>${t('settings.orphanReaper')}</div>
+                  <div class="settings-toggle-desc">${t('settings.orphanReaperDesc')}</div>
+                </div>
+                <label class="settings-toggle">
+                  <input type="checkbox" id="orphan-reaper-toggle" ${settings.orphanReaperEnabled !== false ? 'checked' : ''}>
+                  <span class="settings-toggle-slider"></span>
+                </label>
+              </div>
+              <div class="settings-toggle-row">
+                <div class="settings-toggle-label">
                   <div>${t('navigationMode.settingsLabel')}</div>
                   <div class="settings-toggle-desc">${t('navigationMode.settingsHint')}</div>
                 </div>
@@ -2118,6 +2128,8 @@ class SettingsPanel extends BasePanel {
       const newShowTabModeToggle = showTabModeToggleEl ? showTabModeToggleEl.checked : true;
       const telemetryEnabledToggle = document.getElementById('telemetry-enabled-toggle');
       const newTelemetryEnabled = telemetryEnabledToggle ? telemetryEnabledToggle.checked : false;
+      const orphanReaperToggle = document.getElementById('orphan-reaper-toggle');
+      const newOrphanReaperEnabled = orphanReaperToggle ? orphanReaperToggle.checked : true;
       const telemetryCatApp = document.getElementById('telemetry-cat-app');
       const telemetryCatFeatures = document.getElementById('telemetry-cat-features');
       const telemetryCatErrors = document.getElementById('telemetry-cat-errors');
@@ -2180,6 +2192,7 @@ class SettingsPanel extends BasePanel {
         autoClaudeMdUpdate: newAutoClaudeMd,
         maxTurns: newMaxTurns,
         telemetryEnabled: newTelemetryEnabled,
+        orphanReaperEnabled: newOrphanReaperEnabled,
         telemetryCategories: newTelemetryCategories,
         parallelAutoKanban: newParallelAutoKanban,
         parallelAutoKanbanColumn: newParallelAutoKanbanColumn,

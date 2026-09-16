@@ -623,7 +623,9 @@ contextBridge.exposeInMainWorld('electron_api', {
 
   // ==================== APP LIFECYCLE ====================
   lifecycle: {
-    onWillQuit: createListener('app-will-quit')
+    onWillQuit: createListener('app-will-quit'),
+    // Main stopped runaway processes a Claude session left behind (OrphanReaper)
+    onOrphansReaped: createListener('orphan-reaper:reaped')
   },
 
   // ==================== DATABASE ====================
