@@ -36,7 +36,7 @@ Electron Main Process (Node.js)
 ├── src/main/preload.js              # IPC bridge (window.electron_api)
 ├── src/main/preload-quickpicker.js  # Preload for Quick Picker window
 ├── src/main/ipc/                    # 26 IPC files, 256 handlers total
-├── src/main/services/               # 24 services
+├── src/main/services/               # 25 services
 ├── src/main/windows/                # 5 window managers
 ├── src/main/utils/                  # 9 utilities
 ├── src/main/workflow-nodes/         # 21 workflow node types
@@ -144,6 +144,7 @@ Remote UI (PWA for mobile)
 | `CloudRelayClient.js` | WSS client to self-hosted cloud relay |
 | `SyncEngine.js` | Bidirectional desktop <-> cloud sync, conflict resolution, file watcher, per-entity toggles |
 | `TelemetryService.js` | Opt-in anonymous telemetry |
+| `OrphanReaper.js` | Stops the CPU-hungry processes a Claude Code session leaves behind. Every Bash tool call runs in a throwaway shell (`/bin/zsh -c source ~/.claude/shell-snapshots/… && eval '<cmd>' … claude-<hex>-cwd`); the CLI collects that shell but nothing collects what the command backgrounded with `&`, which is re-parented to pid 1 the moment the shell exits. A `ps` sweep every 60 s kills, after two consecutive sightings, (R1) orphaned childless subshells carrying that signature and burning CPU, and (R2) orphaned tool shells whose process group burns CPU — as a group, which is what the CLI does for a command it interrupts. Idle leftovers (a dev server) are never touched. `orphanReaperEnabled` (default on) is read from settings.json on every sweep; POSIX only. Born 2026-09-16 from 38 `(while :; do :; done) &` loops at eight cores that `kill $(jobs -p)` never reached, `$(jobs -p)` being empty in zsh |
 | `FivemService.js` | Re-export (delegated to `src/project-types/fivem`) |
 
 ### Windows (`src/main/windows/`)
@@ -510,7 +511,7 @@ npm run test:watch          # Watch mode
   - `ipc/` - hooks, project, usage
   - `remote-ui/` - hierarchy
   - `security/` - security tests
-  - `services/` - ChatService, DatabaseService, DashboardService, HooksService, MarkdownRenderer, RemoteServer, WorkflowRunner
+  - `services/` - ChatService, DatabaseService, DashboardService, HooksService, OrphanReaper, MarkdownRenderer, RemoteServer, WorkflowRunner
   - `state/` - State, database, git, mcp, projects, settings, terminals, timeTracking, workflows
   - `utils/` - color, commitMessageGenerator, dropPaths, fileIcons, format, formatDuration, frontmatter, git, httpCache, shell, syntaxHighlight
 
