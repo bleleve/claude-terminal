@@ -3668,6 +3668,7 @@
     "running": "Berjalan",
     "finished": "Selesai",
     "noneRunning": "Tidak ada yang berjalan.",
+    "clearFinished": "Hapus tugas yang selesai",
     "empty": "Belum ada tugas latar belakang.",
     "clear": "Hapus",
     "typeAgent": "Agen",
