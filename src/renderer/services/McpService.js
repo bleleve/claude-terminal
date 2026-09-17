@@ -13,6 +13,14 @@ const {
 const { claudeConfigFile, legacyMcpsFile } = require('../utils/paths');
 
 class McpService extends BaseService {
+  /**
+   * Ids of the global servers this panel is responsible for, as of the last
+   * load or save. saveMcps() only deletes from ~/.claude.json what is in here,
+   * so a server added to the file by someone else is never our deletion.
+   * @type {Set<string>}
+   */
+  _knownIds = new Set();
+
   async loadMcps() {
     let mcps = [];
     const fsp = this.api.fs.promises;
@@ -63,24 +71,38 @@ class McpService extends BaseService {
       console.error('Error loading MCPs:', e);
     }
 
+    this._knownIds = new Set(mcps.filter(mcp => mcp.scope !== 'project').map(mcp => mcp.id));
+
     setMcps(mcps);
     mcps.forEach(mcp => initMcpProcess(mcp.id));
     return mcps;
   }
 
+  /**
+   * Write the global MCP servers back to ~/.claude.json.
+   *
+   * `mcps` is the full global set as the panel knows it, so an entry that is
+   * gone from the list is a deletion and has to be removed from the file. But
+   * the file is not ours: the CLI owns it and writes it continuously, and
+   * `config.mcpServers = {}` used to mean any server that appeared between
+   * loadMcps() and this save — installed by `claude mcp add`, pulled from the
+   * cloud, written by another window — was silently dropped.
+   *
+   * So the deletions are computed against what is on disk *now* rather than
+   * against what was on disk when the panel loaded: remove the ids we manage
+   * and no longer have, keep everything else verbatim.
+   */
   async saveMcps(mcps) {
     try {
-      const config = {};
-      config.mcpServers = {};
-      mcps.filter(mcp => mcp.scope !== 'project').forEach(mcp => {
-        if (mcp.type === 'http') {
-          config.mcpServers[mcp.id] = { type: 'http', url: mcp.url };
-        } else {
-          config.mcpServers[mcp.id] = { type: 'stdio', command: mcp.command, args: mcp.args || [], env: mcp.env || {} };
-        }
-      });
-
-      await this.api.mcp.saveConfig(config.mcpServers);
+      const globalMcps = mcps.filter(mcp => mcp.scope !== 'project');
+      const servers = {};
+      for (const mcp of globalMcps) {
+        servers[mcp.id] = mcp.type === 'http'
+          ? { type: 'http', url: mcp.url }
+          : { type: 'stdio', command: mcp.command, args: mcp.args || [], env: mcp.env || {} };
+      }
+      await this.api.mcp.saveConfig(servers, [...this._knownIds]);
+      this._knownIds = new Set(globalMcps.map(mcp => mcp.id));
     } catch (e) {
       console.error('Error saving MCPs:', e);
     }

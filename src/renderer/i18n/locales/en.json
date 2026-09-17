@@ -33,6 +33,7 @@
     "remove": "Remove",
     "ignore": "Ignore",
     "copied": "Copied!",
+    "copyFailed": "Copy failed",
     "justNow": "Just now",
     "add": "Add",
     "yesterday": "Yesterday"
@@ -299,6 +300,8 @@
     "confirmRemoveWorktree": "Remove this worktree? The directory will be deleted.",
     "forceRemoveWorktree": "Force Remove Worktree",
     "confirmForceRemoveWorktree": "This worktree has uncommitted changes. Force remove?",
+    "confirmForceRemoveLockedWorktree": "This worktree is locked. Remove it anyway?",
+    "confirmForceRemoveLockedWorktreeReason": "This worktree is locked (reason: {reason}). Remove it anyway?",
     "forceRemove": "Force Remove",
     "existingBranch": "Existing branch",
     "worktreeNewBranch": "New branch",
@@ -437,6 +440,7 @@
     "mergeConflict": "Merge conflicts detected. Resolve them before continuing.",
     "unrelatedHistories": "Cannot merge unrelated histories. The branches have no common ancestor.",
     "lockFailed": "Cannot lock the reference. Another git operation may be in progress.",
+    "worktreeLocked": "This worktree is locked. Unlock it, or force the removal.",
     "alreadyExists": "This already exists. Choose a different name.",
     "nothingToCommit": "Nothing to commit. The working tree is clean."
   },
@@ -765,6 +769,9 @@
     "minutesAgo": "{count}min ago",
     "hoursAgo": "{count}h ago",
     "yesterday": "Yesterday",
+    "unitDayShort": "d",
+    "unitHourShort": "h",
+    "unitMinuteShort": "min",
     "daysAgo": "{count}d ago"
   },
   "settings": {
@@ -776,6 +783,8 @@
     "accentColorDesc": "Customize the main interface color",
     "terminalTheme": "Terminal theme",
     "terminalThemeDesc": "Change the terminal colors",
+    "terminalFontSize": "Terminal font size",
+    "terminalFontSizeDesc": "Adjust the font size used in terminal tabs",
     "theme": "Terminal theme",
     "notifications": "Notifications",
     "closeAction": "Close action",
@@ -924,6 +933,8 @@
     "terminalGroup": "Terminal",
     "tabRenameOnSlashCommand": "Rename tab on slash command",
     "tabRenameOnSlashCommandDesc": "Automatically rename the terminal tab to the last slash command executed (e.g. /gsd:verify-work 12)",
+    "confirmCloseTab": "Confirm before closing a tab",
+    "confirmCloseTabDesc": "Ask for confirmation when the tab's × would end a running session",
     "aiTabNaming": "AI tab naming",
     "aiTabNamingDesc": "Use AI to generate short tab names from messages",
     "enableFollowupSuggestions": "Follow-up suggestions",
@@ -1007,7 +1018,17 @@
     "recoverBackupDesc": "Save the original contents to a separate plaintext file on this computer.",
     "recoverBackupAction": "Recover…",
     "backupMigrationResult": "{count} backups secured during the last check.",
-    "backupRecovered": "Backup recovered to the selected file."
+    "backupRecovered": "Backup recovered to the selected file.",
+    "search": {
+      "placeholder": "Search settings…",
+      "ariaLabel": "Search settings",
+      "clear": "Clear search",
+      "results": "{count} result",
+      "empty": "No setting matches \"{query}\"",
+      "emptyHint": "Try a shorter word, or part of the description under a setting.",
+      "sourceLabel": "Settings",
+      "resultsPlural": "{count} results"
+    }
   },
   "ui": {
     "notifications": "Notifications",
@@ -1750,6 +1771,7 @@
     "streaming": "Writing...",
     "stopped": "Stopped",
     "ready": "Ready",
+    "elapsedTitle": "Time spent on this turn",
     "openFile": "Open file",
     "binaryFile": "binary file",
     "cloudBadge": "Cloud",
@@ -1787,6 +1809,11 @@
     "conversationResumed": "Conversation resumed",
     "loadingHistory": "Loading conversation...",
     "olderMessages": "{count} earlier messages",
+    "olderMessagesUnknown": "Earlier messages",
+    "newerMessages": "{count} newer messages",
+    "toolOutputLoading": "Loading the full output…",
+    "toolOutputFailed": "Could not load the full output — showing the stored preview.",
+    "toolOutputClipped": "Output too large to display in full.",
     "loading": "Loading...",
     "tabConversation": "Conversation",
     "tabChanges": "Changes",
@@ -1997,7 +2024,8 @@
     "tabDocuments": "Documents",
     "runInBackground": "Run in background",
     "backgroundWorkFailed": "Could not move the work to the background. {error}",
-    "slashRemoteControl": "Share this conversation with claude.ai (on / off)"
+    "slashRemoteControl": "Share this conversation with claude.ai (on / off)",
+    "mentionKnowledge": "Global knowledge"
   },
   "hooks": {
     "consent": {
@@ -2577,6 +2605,7 @@
     "closeToRight": "Close Tabs to Right",
     "closeTabTitle": "Close {name}?",
     "closeTabMessage": "This tab will be closed. Any session running in it ends.",
+    "closeTabRemember": "Remember my choice",
     "closeAll": "Close All"
   },
   "telemetry": {
@@ -3217,6 +3246,9 @@
         "minutesAgo": "{n} min ago",
         "hoursAgo": "{n}h ago",
         "yesterdayAt": "Yesterday {time}",
+    "unitDayShort": "d",
+    "unitHourShort": "h",
+    "unitMinuteShort": "min",
         "daysAgo": "{n}d ago"
       },
       "autocomplete": {
@@ -4187,5 +4219,99 @@
     "dock": "Dock beside the chat",
     "undock": "Hide the column",
     "openScreen": "Open the Files screen"
+  },
+  "timeline": {
+    "tab": "Timeline",
+    "title": "Timeline",
+    "subtitle": "Everything recorded on this project, in one thread",
+    "empty": "Nothing recorded for this project over this period.",
+    "emptyHint": "Commits, sessions, tracked time, workflow and parallel runs and artifacts all show up here.",
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "period": "Period",
+    "days": "{count} days",
+    "eventCount": "{count} events",
+    "messageCount": "{count} messages",
+    "taskCount": "{count} tasks",
+    "workedFor": "Worked {duration}",
+    "filterAll": "All",
+    "copyMarkdown": "Copy as Markdown",
+    "copied": "Timeline copied to the clipboard",
+    "sourcesFailed": "Could not be read: {sources}",
+    "untitledSession": "Untitled session",
+    "untitledWorkflow": "Untitled workflow",
+    "untitledRun": "Untitled run",
+    "untitledArtifact": "Untitled artifact",
+    "kind": {
+      "commit": "Commit",
+      "session": "Session",
+      "time": "Work",
+      "workflow": "Workflow",
+      "parallel": "Parallel run",
+      "artifact": "Artifact"
+    },
+    "status": {
+      "success": "succeeded",
+      "failed": "failed",
+      "running": "running",
+      "pending": "pending",
+      "cancelled": "cancelled",
+      "skipped": "skipped",
+      "timeout": "timed out",
+      "interrupted": "interrupted",
+      "done": "done",
+      "merged": "merged",
+      "merging": "merging",
+      "decomposing": "planning",
+      "reviewing": "under review"
+    }
+  },
+  "whatsNew": {
+    "title": "What's new in v{version}",
+    "movedTitle": "What moved",
+    "notesTitle": "Release notes",
+    "notesUnavailable": "Release notes could not be loaded — check the changelog online.",
+    "showMe": "Show me",
+    "turnItOn": "Turn it on",
+    "gotIt": "Got it",
+    "moves": {
+      "filesScreen": {
+        "title": "The file explorer became its own screen",
+        "body": "It used to be a column in the Claude layout, behind a small side-panel button. It is now the Files screen, in the Project group, and it also renders what each past session changed."
+      },
+      "filesDock": {
+        "title": "The file tree can sit beside the chat again",
+        "body": "If you worked with the tree in view, it can be docked back as a column next to the conversation. Off by default; the Files screen keeps the viewer and the session diffs."
+      }
+    }
+  },
+  "projectTypes": {
+    "title": "Project type extensions",
+    "description": "Load declarative project types from ~/.claude-terminal/project-types/. Extensions are manifests, not code: nothing they contain is executed.",
+    "enable": "Enable project type extensions",
+    "openFolder": "Open extensions folder",
+    "none": "No extensions found",
+    "status": {
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "incompatible": "Incompatible"
+    },
+    "problem": {
+      "title": "Some project type extensions could not be loaded",
+      "andMore": "and {count} more",
+      "no-manifest": "no project-type.json in this folder",
+      "unreadable": "project-type.json could not be read",
+      "not-an-object": "project-type.json is not a JSON object",
+      "bad-manifest-version": "unsupported manifest version",
+      "bad-id": "invalid id",
+      "bad-name": "invalid name",
+      "incompatible": "built for a different version of Claude Terminal",
+      "duplicate-id": "another extension already uses this id",
+      "unreadable-dir": "the extensions folder could not be read",
+      "too-many": "too many extensions; the rest were ignored",
+      "threw": "the extension failed to load",
+      "register-failed": "the extension could not be registered",
+      "loader-failed": "the extension loader failed"
+    }
   }
 }

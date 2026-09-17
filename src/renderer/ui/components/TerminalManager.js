@@ -9,9 +9,10 @@ const { matchesSessionQuery } = require('../../utils/sessionSearch');
 const { isCliFailureText } = require('../../../shared/cli-failure-text');
 const { isSidebarNavigation } = require('../navigationMode');
 
-const { Terminal } = require('@xterm/xterm');
-const { FitAddon } = require('@xterm/addon-fit');
-const { WebglAddon } = require('@xterm/addon-webgl');
+// xterm is loaded on demand — see src/renderer/services/xtermLoader.js. Every
+// `new Terminal(...)` below is preceded by an `await loadXterm()`, which is why
+// each of those functions is async.
+const { loadXterm, attachWebglAddon } = require('../../services/xtermLoader');
 const {
   terminalsState,
   addTerminal,
@@ -43,9 +44,9 @@ const {
   appendTerminalOutput,
   appendChatMessage,
 } = require('../../state');
-const { Marked } = require('marked');
 const { escapeHtml, getFileIcon, highlight } = require('../../utils');
-const { t, getCurrentLanguage } = require('../../i18n');
+const { copyText, readText: readClipboardText } = require('../../utils/clipboard');
+const { t } = require('../../i18n');
 const {
   CLAUDE_TERMINAL_THEME,
   TERMINAL_FONTS,
@@ -56,10 +57,23 @@ const { createChatView } = require('./ChatView');
 const { showContextMenu } = require('./ContextMenu');
 const { showConfirm } = require('./Modal');
 const ContextPromptService = require('../../services/ContextPromptService');
+const { registerOsc52Handler } = require('./terminal/osc52');
+const {
+  detectCompletionSignal,
+  parseClaudeTitle,
+  extractTitleFromInput,
+  BRAILLE_SPINNER_RE,
+} = require('./terminal/claudeSignals');
+const { normalizeStoredKey, eventToNormalizedKey } = require('./terminal/keyBindings');
+const {
+  truncateText,
+  cleanSessionText,
+  groupSessionsByTime,
+  buildSessionCardHtml,
+  SESSION_SVG_DEFS,
+} = require('./terminal/sessionCards');
+const { createMdRenderer, buildMdToc } = require('./terminal/markdownViewer');
 const { getBuiltinSystemPrompt } = require('../../services/BuiltinSystemPrompts');
-
-// BCP 47 tags used for date formatting, one per supported UI language.
-const DATE_LOCALES = { en: 'en-US', fr: 'fr-FR', es: 'es-ES' };
 
 // Lazy require to avoid circular dependency
 let QuickActions = null;
@@ -83,83 +97,8 @@ const POST_TOOL_DEBOUNCE_MS = 4000;
 const POST_THINKING_DEBOUNCE_MS = 1500;
 const SILENCE_THRESHOLD_MS = 1000;
 const RECHECK_DELAY_MS = 1000;
-const BRAILLE_SPINNER_RE = /[\u2801-\u28FF]/;
-
-const { BUILTIN_TOOLS } = require('../../utils/toolRegistry');
-const CLAUDE_TOOLS = new Set([...BUILTIN_TOOLS, 'TodoRead', 'Notebook']);
-
-const TITLE_STOP_WORDS = new Set([
-  'le', 'la', 'les', 'un', 'une', 'des', 'du', 'de', 'et', 'ou', 'a', 'a', 'en', 'dans', 'sur', 'pour', 'par', 'avec',
-  'the', 'a', 'an', 'and', 'or', 'in', 'on', 'for', 'with', 'to', 'of', 'is', 'are', 'it', 'this', 'that',
-  'me', 'moi', 'mon', 'ma', 'mes', 'ce', 'cette', 'ces', 'je', 'tu', 'il', 'elle', 'nous', 'vous', 'ils', 'elles',
-  'can', 'you', 'please', 'help', 'want', 'need', 'like', 'would', 'could', 'should',
-  'peux', 'veux', 'fais', 'fait', 'faire', 'est', 'sont', 'ai', 'as', 'avez', 'ont'
-]);
-
-const SESSION_SVG_DEFS = `<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
-  <symbol id="s-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></symbol>
-  <symbol id="s-bolt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></symbol>
-  <symbol id="s-msg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
-  <symbol id="s-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
-  <symbol id="s-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></symbol>
-  <symbol id="s-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></symbol>
-  <symbol id="s-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></symbol>
-  <symbol id="s-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></symbol>
-  <symbol id="s-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 11V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v7"/><path d="M5 17h14"/><path d="M7 11l-2 6h14l-2-6"/></symbol>
-  <symbol id="s-rename" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></symbol>
-  <symbol id="s-move" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h5a2 2 0 0 0 2-2V6a2 2 0 0 1 2-2h7"/><polyline points="17 1 21 5 17 9"/></symbol>
-</svg>`;
 
 // ── Pure helper functions (module-level, no mutable state) ──
-
-function loadWebglAddon(terminal) {
-  try {
-    const webgl = new WebglAddon();
-    webgl.onContextLoss(() => {
-      webgl.dispose();
-    });
-    terminal.loadAddon(webgl);
-  } catch (e) {
-    console.warn('WebGL addon failed to load, using DOM renderer:', e.message);
-  }
-}
-
-// OSC 52 lets apps inside the PTY (Claude Code, tmux, remote SSH sessions)
-// push text to the system clipboard. xterm.js does not implement it, so
-// without this handler those copies are silently dropped while the inner
-// app still reports success.
-//
-// Only register this on PTY-backed terminals the user drives themselves. Any
-// byte stream reaching a terminal can trigger it, so it is deliberately NOT
-// registered on project-type consoles (fivem/webapp/api/minecraft), which pipe
-// output from a server process that has no business writing the clipboard.
-// Reads are refused for the same reason: they would let that output exfiltrate
-// whatever the user last copied.
-const OSC52_MAX_PAYLOAD = 1_000_000;
-
-function registerOsc52Handler(terminal) {
-  terminal.parser.registerOscHandler(52, (data) => {
-    const semi = data.indexOf(';');
-    if (semi === -1) return true;
-    const payload = data.slice(semi + 1);
-    if (!payload || payload === '?') return true; // clipboard reads not supported
-    // xterm allows up to 10 MB per sequence; cap what we will decode and hand
-    // to the OS clipboard so a runaway app cannot push megabytes into it.
-    if (payload.length > OSC52_MAX_PAYLOAD) return true;
-    try {
-      const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
-      const text = new TextDecoder().decode(bytes);
-      if (window.electron_api?.app?.clipboardWrite) {
-        window.electron_api.app.clipboardWrite(text);
-      } else {
-        navigator.clipboard.writeText(text).catch(() => {});
-      }
-    } catch (e) {
-      console.warn('OSC 52 clipboard decode failed:', e.message);
-    }
-    return true;
-  });
-}
 
 function resetOutputSilenceTimer(_id) { /* no-op */ }
 function clearOutputSilenceTimer(_id) { /* no-op */ }
@@ -180,323 +119,6 @@ function clearOutputSilenceTimer(_id) { /* no-op */ }
  */
 function ptyIdOf(termData, tabId) {
   return termData?.ptyId ?? tabId;
-}
-
-function detectCompletionSignal(terminal) {
-  if (!terminal?.buffer?.active) return null;
-  const buf = terminal.buffer.active;
-  const totalLines = buf.baseY + buf.cursorY;
-  const scanLimit = Math.max(0, totalLines - 10);
-  const lines = [];
-
-  for (let i = totalLines; i >= scanLimit; i--) {
-    const row = buf.getLine(i);
-    if (!row) continue;
-    const text = row.translateToString(true).trim();
-    if (!text || BRAILLE_SPINNER_RE.test(text) || /^[✳❯>$%#\s]*$/.test(text)) continue;
-    lines.push(text);
-    if (lines.length >= 5) break;
-  }
-
-  if (lines.length === 0) return null;
-  const block = lines.join('\n');
-
-  const doneMatch = block.match(/✳\s+\S+\s+for\s+((?:\d+h\s+)?(?:\d+m\s+)?\d+s)/);
-  if (doneMatch) return { signal: 'done', duration: doneMatch[1] };
-
-  if (/·\s+\S+…/.test(block)) return { signal: 'working' };
-
-  if (/\b(Allow|Approve|yes\/no|y\/n)\b/i.test(block)) return { signal: 'permission' };
-
-  if (lines[0].includes('⎿')) return { signal: 'tool_result' };
-
-  return null;
-}
-
-function parseClaudeTitle(title) {
-  const brailleMatch = title.match(/[\u2801-\u28FF]\s+(.*)/);
-  const readyMatch = title.match(/\u2733\s+(.*)/);
-  const content = (brailleMatch || readyMatch)?.[1]?.trim();
-  const state = brailleMatch ? 'working' : readyMatch ? 'ready' : 'unknown';
-  if (!content || content === 'Claude Code') return { state };
-  const firstWord = content.split(/\s/)[0];
-  if (CLAUDE_TOOLS.has(firstWord)) {
-    return { state, tool: firstWord, toolArgs: content.substring(firstWord.length).trim() };
-  }
-  return { state, taskName: content };
-}
-
-function extractTitleFromInput(input) {
-  let text = input.trim();
-  if (text.startsWith('/') || text.length < 5) return null;
-  const words = text.toLowerCase().replace(/[^\w\sàâäéèêëïîôùûüç-]/g, ' ').split(/\s+/)
-    .filter(word => word.length > 2 && !TITLE_STOP_WORDS.has(word));
-  if (words.length === 0) return null;
-  const titleWords = words.slice(0, 4).map(w => w.charAt(0).toUpperCase() + w.slice(1));
-  return titleWords.join(' ');
-}
-
-function extractTerminalContext(terminal) {
-  if (!terminal?.buffer?.active) return null;
-  const buf = terminal.buffer.active;
-  const totalLines = buf.baseY + buf.cursorY;
-  const scanLimit = Math.max(0, totalLines - 30);
-
-  const lines = [];
-  for (let i = totalLines; i >= scanLimit; i--) {
-    const row = buf.getLine(i);
-    if (!row) continue;
-    const text = row.translateToString(true).trim();
-    if (!text) continue;
-    if (BRAILLE_SPINNER_RE.test(text)) continue;
-    if (/^[✳❯>\$%#\s]*$/.test(text)) continue;
-    lines.unshift(text);
-    if (lines.length >= 6) break;
-  }
-
-  if (lines.length === 0) return null;
-
-  const block = lines.join('\n');
-  const lastLine = lines[lines.length - 1];
-
-  const questionMatch = block.match(/^(.+\?)\s*$/m);
-  if (questionMatch) {
-    const q = questionMatch[1].trim();
-    if (q.length > 10 && q.length <= 200) return { type: 'question', text: q };
-  }
-
-  if (/\b(allow|approve|permit|yes\/no|y\/n)\b/i.test(block) ||
-      /\b(Run|Execute|Edit|Write|Read|Delete|Bash)\b.*\?/.test(block)) {
-    return { type: 'permission', text: lastLine.length <= 120 ? lastLine : null };
-  }
-
-  return { type: 'done', text: null };
-}
-
-function normalizeStoredKey(key) {
-  if (!key) return '';
-  return key
-    .toLowerCase()
-    .replace(/\s+/g, '')
-    .split('+')
-    .sort((a, b) => {
-      const order = ['ctrl', 'alt', 'shift', 'meta'];
-      const ai = order.indexOf(a);
-      const bi = order.indexOf(b);
-      if (ai !== -1 && bi !== -1) return ai - bi;
-      if (ai !== -1) return -1;
-      if (bi !== -1) return 1;
-      return 0;
-    })
-    .join('+');
-}
-
-function eventToNormalizedKey(e) {
-  const parts = [];
-  if (e.ctrlKey) parts.push('ctrl');
-  if (e.altKey) parts.push('alt');
-  if (e.shiftKey) parts.push('shift');
-  if (e.metaKey) parts.push('meta');
-  let key = e.key.toLowerCase();
-  if (key === ' ') key = 'space';
-  if (key === 'arrowup') key = 'up';
-  if (key === 'arrowdown') key = 'down';
-  if (key === 'arrowleft') key = 'left';
-  if (key === 'arrowright') key = 'right';
-  if (!['ctrl', 'alt', 'shift', 'meta', 'control'].includes(key)) {
-    parts.push(key);
-  }
-  return parts.join('+');
-}
-
-function formatRelativeTime(dateString) {
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffMs = now - date;
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMins < 1) return t('time.justNow');
-  if (diffMins < 60) return t('time.minutesAgo', { count: diffMins });
-  if (diffHours < 24) return t('time.hoursAgo', { count: diffHours });
-  if (diffDays < 7) return t('time.daysAgo', { count: diffDays });
-  const locale = DATE_LOCALES[getCurrentLanguage()] || DATE_LOCALES.en;
-  return date.toLocaleDateString(locale, { day: 'numeric', month: 'short' });
-}
-
-function truncateText(text, maxLength) {
-  if (!text) return '';
-  if (text.length <= maxLength) return text;
-  return text.slice(0, maxLength) + '...';
-}
-
-function cleanSessionText(text) {
-  if (!text) return { text: '', skillName: '' };
-
-  let skillName = '';
-
-  const cmdNameMatch = text.match(/<command-name>\/?([^<]+)<\/command-name>/);
-  if (cmdNameMatch) {
-    skillName = cmdNameMatch[1].trim().replace(/^\//, '');
-  }
-
-  const argsMatch = text.match(/<command-args>([^<]+)<\/command-args>/);
-  const argsText = argsMatch ? argsMatch[1].trim() : '';
-
-  let cleaned = text.replace(/<[^>]+>[^<]*<\/[^>]+>/g, '');
-  cleaned = cleaned.replace(/<[^>]+>/g, '');
-  cleaned = cleaned.replace(/\[Request interrupted[^\]]*\]/g, '');
-  cleaned = cleaned.replace(/\s+/g, ' ').trim();
-
-  if (!cleaned && argsText) {
-    cleaned = argsText;
-  }
-
-  return { text: cleaned, skillName };
-}
-
-function getSessionGroup(dateString) {
-  const date = new Date(dateString);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const weekAgo = new Date(today);
-  weekAgo.setDate(weekAgo.getDate() - 7);
-
-  if (date >= today) return 'today';
-  if (date >= yesterday) return 'yesterday';
-  if (date >= weekAgo) return 'thisWeek';
-  return 'older';
-}
-
-function groupSessionsByTime(sessions) {
-  const groups = {
-    pinned: { key: 'pinned', label: t('sessions.pinned'), sessions: [] },
-    today: { key: 'today', label: t('sessions.today'), sessions: [] },
-    yesterday: { key: 'yesterday', label: t('sessions.yesterday'), sessions: [] },
-    thisWeek: { key: 'thisWeek', label: t('sessions.thisWeek'), sessions: [] },
-    older: { key: 'older', label: t('sessions.older'), sessions: [] }
-  };
-
-  sessions.forEach(session => {
-    if (session.pinned) {
-      groups.pinned.sessions.push(session);
-    } else {
-      const group = getSessionGroup(session.modified);
-      groups[group].sessions.push(session);
-    }
-  });
-
-  return Object.values(groups).filter(g => g.sessions.length > 0);
-}
-
-function buildSessionCardHtml(s, index) {
-  const MAX_ANIMATED = 10;
-  const animClass = index < MAX_ANIMATED ? ' session-card--anim' : ' session-card--instant';
-  const freshClass = s.freshness ? ` session-card--${s.freshness}` : '';
-  const pinnedClass = s.pinned ? ' session-card--pinned' : '';
-  const renamedClass = s.isRenamed ? ' session-card--renamed' : '';
-  const skillClass = s.isSkill ? ' session-card-icon--skill' : '';
-  const titleSkillClass = s.isSkill ? ' session-card-title--skill' : '';
-  const iconId = s.isSkill ? 's-bolt' : 's-chat';
-  const pinTitle = s.pinned ? (t('sessions.unpin') || 'Unpin') : (t('sessions.pin') || 'Pin');
-  const renameTitle = t('sessions.rename') || 'Rename';
-  const moveTitle = t('sessions.move.title');
-  // A session the CLI re-filed under a worktree: say where it ran, because it
-  // will resume there and not in the project root.
-  const worktreeTitle = s.worktreeMissing
-    ? t('sessions.worktreeGone', { name: s.worktree })
-    : t('sessions.worktreeRan', { name: s.worktree });
-  const worktreeHtml = s.worktree
-    ? `<span class="session-meta-worktree${s.worktreeMissing ? ' session-meta-worktree--gone' : ''}" title="${escapeHtml(worktreeTitle)}"><svg width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="3" cy="3" r="1.5"/><circle cx="8" cy="3" r="1.5"/><circle cx="3" cy="8" r="1.5"/><path d="M3 4.5v3M4.5 3h3M8 4.5v1a2 2 0 01-2 2H4.5"/></svg>${escapeHtml(s.worktree)}</span>`
-    : '';
-
-  return `<div class="session-card${freshClass}${pinnedClass}${renamedClass}${animClass}" data-sid="${s.sessionId}" style="--ci:${index < MAX_ANIMATED ? index : 0}">
-<div class="session-card-icon${skillClass}"><svg width="16" height="16"><use href="#${iconId}"/></svg></div>
-<div class="session-card-body">
-<span class="session-card-title${titleSkillClass}">${escapeHtml(truncateText(s.displayTitle, 80))}</span>
-${s.displaySubtitle ? `<span class="session-card-subtitle">${escapeHtml(truncateText(s.displaySubtitle, 120))}</span>` : ''}
-</div>
-<div class="session-card-meta">
-<span class="session-meta-item"><svg width="11" height="11"><use href="#s-msg"/></svg>${s.messageCount}</span>
-<span class="session-meta-item"><svg width="11" height="11"><use href="#s-clock"/></svg>${formatRelativeTime(s.modified)}</span>
-${s.gitBranch ? `<span class="session-meta-branch"><svg width="10" height="10"><use href="#s-branch"/></svg>${escapeHtml(s.gitBranch)}</span>` : ''}
-${worktreeHtml}
-</div>
-<div class="session-card-actions">
-<button class="session-card-rename" data-rename-sid="${s.sessionId}" title="${escapeHtml(renameTitle)}" aria-label="${escapeHtml(renameTitle)}"><svg width="12" height="12"><use href="#s-rename"/></svg></button>
-<button class="session-card-move" data-move-sid="${s.sessionId}" title="${escapeHtml(moveTitle)}" aria-label="${escapeHtml(moveTitle)}"><svg width="13" height="13"><use href="#s-move"/></svg></button>
-<button class="session-card-pin" data-pin-sid="${s.sessionId}" title="${escapeHtml(pinTitle)}" aria-label="${escapeHtml(pinTitle)}"><svg width="13" height="13"><use href="#s-pin"/></svg></button>
-</div>
-<div class="session-card-arrow"><svg width="12" height="12"><use href="#s-arrow"/></svg></div>
-</div>`;
-}
-
-function createMdRenderer(basePath) {
-  const path = window.electron_nodeModules.path;
-  const md = new Marked();
-  md.use({
-    renderer: {
-      code({ text, lang }) {
-        const decoded = (text || '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
-        const highlighted = lang ? highlight(decoded, lang) : escapeHtml(decoded);
-        return `<div class="chat-code-block"><div class="chat-code-header"><span class="chat-code-lang">${escapeHtml(lang || 'text')}</span><button class="chat-code-copy" title="${t('common.copy')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></button></div><pre><code>${highlighted}</code></pre></div>`;
-      },
-      codespan({ text }) {
-        return `<code class="chat-inline-code">${escapeHtml(text)}</code>`;
-      },
-      table({ header, rows }) {
-        const safeAlign = (a) => ['left', 'center', 'right'].includes(a) ? a : 'left';
-        const headerHtml = header.map(h => `<th style="text-align:${safeAlign(h.align)}">${escapeHtml(typeof h.text === 'string' ? h.text : String(h.text || ''))}</th>`).join('');
-        const rowsHtml = rows.map(row =>
-          `<tr>${row.map(cell => `<td style="text-align:${safeAlign(cell.align)}">${escapeHtml(typeof cell.text === 'string' ? cell.text : String(cell.text || ''))}</td>`).join('')}</tr>`
-        ).join('');
-        return `<div class="chat-table-wrapper"><table class="chat-table"><thead><tr>${headerHtml}</tr></thead><tbody>${rowsHtml}</tbody></table></div>`;
-      },
-      link({ href, text }) {
-        const safeHref = escapeHtml((href || '').trim());
-        return `<a class="md-viewer-link" data-md-link="${safeHref}" title="${t('mdViewer.ctrlClickToOpen')}">${text || safeHref}</a>`;
-      },
-      image({ href, title, text }) {
-        const src = (href || '').startsWith('http') ? href
-          : `file:///${path.resolve(basePath, href || '').replace(/\\/g, '/')}`;
-        return `<img src="${src}" alt="${escapeHtml(text || '')}" title="${escapeHtml(title || '')}" class="md-viewer-img" />`;
-      },
-      heading({ tokens, depth }) {
-        const text = tokens.map(tok => tok.raw || tok.text || '').join('');
-        const id = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-        return `<h${depth} id="md-h-${id}" class="md-viewer-heading">${this.parser.parseInline(tokens)}</h${depth}>`;
-      },
-      html() { return ''; }
-    },
-    tokenizer: {
-      html() { return undefined; }
-    },
-    gfm: true,
-    breaks: false
-  });
-  return md;
-}
-
-function buildMdToc(content) {
-  const md = new Marked();
-  const tokens = md.lexer(content);
-  const headings = tokens
-    .filter(tok => tok.type === 'heading')
-    .map(tok => {
-      const text = tok.text || '';
-      const id = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-      return { depth: tok.depth, text, id: `md-h-${id}` };
-    });
-  if (headings.length === 0) return '';
-  return `<nav class="md-toc-nav">
-    <div class="md-toc-title">${t('mdViewer.tableOfContents')}</div>
-    <ul class="md-toc-list">${headings.map(h =>
-      `<li class="md-toc-item md-toc-depth-${h.depth}"><a href="#${h.id}" data-toc-link="${h.id}">${escapeHtml(h.text)}</a></li>`
-    ).join('')}</ul>
-  </nav>`;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -523,6 +145,10 @@ class TerminalManager extends BaseComponent {
     this._apiConsoleIds = new Map();
     this._errorOverlays = new Map();
     this._typeConsoleIds = new Map();
+    // In-flight createTypeConsole() calls, keyed like _typeConsoleIds. Opening
+    // a console now straddles an await (the emulator chunk), so two clicks on
+    // the same button would otherwise each build their own console.
+    this._typeConsolePending = new Map();
     this._lastPasteTime = 0;
     this._lastArrowTime = 0;
     this._draggedTab = null;
@@ -838,11 +464,7 @@ class TerminalManager extends BaseComponent {
       }
     };
     const tryImagePaste = () => this._relayImagePaste(terminalId, inputChannel);
-    navigator.clipboard.readText()
-      .then((text) => (text ? sendPaste(text) : tryImagePaste()))
-      .catch(() => api.app.clipboardRead()
-        .then((text) => (text ? sendPaste(text) : tryImagePaste()))
-        .catch(() => tryImagePaste()));
+    readClipboardText().then((text) => (text ? sendPaste(text) : tryImagePaste()));
   }
 
   // No text in the clipboard usually means an image. We swallow Ctrl+V to run
@@ -879,7 +501,7 @@ class TerminalManager extends BaseComponent {
         if (selection) {
           e.preventDefault();
           e.stopImmediatePropagation();
-          navigator.clipboard.writeText(selection).catch(() => self._api.app.clipboardWrite(selection));
+          copyText(selection);
           terminal.clearSelection();
         }
       }
@@ -904,8 +526,7 @@ class TerminalManager extends BaseComponent {
       if (ts.rightClickCopyPaste?.enabled) {
         const selection = terminal.getSelection();
         if (selection) {
-          navigator.clipboard.writeText(selection)
-            .catch(() => self._api.app.clipboardWrite(selection));
+          copyText(selection);
           terminal.clearSelection();
         } else {
           self._performPaste(terminalId, inputChannel);
@@ -931,8 +552,7 @@ class TerminalManager extends BaseComponent {
               disabled: !selection,
               onClick: () => {
                 if (selection) {
-                  navigator.clipboard.writeText(selection)
-                    .catch(() => self._api.app.clipboardWrite(selection));
+                  copyText(selection);
                   terminal.clearSelection();
                 }
               }
@@ -997,8 +617,7 @@ class TerminalManager extends BaseComponent {
           if (eventKey === normalizeStoredKey(ctrlCCustomKey) && ts.ctrlC?.enabled !== false) {
             const selection = getCopySelection();
             if (selection) {
-              navigator.clipboard.writeText(selection)
-                .catch(() => self._api.app.clipboardWrite(selection));
+              copyText(selection);
               consumeSelection();
               return false;
             }
@@ -1071,8 +690,7 @@ class TerminalManager extends BaseComponent {
             }
             const selection = getCopySelection();
             if (selection) {
-              navigator.clipboard.writeText(selection)
-                .catch(() => self._api.app.clipboardWrite(selection));
+              copyText(selection);
               consumeSelection();
               return false;
             }
@@ -1132,7 +750,7 @@ class TerminalManager extends BaseComponent {
       if (e.ctrlKey && e.shiftKey && e.key === 'C' && e.type === 'keydown') {
         const selection = terminal.getSelection();
         if (selection) {
-          navigator.clipboard.writeText(selection).catch(() => self._api.app.clipboardWrite(selection));
+          copyText(selection);
           terminal.clearSelection();
         }
         return false;
@@ -1312,6 +930,11 @@ class TerminalManager extends BaseComponent {
     const termData = getTerminal(id);
     if (termData && termData.status !== status) {
       const previousStatus = termData.status;
+      // The turn a pending MCP send was waiting for has visibly begun (or died),
+      // so `idle` is meaningful again from here on.
+      if (status === 'working' || status === 'loading' || status === 'error') {
+        require('../../state/terminals.state').clearTabSend(termData);
+      }
       updateTerminal(id, { status });
       const tab = document.querySelector(`.terminal-tab[data-id="${id}"]`);
       if (tab) {
@@ -1489,6 +1112,44 @@ class TerminalManager extends BaseComponent {
 
     const TerminalSessionService = require('../../services/TerminalSessionService');
     TerminalSessionService.saveTerminalSessions();
+  }
+
+  /**
+   * Where a tab sits, as the tab it follows — `null` means "first".
+   * Deliberately not a DOM index: the caller captures this to put a
+   * *replacement* tab back, so every tab after this one shifts by the time the
+   * slot is used and an index would land one place off.
+   */
+  captureTabSlot(id) {
+    const tab = document.querySelector(`.terminal-tab[data-id="${id}"]`);
+    if (!tab) return null;
+    return {
+      afterId: tab.previousElementSibling?.dataset.id || null,
+      pinned: tab.classList.contains('pinned-tab'),
+    };
+  }
+
+  /** Move a tab back into a slot returned by captureTabSlot(). */
+  restoreTabSlot(id, slot) {
+    if (!slot) return;
+    const tabsContainer = document.getElementById('terminals-tabs');
+    const tab = tabsContainer?.querySelector(`.terminal-tab[data-id="${id}"]`);
+    if (!tab) return;
+
+    // The pinned zone is a cluster at the head of the bar, so an unpinned tab
+    // dropped inside it would break that invariant — and setTabPinned() anchors
+    // on the last pinned tab, so it would mis-place the next pin too. Re-pin
+    // first, then place: setTabPinned() only moves the tab to the end of the
+    // zone, the insert below puts it back in its own slot.
+    if (slot.pinned && !tab.classList.contains('pinned-tab')) this.setTabPinned(id, true);
+
+    const anchor = slot.afterId
+      ? tabsContainer.querySelector(`.terminal-tab[data-id="${slot.afterId}"]`)
+      : null;
+    // The tab it followed is gone: leave the new tab where it was appended
+    // rather than guessing at a slot that no longer exists.
+    if (slot.afterId && !anchor) return;
+    tabsContainer.insertBefore(tab, anchor ? anchor.nextSibling : tabsContainer.firstChild);
   }
 
   _showTabContextMenu(e, id) {
@@ -1677,10 +1338,19 @@ class TerminalManager extends BaseComponent {
    * once for the whole batch, so putting the prompt in closeTerminal() would
    * fire it twice (or N times) for a single decision.
    *
+   * The dialog carries a "remember my choice" checkbox, which only takes effect
+   * on confirm: remembering a *cancel* would mean a × that never closes
+   * anything. Turning it back on lives in Settings → Claude → Terminal.
+   *
    * @param {string} id - Terminal id
    * @param {Function} close - Performs the real close once confirmed
    */
   async _confirmCloseTab(id, close) {
+    if (getSetting('confirmCloseTab') === false) {
+      close();
+      return;
+    }
+
     // The dialog is modal, so a × click on another tab while it is up would
     // stack a second overlay that Escape/Enter then answers at the same time.
     if (this._closeConfirmOpen) return;
@@ -1693,16 +1363,22 @@ class TerminalManager extends BaseComponent {
 
     this._closeConfirmOpen = true;
     let confirmed = false;
+    let remember = false;
     try {
-      confirmed = await showConfirm({
+      const answer = await showConfirm({
         title: t('tabs.closeTabTitle', { name: tabName }),
         message: t('tabs.closeTabMessage'),
         confirmLabel: t('tabs.close'),
+        rememberLabel: t('tabs.closeTabRemember'),
         danger: true
       });
+      confirmed = answer.confirmed;
+      remember = answer.remember;
     } finally {
       this._closeConfirmOpen = false;
     }
+
+    if (confirmed && remember) setSetting('confirmCloseTab', false);
 
     if (!confirmed) return;
     // The tab can be gone by the time the user answers (PTY exit, project close).
@@ -1803,6 +1479,41 @@ class TerminalManager extends BaseComponent {
     if (this._callbacks.onRenderProjects) this._callbacks.onRenderProjects();
   }
 
+  /**
+   * Resolve the lazily-loaded emulator, or degrade.
+   *
+   * A load that fails leaves nothing able to draw a terminal, so the caller has
+   * to bail out — and if it already spawned a PTY, that PTY has to go with it
+   * rather than linger with no window attached to it. The user is told once,
+   * through a toast rather than a desktop notification: this happens while they
+   * are looking at the app, and showNotification() suppresses itself when the
+   * window has focus.
+   *
+   * @param {Promise<{Terminal: Function, FitAddon: Function}>} promise
+   * @param {number|string|null} [ptyId] - PTY to kill if the load failed
+   * @returns {Promise<{Terminal: Function, FitAddon: Function}|null>}
+   */
+  async _awaitXterm(promise, ptyId = null) {
+    try {
+      return await promise;
+    } catch (err) {
+      console.error('Failed to load the terminal emulator:', err);
+      if (ptyId !== null && ptyId !== undefined) {
+        try {
+          this._api.terminal.kill({ id: ptyId });
+        } catch (e) {
+          // Already gone, or main refused it — nothing left to clean up here.
+        }
+      }
+      try {
+        require('./Toast').showError(t('terminals.createError'));
+      } catch (e) {
+        // A toast that cannot be raised must not take the caller down with it.
+      }
+      return null;
+    }
+  }
+
   // ── Create terminal ──
 
   async createTerminal(project, options = {}) {
@@ -1815,6 +1526,10 @@ class TerminalManager extends BaseComponent {
       return this._createChatTerminal(chatProject, { skipPermissions, name: customName, nameCustom, parentProjectId: overrideCwd ? project.id : null, resumeSessionId, initialPrompt, initialImages, initialModel, initialEffort, onSessionStart, systemPrompt, tabTag });
     }
 
+    // Started before the PTY spawn rather than after it: on the first terminal
+    // of a session both take a few hundred ms and neither needs the other.
+    const xtermPromise = loadXterm();
+
     const result = await this._api.terminal.create({
       cwd: overrideCwd || project.path,
       runClaude,
@@ -1822,9 +1537,15 @@ class TerminalManager extends BaseComponent {
       // Only an explicit binding is sent: unbound projects run against the
       // machine-wide login, which is what keeps `claude /login` capturable.
       accountId: getProjectAccount(project.id),
+      // Attribution for the output capture and the terminal_exit_code triggers.
+      // A worktree tab keeps the parent's id — that is the project the capture
+      // log is keyed by and the one a trigger is scoped to.
+      projectId: project.id,
+      projectPath: project.path,
       ...(resumeSessionId ? { resumeSessionId } : {})
     });
 
+    let id;
     if (result && typeof result === 'object' && 'success' in result) {
       if (!result.success) {
         console.error('Failed to create terminal:', result.error);
@@ -1833,16 +1554,20 @@ class TerminalManager extends BaseComponent {
         }
         return null;
       }
-      var id = result.id;
+      id = result.id;
     } else {
-      var id = result;
+      id = result;
     }
+
+    const xterm = await this._awaitXterm(xtermPromise, id);
+    if (!xterm) return null;
+    const { Terminal, FitAddon } = xterm;
 
     const terminalThemeId = getSetting('terminalTheme') || 'claude';
     const terminal = new Terminal({
       theme: getTerminalTheme(terminalThemeId),
       fontFamily: TERMINAL_FONTS.claude.fontFamily,
-      fontSize: TERMINAL_FONTS.claude.fontSize,
+      fontSize: getSetting('terminalFontSize') || TERMINAL_FONTS.claude.fontSize,
       cursorBlink: true,
       scrollback: 5000
     });
@@ -1929,7 +1654,7 @@ class TerminalManager extends BaseComponent {
     document.getElementById('empty-terminals').style.display = 'none';
 
     terminal.open(wrapper);
-    loadWebglAddon(terminal);
+    attachWebglAddon(terminal);
     registerOsc52Handler(terminal);
     setTimeout(() => {
       const fitContainer = wrapper.closest('.terminal-wrapper') || wrapper;
@@ -2139,19 +1864,63 @@ class TerminalManager extends BaseComponent {
     };
   }
 
+  /**
+   * Open (or focus) the console tab of a type-specific project — the FiveM
+   * server, the webapp dev server, the API, the Discord bot.
+   *
+   * Async since the emulator became lazy. Every call site ignores the return
+   * value, but it still resolves to the console id so the contract is unchanged
+   * for anything that starts reading it.
+   *
+   * @returns {Promise<string|null>}
+   */
   createTypeConsole(project, projectIndex) {
     const typeHandler = registry.get(project.type);
     const config = typeHandler.getConsoleConfig(project, projectIndex);
-    if (!config) return null;
+    if (!config) return Promise.resolve(null);
 
-    const { typeId, tabIcon, tabClass, dotClass, wrapperClass, consoleViewSelector, ipcNamespace, scrollback, disableStdin } = config;
-
-    const mapKey = `${typeId}-${projectIndex}`;
+    const mapKey = `${config.typeId}-${projectIndex}`;
     const existingId = this._typeConsoleIds.get(mapKey);
     if (existingId && getTerminal(existingId)) {
       this.setActiveTerminal(existingId);
-      return existingId;
+      return Promise.resolve(existingId);
     }
+
+    const inFlight = this._typeConsolePending.get(mapKey);
+    if (inFlight) return inFlight;
+
+    const self = this;
+    const build = (async () => {
+      try {
+        return await self._buildTypeConsole(project, projectIndex, typeHandler, config);
+      } catch (err) {
+        // The console is one tab; a throw in here must not escape into the
+        // click handler that opened it.
+        console.error('[TerminalManager] Failed to open the type console:', err);
+        return null;
+      } finally {
+        self._typeConsolePending.delete(mapKey);
+      }
+    })();
+
+    this._typeConsolePending.set(mapKey, build);
+    return build;
+  }
+
+  /**
+   * The body of createTypeConsole(), past the dedup checks.
+   * @returns {Promise<string|null>}
+   */
+  async _buildTypeConsole(project, projectIndex, typeHandler, config) {
+    const { typeId, tabIcon, tabClass, dotClass, wrapperClass, consoleViewSelector, ipcNamespace, scrollback, disableStdin } = config;
+
+    const mapKey = `${typeId}-${projectIndex}`;
+
+    // No PTY of ours to unwind here — the server process this console mirrors
+    // is owned by the project type and keeps running either way.
+    const xterm = await this._awaitXterm(loadXterm());
+    if (!xterm) return null;
+    const { Terminal, FitAddon } = xterm;
 
     const id = `${typeId}-${projectIndex}-${Date.now()}`;
 
@@ -2159,7 +1928,7 @@ class TerminalManager extends BaseComponent {
     const terminal = new Terminal({
       theme: getTerminalTheme(themeId),
       fontFamily: TERMINAL_FONTS[typeId]?.fontFamily || TERMINAL_FONTS.fivem.fontFamily,
-      fontSize: TERMINAL_FONTS[typeId]?.fontSize || TERMINAL_FONTS.fivem.fontSize,
+      fontSize: getSetting('terminalFontSize') || TERMINAL_FONTS[typeId]?.fontSize || TERMINAL_FONTS.fivem.fontSize,
       cursorBlink: false,
       disableStdin: disableStdin === true,
       scrollback: scrollback || 10000
@@ -2173,6 +1942,8 @@ class TerminalManager extends BaseComponent {
       fitAddon,
       project,
       projectIndex,
+      // Type consoles resize their PTY through their own IPC namespace, not `terminal`.
+      ipcNamespace,
       name: `${tabIcon} ${project.name}`,
       status: 'ready',
       type: typeId,
@@ -2218,7 +1989,7 @@ class TerminalManager extends BaseComponent {
 
     const consoleView = wrapper.querySelector(consoleViewSelector);
     terminal.open(consoleView);
-    loadWebglAddon(terminal);
+    attachWebglAddon(terminal);
     // No OSC 52 here on purpose — see registerOsc52Handler: this console pipes
     // a project server's output, which must not reach the system clipboard.
     setTimeout(() => {
@@ -2245,7 +2016,7 @@ class TerminalManager extends BaseComponent {
           if (selection) {
             e.preventDefault();
             e.stopImmediatePropagation();
-            navigator.clipboard.writeText(selection).catch(() => self._api.app.clipboardWrite(selection));
+            copyText(selection);
             terminal.clearSelection();
           }
         } else if (e.key === 'v' || e.key === 'V') {
@@ -3173,14 +2944,20 @@ class TerminalManager extends BaseComponent {
       });
     }
 
+    const xtermPromise = loadXterm();
+
     const result = await this._api.terminal.create({
       cwd: resumeCwd || project.path,
       runClaude: true,
       resumeSessionId: sessionId,
       skipPermissions,
-      accountId: getProjectAccount(project.id)
+      accountId: getProjectAccount(project.id),
+      // Attribution for the output capture and the terminal_exit_code triggers.
+      projectId: project.id,
+      projectPath: project.path
     });
 
+    let id;
     if (result && typeof result === 'object' && 'success' in result) {
       if (!result.success) {
         console.error('Failed to resume session:', result.error);
@@ -3189,16 +2966,20 @@ class TerminalManager extends BaseComponent {
         }
         return null;
       }
-      var id = result.id;
+      id = result.id;
     } else {
-      var id = result;
+      id = result;
     }
+
+    const xterm = await this._awaitXterm(xtermPromise, id);
+    if (!xterm) return null;
+    const { Terminal, FitAddon } = xterm;
 
     const terminalThemeId = getSetting('terminalTheme') || 'claude';
     const terminal = new Terminal({
       theme: getTerminalTheme(terminalThemeId),
       fontFamily: TERMINAL_FONTS.claude.fontFamily,
-      fontSize: TERMINAL_FONTS.claude.fontSize,
+      fontSize: getSetting('terminalFontSize') || TERMINAL_FONTS.claude.fontSize,
       cursorBlink: true,
       scrollback: 5000
     });
@@ -3257,7 +3038,7 @@ class TerminalManager extends BaseComponent {
     document.getElementById('empty-terminals').style.display = 'none';
 
     terminal.open(wrapper);
-    loadWebglAddon(terminal);
+    attachWebglAddon(terminal);
     registerOsc52Handler(terminal);
     setTimeout(() => {
       const fitContainer = wrapper.closest('.terminal-wrapper') || wrapper;
@@ -3345,28 +3126,38 @@ class TerminalManager extends BaseComponent {
   // ── Create terminal with prompt ──
 
   async _createTerminalWithPrompt(project, prompt) {
+    const xtermPromise = loadXterm();
+
     const result = await this._api.terminal.create({
       cwd: project.path,
       runClaude: true,
       skipPermissions: false,
-      accountId: getProjectAccount(project.id)
+      accountId: getProjectAccount(project.id),
+      // Attribution for the output capture and the terminal_exit_code triggers.
+      projectId: project.id,
+      projectPath: project.path
     });
 
+    let id;
     if (result && typeof result === 'object' && 'success' in result) {
       if (!result.success) {
         console.error('Failed to create terminal:', result.error);
         return null;
       }
-      var id = result.id;
+      id = result.id;
     } else {
-      var id = result;
+      id = result;
     }
+
+    const xterm = await this._awaitXterm(xtermPromise, id);
+    if (!xterm) return null;
+    const { Terminal, FitAddon } = xterm;
 
     const terminalThemeId = getSetting('terminalTheme') || 'claude';
     const terminal = new Terminal({
       theme: getTerminalTheme(terminalThemeId),
       fontFamily: TERMINAL_FONTS.claude.fontFamily,
-      fontSize: TERMINAL_FONTS.claude.fontSize,
+      fontSize: getSetting('terminalFontSize') || TERMINAL_FONTS.claude.fontSize,
       cursorBlink: true,
       scrollback: 5000
     });
@@ -3413,7 +3204,7 @@ class TerminalManager extends BaseComponent {
     document.getElementById('empty-terminals').style.display = 'none';
 
     terminal.open(wrapper);
-    loadWebglAddon(terminal);
+    attachWebglAddon(terminal);
     registerOsc52Handler(terminal);
     setTimeout(() => {
       const fitContainer = wrapper.closest('.terminal-wrapper') || wrapper;
@@ -3741,7 +3532,7 @@ class TerminalManager extends BaseComponent {
         if (copyBtn) {
           const code = copyBtn.closest('.chat-code-block')?.querySelector('code')?.textContent;
           if (code) {
-            navigator.clipboard.writeText(code);
+            copyText(code);
             copyBtn.classList.add('copied');
             setTimeout(() => copyBtn.classList.remove('copied'), 1500);
           }
@@ -3965,6 +3756,33 @@ class TerminalManager extends BaseComponent {
       if (termData.terminal && termData.terminal.options) {
         termData.terminal.options.theme = theme;
       }
+    });
+  }
+
+  updateAllTerminalsFontSize(fontSize) {
+    const terminals = terminalsState.get().terminals;
+    const self = this;
+
+    terminals.forEach((termData, id) => {
+      if (!termData.terminal || !termData.terminal.options) return;
+      termData.terminal.options.fontSize = fontSize;
+      // Defer fit+resize to next frame so xterm.js can recalculate glyph dimensions first
+      requestAnimationFrame(() => {
+        if (termData.fitAddon) {
+          try { termData.fitAddon.fit(); } catch (_) { /* container not measurable yet */ }
+        }
+        try { termData.terminal.refresh(0, termData.terminal.rows - 1); } catch (_) {}
+        const { cols, rows } = termData.terminal;
+        if (!cols || !rows) return;
+        // The container did not change size, so the ResizeObserver stays quiet:
+        // push the new grid to the PTY ourselves, through the same route the
+        // observer would use (project-type namespace, or the PTY behind the tab).
+        if (termData.ipcNamespace) {
+          self._api[termData.ipcNamespace]?.resize({ projectIndex: termData.projectIndex, cols, rows });
+        } else {
+          self._api.terminal.resize({ id: self._ptyTarget(id), cols, rows });
+        }
+      });
     });
   }
 
@@ -4262,11 +4080,33 @@ class TerminalManager extends BaseComponent {
       wrapper.classList.remove('chat-wrapper');
       tab.classList.remove('chat-mode');
 
+      // Raised before the awaits below, not after them. The chat view is
+      // already destroyed and the wrapper emptied, so anything awaited from
+      // here on is time the user spends looking at a blank rectangle — and
+      // fetching the emulator chunk is now one of those things.
+      const overlay = document.createElement('div');
+      overlay.className = 'terminal-loading-overlay';
+      overlay.innerHTML = `
+      <div class="terminal-loading-spinner"></div>
+      <div class="terminal-loading-text">${escapeHtml(t('terminals.loading'))}</div>
+      <div class="terminal-loading-hint">${escapeHtml(t('terminals.loadingHint'))}</div>`;
+      wrapper.appendChild(overlay);
+
+      const xterm = await this._awaitXterm(loadXterm());
+      if (!xterm) {
+        // No PTY was spawned yet, so there is nothing to kill; the tab just
+        // stays where the switch left it, as an error rather than a blank.
+        wrapper.innerHTML = `<div class="terminal-error-state"><p>${escapeHtml(t('terminals.createError'))}</p></div>`;
+        updateTerminal(id, { mode: 'terminal', chatView: null, terminal: null, fitAddon: null, ptyId: null, status: 'error' });
+        return;
+      }
+      const { Terminal, FitAddon } = xterm;
+
       const terminalThemeId = getSetting('terminalTheme') || 'claude';
       const terminal = new Terminal({
         theme: getTerminalTheme(terminalThemeId),
         fontFamily: TERMINAL_FONTS.claude.fontFamily,
-        fontSize: TERMINAL_FONTS.claude.fontSize,
+        fontSize: getSetting('terminalFontSize') || TERMINAL_FONTS.claude.fontSize,
         cursorBlink: true,
         scrollback: 5000
       });
@@ -4303,7 +4143,7 @@ class TerminalManager extends BaseComponent {
       const ptyId = (result && typeof result === 'object') ? result.id : result;
 
       terminal.open(wrapper);
-      loadWebglAddon(terminal);
+      attachWebglAddon(terminal);
       registerOsc52Handler(terminal);
 
       updateTerminal(id, {
@@ -4315,12 +4155,9 @@ class TerminalManager extends BaseComponent {
         status: 'loading'
       });
 
-      const overlay = document.createElement('div');
-      overlay.className = 'terminal-loading-overlay';
-      overlay.innerHTML = `
-      <div class="terminal-loading-spinner"></div>
-      <div class="terminal-loading-text">${escapeHtml(t('terminals.loading'))}</div>
-      <div class="terminal-loading-hint">${escapeHtml(t('terminals.loadingHint'))}</div>`;
+      // Re-append rather than create: terminal.open() has just added the
+      // emulator's own DOM to the wrapper, and the overlay has to stay the last
+      // child, which is where it sat when it only ever covered the PTY spawn.
       wrapper.appendChild(overlay);
       this._loadingTimeouts.set(id, setTimeout(() => {
         self._loadingTimeouts.delete(id);
@@ -4459,6 +4296,7 @@ class TerminalManager extends BaseComponent {
   }
 
   sendToTab(tabId, content) {
+    const { markTabSend } = require('../../state/terminals.state');
     const found = getTerminalByTabId(tabId);
     if (!found) return { ok: false, error: `Tab not found: ${tabId}` };
     const { id, data } = found;
@@ -4483,6 +4321,8 @@ class TerminalManager extends BaseComponent {
         return { ok: false, error: e.message };
       }
       data.lastActivityAt = new Date().toISOString();
+      // The turn starts asynchronously — see markTabSend / tabWaitMatches.
+      markTabSend(data);
       return { ok: true, tabId, mode: 'chat' };
     }
 
@@ -4494,6 +4334,7 @@ class TerminalManager extends BaseComponent {
       }
       data.lastCommand = text;
       data.lastActivityAt = new Date().toISOString();
+      markTabSend(data);
       return { ok: true, tabId, mode: 'terminal' };
     }
 
@@ -4575,89 +4416,15 @@ class TerminalManager extends BaseComponent {
   }
 
   // Wait for a tab to reach any of the target statuses (subscribe-based, no polling).
-  // Resolves with the final status snapshot (or { ok: false } on timeout / missing tab).
-  waitForTab(tabId, { targetStatuses = ['idle', 'awaiting_permission', 'error'], timeoutMs = 60000 } = {}) {
-    const { deriveTabStatus } = require('../../state/terminals.state');
-    return new Promise((resolve) => {
-      const found = getTerminalByTabId(tabId);
-      if (!found) return resolve({ ok: false, error: `Tab not found: ${tabId}`, tabId });
-
-      const matches = (data) => {
-        const s = deriveTabStatus(data);
-        return Array.isArray(targetStatuses) && targetStatuses.includes(s);
-      };
-
-      // Fast path: already matches
-      if (matches(found.data)) {
-        return resolve({ ok: true, tabId, status: deriveTabStatus(found.data), timedOut: false });
-      }
-
-      let done = false;
-      let timer = null;
-      const unsubscribe = terminalsState.subscribe(() => {
-        if (done) return;
-        const current = getTerminalByTabId(tabId);
-        if (!current) {
-          done = true; clearTimeout(timer); unsubscribe();
-          return resolve({ ok: false, error: `Tab closed while waiting: ${tabId}`, tabId });
-        }
-        if (matches(current.data)) {
-          done = true; clearTimeout(timer); unsubscribe();
-          resolve({ ok: true, tabId, status: deriveTabStatus(current.data), timedOut: false });
-        }
-      });
-
-      timer = setTimeout(() => {
-        if (done) return;
-        done = true; unsubscribe();
-        const current = getTerminalByTabId(tabId);
-        resolve({
-          ok: true,
-          tabId,
-          status: current ? deriveTabStatus(current.data) : 'done',
-          timedOut: true,
-        });
-      }, Math.max(500, Math.min(Number(timeoutMs) || 60000, 10 * 60 * 1000)));
-    });
+  // The loop itself lives in terminals.state.js, next to the status derivation it
+  // depends on, so it can be tested without standing up a whole TerminalManager.
+  waitForTab(tabId, opts) {
+    return require('../../state/terminals.state').waitForTabStatus(tabId, opts);
   }
 
   // Wait for any of the given tabs to reach a target status.
-  // Resolves with { ok, tabId, status, timedOut }.
-  waitForAny(tabIds, { targetStatuses = ['idle', 'awaiting_permission', 'error'], timeoutMs = 60000 } = {}) {
-    const { deriveTabStatus } = require('../../state/terminals.state');
-    const ids = Array.isArray(tabIds) ? tabIds.filter(Boolean) : [];
-    return new Promise((resolve) => {
-      if (!ids.length) return resolve({ ok: false, error: 'No tabIds provided' });
-
-      const matches = (data) => Array.isArray(targetStatuses) && targetStatuses.includes(deriveTabStatus(data));
-
-      // Fast path
-      for (const tid of ids) {
-        const f = getTerminalByTabId(tid);
-        if (f && matches(f.data)) {
-          return resolve({ ok: true, tabId: tid, status: deriveTabStatus(f.data), timedOut: false });
-        }
-      }
-
-      let done = false;
-      let timer = null;
-      const unsubscribe = terminalsState.subscribe(() => {
-        if (done) return;
-        for (const tid of ids) {
-          const f = getTerminalByTabId(tid);
-          if (f && matches(f.data)) {
-            done = true; clearTimeout(timer); unsubscribe();
-            return resolve({ ok: true, tabId: tid, status: deriveTabStatus(f.data), timedOut: false });
-          }
-        }
-      });
-
-      timer = setTimeout(() => {
-        if (done) return;
-        done = true; unsubscribe();
-        resolve({ ok: true, timedOut: true, status: null, tabId: null });
-      }, Math.max(500, Math.min(Number(timeoutMs) || 60000, 10 * 60 * 1000)));
-    });
+  waitForAny(tabIds, opts) {
+    return require('../../state/terminals.state').waitForAnyTabStatus(tabIds, opts);
   }
 
   // Read the buffered output (or chat message log) for a tab.
@@ -4776,6 +4543,8 @@ module.exports = {
   TerminalManager,
   createTerminal: (project, options) => _getInstance().createTerminal(project, options),
   closeTerminal: (id) => _getInstance().closeTerminal(id),
+  captureTabSlot: (id) => _getInstance().captureTabSlot(id),
+  restoreTabSlot: (id, slot) => _getInstance().restoreTabSlot(id, slot),
   setActiveTerminal: (id) => _getInstance().setActiveTerminal(id),
   filterByProject: (projectIndex) => _getInstance().filterByProject(projectIndex),
   countTerminalsForProject: (projectIndex) => _getInstance().countTerminalsForProject(projectIndex),
@@ -4787,6 +4556,7 @@ module.exports = {
   getTerminalLastTool: (id) => _getInstance()._terminalContext.get(id)?.lastTool || null,
   resumeSession: (project, sessionId, options) => _getInstance().resumeSession(project, sessionId, options),
   updateAllTerminalsTheme: (themeId) => _getInstance().updateAllTerminalsTheme(themeId),
+  updateAllTerminalsFontSize: (fontSize) => _getInstance().updateAllTerminalsFontSize(fontSize),
   focusNextTerminal: () => _getInstance().focusNextTerminal(),
   focusPrevTerminal: () => _getInstance().focusPrevTerminal(),
   openFileTab: (filePath, project) => _getInstance().openFileTab(filePath, project),

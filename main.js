@@ -317,10 +317,22 @@ function bootstrapApp() {
     // an allowlist, not a passthrough, because the renderer displays
     // model-authored content and must not be able to ask for geolocation,
     // notifications or anything else on its own.
+    //
+    // 'clipboard-sanitized-write' is allowed outright because leaving it off
+    // broke every copy button in the app: navigator.clipboard.writeText() runs
+    // this check and its promise rejects when it is denied, silently. Writing
+    // text the user just clicked "copy" on is not a capability worth
+    // withholding - reading the clipboard still is, so it stays denied.
+    //
+    // 'media' is narrower than a name on a list: allowMicrophone() also checks
+    // the requesting frame and origin against the window this app trusts, and
+    // audio-only at that.
     session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+      if (permission === 'clipboard-sanitized-write') return callback(true);
       callback(permission === 'media' && rendererSecurity.allowMicrophone(contents, details));
     });
     session.defaultSession.setPermissionCheckHandler((contents, permission, origin, details) => {
+      if (permission === 'clipboard-sanitized-write') return true;
       return permission === 'media' && rendererSecurity.allowMicrophone(contents, details, origin);
     });
 

@@ -709,33 +709,7 @@
   color: var(--text-muted);
 }
 
-/* Loading state */
-.dashboard-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-muted);
-}
-
-.dashboard-loading svg {
-  width: 40px;
-  height: 40px;
-  animation: spin 1s linear infinite;
-}
-
 /* ========== ENHANCED DASHBOARD STYLES ========== */
-
-/* Loading spinner */
-.dashboard-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  gap: 16px;
-  color: var(--text-muted);
-}
 
 .loading-spinner {
   width: 40px;
@@ -744,6 +718,138 @@
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 1s linear infinite;
+}
+
+/* ── First-load skeleton ──────────────────────────────────────────────────
+   Drawn by buildDashboardSkeletonHtml() instead of a centred spinner: the
+   dashboard has a fixed shape, so showing that shape greyed out reads as
+   "almost there" rather than "nothing yet", and the real content lands
+   without moving anything. */
+@keyframes dash-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+.dashboard-skeleton {
+  pointer-events: none;
+  user-select: none;
+}
+
+.dashboard-skeleton .sk-bar,
+.dashboard-skeleton .sk-chip,
+.dashboard-skeleton .sk-card {
+  background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-active) 50%, var(--bg-tertiary) 75%);
+  background-size: 200% 100%;
+  animation: dash-shimmer 1.4s ease-in-out infinite;
+}
+
+.dashboard-skeleton .sk-bar {
+  display: inline-block;
+  height: 11px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.dashboard-skeleton .sk-bar--h2 { height: 22px; margin: 5px 0; border-radius: 5px; }
+.dashboard-skeleton .sk-bar--badge { height: 18px; margin: 3px 0; border-radius: 9px; }
+.dashboard-skeleton .sk-bar--btn { height: 37px; border-radius: var(--radius-sm); }
+.dashboard-skeleton .sk-bar--title { height: 13px; }
+.dashboard-skeleton .sk-bar--path {
+  display: block;
+  height: 35px;
+  border-radius: var(--radius);
+  margin-bottom: 20px;
+}
+.dashboard-skeleton .sk-dot { height: 14px; border-radius: 50%; }
+.dashboard-skeleton .sk-bar--graph {
+  display: block;
+  height: 96px;
+  border-radius: var(--radius-sm);
+}
+
+/* Header: title + badge on the left, action buttons on the right. */
+.dashboard-skeleton .sk-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.dashboard-skeleton .sk-header-title {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.dashboard-skeleton .sk-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Quick-stat chips. */
+.dashboard-skeleton .sk-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.dashboard-skeleton .sk-chip {
+  height: 35px;
+  border-radius: var(--radius);
+}
+
+/* Two columns of cards, same grid as the real overview. */
+.dashboard-skeleton .sk-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+}
+
+.dashboard-skeleton .sk-col {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.dashboard-skeleton .sk-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 20px;
+  animation: none;
+}
+
+.dashboard-skeleton .sk-card--wide {
+  margin-top: 20px;
+}
+
+.dashboard-skeleton .sk-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.dashboard-skeleton .sk-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.dashboard-skeleton .sk-row:last-child { margin-bottom: 0; }
+
+/* The bars inside a card sit on bg-secondary, so they need the lighter ramp
+   to stay visible. */
+.dashboard-skeleton .sk-card .sk-bar {
+  background: linear-gradient(90deg, var(--bg-hover) 25%, var(--bg-active) 50%, var(--bg-hover) 75%);
+  background-size: 200% 100%;
 }
 
 /* Dashboard refresh indicator */
@@ -2456,4 +2562,240 @@
 .contrib-legend .contrib-cell {
   width: 10px;
   height: 10px;
+}
+
+/* ============================================================
+   PROJECT TIMELINE  (dashboard view: Overview | Kanban | Timeline)
+   Every colour comes from base.css. There is no theme system yet,
+   and each literal added here is one more thing to migrate when
+   there is one.
+   ============================================================ */
+
+.timeline-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.timeline-loading,
+.timeline-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 48px 24px;
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
+.timeline-empty p { margin: 0; color: var(--text-primary); }
+.timeline-empty span { color: var(--text-muted); max-width: 460px; text-align: center; }
+
+.timeline-warning {
+  margin: 12px 16px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--warning);
+  font-size: var(--font-xs);
+}
+
+/* ── Toolbar ─────────────────────────────────────────────── */
+
+.timeline-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.timeline-ranges {
+  display: flex;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.timeline-range {
+  padding: 4px 10px;
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.timeline-range + .timeline-range { border-left: 1px solid var(--border-color); }
+.timeline-range:hover { background: var(--bg-hover); color: var(--text-primary); }
+.timeline-range.active { background: var(--accent-dim); color: var(--accent); }
+
+.timeline-chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+
+.timeline-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+.timeline-chip svg { width: 11px; height: 11px; flex-shrink: 0; }
+.timeline-chip b { font-weight: 600; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.timeline-chip:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+
+.timeline-chip.active {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.timeline-chip.active b { color: var(--accent); }
+
+/* Sources with nothing in the window stay visible but inert, so the row of
+   chips does not reflow every time the period changes. */
+.timeline-chip.empty,
+.timeline-chip:disabled { opacity: 0.4; cursor: default; }
+
+.timeline-copy { flex-shrink: 0; }
+
+/* ── Day groups ──────────────────────────────────────────── */
+
+.timeline-list { flex: 1; overflow-y: auto; padding: 8px 16px 24px; }
+
+.timeline-day + .timeline-day { margin-top: 20px; }
+
+.timeline-day-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 10px 0 6px;
+  background: var(--bg-primary);
+}
+
+.timeline-day-head h4 {
+  margin: 0;
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  text-transform: capitalize;
+}
+
+.timeline-day-head span { font-size: var(--font-2xs); color: var(--text-muted); }
+
+.timeline-events { list-style: none; margin: 0; padding: 0; }
+
+/* ── Events ──────────────────────────────────────────────── */
+
+.timeline-event {
+  display: grid;
+  grid-template-columns: 44px 22px 1fr auto;
+  align-items: start;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  position: relative;
+  transition: background 0.12s;
+}
+
+.timeline-event:hover { background: var(--bg-hover); }
+
+/* The rail: a hairline joining consecutive dots within a day. Drawn on the
+   event rather than the list so the last row stops it cleanly. */
+.timeline-event::before {
+  content: '';
+  position: absolute;
+  left: 64px;
+  top: 22px;
+  bottom: -7px;
+  width: 1px;
+  background: var(--border-color);
+}
+.timeline-event:last-child::before { display: none; }
+
+.timeline-event-time {
+  font-size: var(--font-2xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  padding-top: 3px;
+  text-align: right;
+}
+
+.timeline-event-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  position: relative;
+  z-index: 1;
+}
+
+.timeline-event-dot svg { width: 11px; height: 11px; }
+
+.timeline-event-body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+
+.timeline-event-title {
+  font-size: var(--font-sm);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-event-sub {
+  font-size: var(--font-2xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-event-kind {
+  font-size: var(--font-2xs);
+  color: var(--text-muted);
+  padding-top: 3px;
+  white-space: nowrap;
+}
+
+/* Per-source accent on the dot, so the eye can follow one kind down the day
+   without reading the trailing label. */
+.timeline-event.kind-commit  .timeline-event-dot { color: var(--success); }
+.timeline-event.kind-session .timeline-event-dot { color: var(--accent); }
+.timeline-event.kind-time    .timeline-event-dot { color: var(--info); }
+.timeline-event.kind-workflow .timeline-event-dot { color: var(--purple); }
+.timeline-event.kind-parallel .timeline-event-dot { color: var(--purple); }
+.timeline-event.kind-artifact .timeline-event-dot { color: var(--text-secondary); }
+
+/* Outcome overrides the source colour: a failed run should read as failed
+   before it reads as a workflow. */
+.timeline-event.tone-success .timeline-event-dot { color: var(--success); border-color: var(--success); }
+.timeline-event.tone-danger  .timeline-event-dot { color: var(--danger);  border-color: var(--danger); }
+.timeline-event.tone-warning .timeline-event-dot { color: var(--warning); border-color: var(--warning); }
+.timeline-event.tone-muted   .timeline-event-dot { color: var(--text-muted); }
+
+@media (max-width: 720px) {
+  .timeline-event { grid-template-columns: 40px 22px 1fr; }
+  .timeline-event-kind { display: none; }
+  .timeline-event::before { left: 60px; }
 }

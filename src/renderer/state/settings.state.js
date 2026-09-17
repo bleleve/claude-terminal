@@ -18,6 +18,7 @@ const defaultSettings = {
   skipPermissions: false,
   executionMode: 'safe', // 'safe' (default), 'auto' (SDK classifier), 'dangerous' (bypassPermissions)
   accentColor: '#d97706',
+  terminalFontSize: 14, // Terminal font size in px (10-24)
   notificationsEnabled: true,
   closeAction: 'ask', // 'ask', 'minimize', 'quit'
   shortcuts: {}, // Custom keyboard shortcuts overrides
@@ -55,6 +56,7 @@ const defaultSettings = {
   explorerIgnorePatterns: [], // Additional ignore patterns for file explorer (user-configured)
   showTabModeToggle: true, // Show Chat/Terminal mode-switch button on terminal tabs
   tabRenameOnSlashCommand: false, // Rename terminal tab to slash command text when submitted
+  confirmCloseTab: true, // Ask before a tab's × closes a running session (the dialog can turn this off)
   aiTabNaming: true, // Use AI (Haiku) to generate short tab names from messages
   cloudServerUrl: '', // Cloud relay server URL (e.g. 'https://cloud.example.com')
   cloudApiKey: '', // Cloud API key (e.g. 'ctc_abc123...')
@@ -75,6 +77,13 @@ const defaultSettings = {
   globalShortcuts: {}, // Custom global shortcut overrides: { globalQuickPicker: 'Ctrl+Shift+X', ... }
   globalShortcutsEnabled: true, // Master toggle for OS-level global shortcuts
   terminalShortcuts: {}, // Terminal shortcut toggles (empty = all enabled by default)
+  // Third-party project types from ~/.claude-terminal/project-types/. Off by
+  // default and per-extension opt-in on top: the master switch only says the
+  // feature may be used, an extension loads when its id is in the allowlist.
+  // Extensions are declarative manifests — no third-party code runs in either
+  // process. See design/project-type-extensions.md.
+  projectTypeExtensionsEnabled: false,
+  enabledProjectTypeExtensions: [], // Ids of extensions the user has opted into
   // Main kills the CPU-hungry processes a Claude session leaves behind (busy
   // loops a finished Bash command backgrounded, tool shells whose CLI died).
   // Read by the main-process OrphanReaper straight from settings.json.
@@ -91,6 +100,10 @@ const defaultSettings = {
   // so the More menu is now opt-in rather than the default state.
   pinnedTabs: ['claude', 'dashboard', 'files', 'git', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'],
   activeTab: 'claude', // Last active sidebar tab (restored on restart)
+  // Version this profile last ran. Null on a profile older than the What's new
+  // panel, which is why an existing project list is what tells an upgrade from
+  // a fresh install — see WhatsNew.shouldShow.
+  lastSeenVersion: null,
   openProjectIds: [], // Projects with a tab in the project bar, in tab order (restored on restart)
   navigationMode: null, // 'tabs' | 'sidebar' | null = never chosen, ask once on next launch
   tabsOrder: null, // null = canonical order, otherwise array of all tabIds in custom order

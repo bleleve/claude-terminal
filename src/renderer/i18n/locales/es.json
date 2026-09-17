@@ -33,6 +33,7 @@
     "remove": "Quitar",
     "ignore": "Ignorar",
     "copied": "¡Copiado!",
+    "copyFailed": "Error al copiar",
     "justNow": "Ahora mismo",
     "add": "Añadir",
     "yesterday": "Ayer"
@@ -299,6 +300,8 @@
     "confirmRemoveWorktree": "¿Eliminar este worktree? El directorio será eliminado.",
     "forceRemoveWorktree": "Forzar eliminación de Worktree",
     "confirmForceRemoveWorktree": "Este worktree tiene cambios sin confirmar. ¿Forzar eliminación?",
+    "confirmForceRemoveLockedWorktree": "Este worktree está bloqueado. ¿Eliminarlo de todos modos?",
+    "confirmForceRemoveLockedWorktreeReason": "Este worktree está bloqueado (motivo: {reason}). ¿Eliminarlo de todos modos?",
     "forceRemove": "Forzar eliminación",
     "existingBranch": "Rama existente",
     "worktreeNewBranch": "Nueva rama",
@@ -437,6 +440,7 @@
     "mergeConflict": "Conflictos de fusión detectados. Resuélvelos antes de continuar.",
     "unrelatedHistories": "No se pueden fusionar historiales sin ancestro común.",
     "lockFailed": "No se puede bloquear la referencia. Otra operación git puede estar en curso.",
+    "worktreeLocked": "Este worktree está bloqueado. Desbloquéalo o fuerza la eliminación.",
     "alreadyExists": "Este elemento ya existe. Elige otro nombre.",
     "nothingToCommit": "Nada que commitear. El árbol de trabajo está limpio."
   },
@@ -762,6 +766,9 @@
     "minutesAgo": "hace {count}min",
     "hoursAgo": "hace {count}h",
     "yesterday": "Ayer",
+    "unitDayShort": "d",
+    "unitHourShort": "h",
+    "unitMinuteShort": "min",
     "daysAgo": "hace {count}d"
   },
   "settings": {
@@ -773,6 +780,8 @@
     "accentColorDesc": "Personalizar el color principal de la interfaz",
     "terminalTheme": "Tema de terminal",
     "terminalThemeDesc": "Cambiar los colores de la terminal",
+    "terminalFontSize": "Tamaño de fuente de la terminal",
+    "terminalFontSizeDesc": "Ajustar el tamaño de fuente usado en las pestañas de terminal",
     "theme": "Tema de terminal",
     "notifications": "Notificaciones",
     "closeAction": "Acción al cerrar",
@@ -921,6 +930,8 @@
     "terminalGroup": "Terminal",
     "tabRenameOnSlashCommand": "Renombrar pestaña con slash command",
     "tabRenameOnSlashCommandDesc": "Renombrar automáticamente la pestaña con el último slash command ejecutado (ej: /gsd:verify-work 12)",
+    "confirmCloseTab": "Confirmar antes de cerrar una pestaña",
+    "confirmCloseTabDesc": "Pedir confirmación cuando la × de una pestaña termina una sesión en curso",
     "aiTabNaming": "Nombres de pestaña con IA",
     "aiTabNamingDesc": "Usar IA para generar nombres cortos de pestaña a partir de mensajes",
     "enableFollowupSuggestions": "Sugerencias de seguimiento",
@@ -1004,7 +1015,17 @@
     "recoverBackupDesc": "Guardar el contenido original en un archivo separado sin cifrar en este equipo.",
     "recoverBackupAction": "Recuperar…",
     "backupMigrationResult": "{count} copias protegidas en la última comprobación.",
-    "backupRecovered": "Copia recuperada en el archivo seleccionado."
+    "backupRecovered": "Copia recuperada en el archivo seleccionado.",
+    "search": {
+      "placeholder": "Buscar un ajuste…",
+      "ariaLabel": "Buscar ajustes",
+      "clear": "Borrar la búsqueda",
+      "results": "{count} resultado",
+      "empty": "Ningún ajuste coincide con «{query}»",
+      "emptyHint": "Prueba con una palabra más corta o con parte de la descripción de un ajuste.",
+      "sourceLabel": "Ajustes",
+      "resultsPlural": "{count} resultados"
+    }
   },
   "ui": {
     "notifications": "Notificaciones",
@@ -1747,6 +1768,7 @@
     "streaming": "Escribiendo...",
     "stopped": "Detenido",
     "ready": "Listo",
+    "elapsedTitle": "Tiempo transcurrido en este turno",
     "openFile": "Abrir el archivo",
     "binaryFile": "archivo binario",
     "cloudBadge": "Cloud",
@@ -1777,6 +1799,11 @@
     "conversationResumed": "Conversación reanudada",
     "loadingHistory": "Cargando conversación...",
     "olderMessages": "{count} mensajes anteriores",
+    "olderMessagesUnknown": "Mensajes anteriores",
+    "newerMessages": "{count} mensajes más recientes",
+    "toolOutputLoading": "Cargando la salida completa…",
+    "toolOutputFailed": "No se pudo cargar la salida completa: se muestra la vista previa guardada.",
+    "toolOutputClipped": "La salida es demasiado grande para mostrarse completa.",
     "loading": "Cargando...",
     "tabConversation": "Conversación",
     "tabChanges": "Cambios",
@@ -1994,7 +2021,8 @@
     "tabDocuments": "Documentos",
     "runInBackground": "Ejecutar en segundo plano",
     "backgroundWorkFailed": "No se pudo pasar el trabajo a segundo plano. {error}",
-    "slashRemoteControl": "Compartir esta conversación con claude.ai (on / off)"
+    "slashRemoteControl": "Compartir esta conversación con claude.ai (on / off)",
+    "mentionKnowledge": "Conocimiento global"
   },
   "hooks": {
     "consent": {
@@ -2574,6 +2602,7 @@
     "closeToRight": "Cerrar pestañas a la derecha",
     "closeTabTitle": "¿Cerrar {name}?",
     "closeTabMessage": "Se cerrará esta pestaña. Cualquier sesión en curso finalizará.",
+    "closeTabRemember": "Recordar mi elección",
     "closeAll": "Cerrar todo"
   },
   "telemetry": {
@@ -3214,6 +3243,9 @@
         "minutesAgo": "hace {n} min",
         "hoursAgo": "hace {n}h",
         "yesterdayAt": "Ayer {time}",
+    "unitDayShort": "d",
+    "unitHourShort": "h",
+    "unitMinuteShort": "min",
         "daysAgo": "hace {n}d"
       },
       "autocomplete": {
@@ -4187,5 +4219,99 @@
     "dock": "Anclar junto al chat",
     "undock": "Ocultar la columna",
     "openScreen": "Abrir la pantalla Archivos"
+  },
+  "timeline": {
+    "tab": "Cronología",
+    "title": "Cronología",
+    "subtitle": "Todo lo registrado en este proyecto, en un solo hilo",
+    "empty": "No hay nada registrado para este proyecto en este período.",
+    "emptyHint": "Los commits, sesiones, tiempo registrado, ejecuciones de workflow y paralelas y artifacts aparecen aquí.",
+    "today": "Hoy",
+    "yesterday": "Ayer",
+    "period": "Período",
+    "days": "{count} días",
+    "eventCount": "{count} eventos",
+    "messageCount": "{count} mensajes",
+    "taskCount": "{count} tareas",
+    "workedFor": "Trabajo de {duration}",
+    "filterAll": "Todo",
+    "copyMarkdown": "Copiar como Markdown",
+    "copied": "Cronología copiada al portapapeles",
+    "sourcesFailed": "No se pudo leer: {sources}",
+    "untitledSession": "Sesión sin título",
+    "untitledWorkflow": "Workflow sin nombre",
+    "untitledRun": "Ejecución sin título",
+    "untitledArtifact": "Artifact sin título",
+    "kind": {
+      "commit": "Commit",
+      "session": "Sesión",
+      "time": "Trabajo",
+      "workflow": "Workflow",
+      "parallel": "Ejecución paralela",
+      "artifact": "Artifact"
+    },
+    "status": {
+      "success": "con éxito",
+      "failed": "fallido",
+      "running": "en curso",
+      "pending": "pendiente",
+      "cancelled": "cancelado",
+      "skipped": "omitido",
+      "timeout": "expirado",
+      "interrupted": "interrumpido",
+      "done": "terminado",
+      "merged": "fusionado",
+      "merging": "fusionando",
+      "decomposing": "planificación",
+      "reviewing": "en revisión"
+    }
+  },
+  "whatsNew": {
+    "title": "Novedades de la v{version}",
+    "movedTitle": "Lo que cambió de sitio",
+    "notesTitle": "Notas de la versión",
+    "notesUnavailable": "No se pudieron cargar las notas de la versión — consulta el changelog en línea.",
+    "showMe": "Muéstrame",
+    "turnItOn": "Activar",
+    "gotIt": "Entendido",
+    "moves": {
+      "filesScreen": {
+        "title": "El explorador de archivos ahora es una pantalla propia",
+        "body": "Antes era una columna del diseño de Claude, detrás de un pequeño botón de panel lateral. Ahora es la pantalla Archivos, en el grupo Proyecto, y también muestra lo que cambió cada sesión anterior."
+      },
+      "filesDock": {
+        "title": "El árbol de archivos puede volver a estar junto al chat",
+        "body": "Si trabajabas con el árbol a la vista, puede anclarse de nuevo como columna junto a la conversación. Desactivado por defecto; la pantalla Archivos conserva el visor y los diffs de sesión."
+      }
+    }
+  },
+  "projectTypes": {
+    "title": "Extensiones de tipos de proyecto",
+    "description": "Cargar tipos de proyecto declarativos desde ~/.claude-terminal/project-types/. Una extensión es un manifiesto, no código: nada de lo que contiene se ejecuta.",
+    "enable": "Activar extensiones de tipos de proyecto",
+    "openFolder": "Abrir la carpeta de extensiones",
+    "none": "No se encontraron extensiones",
+    "status": {
+      "enabled": "Activada",
+      "disabled": "Desactivada",
+      "incompatible": "Incompatible"
+    },
+    "problem": {
+      "title": "Algunas extensiones de tipos de proyecto no se pudieron cargar",
+      "andMore": "y {count} más",
+      "no-manifest": "no hay project-type.json en esta carpeta",
+      "unreadable": "no se pudo leer project-type.json",
+      "not-an-object": "project-type.json no es un objeto JSON",
+      "bad-manifest-version": "versión de manifiesto no admitida",
+      "bad-id": "identificador no válido",
+      "bad-name": "nombre no válido",
+      "incompatible": "creada para otra versión de Claude Terminal",
+      "duplicate-id": "otra extensión ya usa este identificador",
+      "unreadable-dir": "no se pudo leer la carpeta de extensiones",
+      "too-many": "demasiadas extensiones; las demás se ignoraron",
+      "threw": "la extensión falló al cargarse",
+      "register-failed": "no se pudo registrar la extensión",
+      "loader-failed": "el cargador de extensiones falló"
+    }
   }
 }

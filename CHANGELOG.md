@@ -2,6 +2,117 @@
 
 All notable changes to Claude Terminal are documented in this file.
 
+## [1.3.3] - 2026-09-14
+
+### Added
+- **Settings**: a terminal font size setting, applied live to every open terminal (#181)
+- **Settings**: a search field, so a setting can be found by name instead of by memory
+- **Command palette**: Ctrl+P now searches settings, knowledge entries, workspace docs, kanban cards and past sessions, not just projects and commands
+- **Project types**: a third-party project type can be added as a folder in `~/.claude-terminal/project-types/` — a manifest and its translations, opt-in twice, with no third-party code ever running
+- **Tabs**: the close confirmation can remember your answer, reversible from Settings → Claude → Terminal
+- **Database**: the Add Connection picker is themed instead of drawn by the OS, with a colour per driver and keyboard navigation
+- **Notifications**: desktop notifications now match the in-app toasts
+- **Dashboard**: the first load draws the page greyed out instead of a spinner, so nothing jumps when the data lands
+
+### Performance
+- Opening a stored conversation reads it from its end: about three times faster on a large transcript, and tool output is no longer cut short
+- The five heaviest panels, the terminal emulator and each project type's code now load the first time they are used, taking roughly 1 MB out of every startup
+
+### Fixed
+- The project overview no longer prints a token embedded in a git remote URL
+- Copy buttons work again everywhere in the app
+- Minimising to the tray no longer stalls a running orchestration
+- A tab told to wait after a message no longer reports finished before the turn has started
+- A locked worktree can be removed
+- Chat: a diagram that fails to parse no longer leaves its error graphic floating over the window
+- Chat: clicking an image in a tool card opens it instead of collapsing the card
+- The collapsed sidebar no longer paints its icons over the footer
+- A notification's close button stays at its right edge
+
+## [1.3.2] - 2026-09-09
+
+### Added
+- **Updates**: a "What's new" panel appears after restarting into a new version, leading with anything that moved and following with the full release notes
+- **Dashboard**: a project timeline merging every record the app already keeps, so "what happened to this project" has one screen instead of six
+
+### Fixed
+- Remote control (claude.ai / mobile): fully translated PWA, ships with a content-security-policy, accessible icon buttons, a replayed transcript that survives more than one turn, correct conversation scoping for the composer and spinner, faster updates, and no more dropped or mixed-up phone connections
+- Accounts: "refresh usage" now re-reads every account's credential store, and a usage-limit switch keeps the conversation going
+- Projects: stop losing `projects.json` data written by other processes
+- Usage: the usage bar no longer freezes on a pending Keychain prompt
+- Sessions: a session that enters a worktree stays attached to its project
+- Shortcuts: the default push-to-talk shortcut no longer freezes the keyboard on Linux
+- Chat: Enter and Tab now select an @mention instead of throwing an error
+- Sidebar: the expanded rail no longer overflows the window
+- Links opened from chat or the dashboard now open in the browser again
+
+## [1.3.1] - 2026-09-09
+
+### Added
+- **Claude Remote Control**: put a chat session on claude.ai and the Claude mobile app, decided per conversation rather than globally (#140)
+- **Claude in Chrome**: let chat sessions drive the browser through the Claude extension, adding the `claude-in-chrome` MCP server and its 22 browser tools (#137)
+- **Chat**: model, effort and permission mode are now per conversation and legible at a glance, with "Use for new conversations" as the only way to change the default (#156)
+- **Chat**: accept text files and PDFs as attachments, not just images (#163)
+- **Accounts**: per-account usage shown in Settings (#138)
+- **Files**: the project tree can sit beside the chat again
+- **Tabs**: confirm before a tab's x closes a session or a project (#139)
+
+### Fixed
+- Account switching: keep the typed message, resume with the CLI session id, resend the opening turn when there is nothing to resume, and offer the switch when a spend cap is reported in-band (#142, #150, #154, #162)
+- Chat: replay a resumed conversation the way it was shown (#165)
+- Chat: read the context gauge and the window frames without extra API calls (#146)
+- Chat: timed-out permission prompts no longer surface as harness errors (#148)
+- Chat: the model label no longer reads "Default" while a turn starts (#144)
+- Chat: artifact action buttons restored (#158)
+- Usage: stop re-reading the credential store on every poll; the topbar refresh gesture re-reads credentials too (#135, #160)
+- Artifacts: hide the screen while it cannot be populated (#136)
+- Tasks: background tasks no longer all read "0m" in the drawer (#133)
+- Tabs: drop login errors that had been saved as session names (#132)
+- Project: scan block and HTML comments for TODOs (#155)
+- Navigation: drop the project bar's empty row in column mode
+- Tests: retry the move-session teardown so Windows cannot fail the run (#152)
+
+## [1.3.0] - 2026-09-05
+
+### Added
+- **Voice**: microphone capture with Groq transcription, a hands-free session profile, verbatim dictation and focused-tab routing. The API key lives in the OS credential store and never reaches the renderer
+- **Accounts**: multiple Claude accounts with per-project binding (#121)
+- **Artifacts**: artifact library and a per-conversation Documents tab (#115)
+- **Files**: a Files screen with per-session diffs rendered like GitHub (#107)
+- **Tasks**: a background tasks drawer, scoped to the session (#120)
+- **Navigation**: choose between a project tab bar and the projects sidebar, chosen once in the setup wizard (#86, #101, #112, #122)
+- **Chat**: model picker built from the CLI catalog instead of a hard-coded list (#117)
+- **Chat**: Ctrl+F search in the conversation transcript, translated into every locale
+- **Sessions**: move a session to another project (#85); real session titles, searchable ids (#84)
+- **Tabs**: lockable custom names, pinned tabs, fixed session ordering (#106)
+- **Sidebar**: navigation grouped by scope so it fits again (#96)
+- **Settings**: the chat turn limit is now exposed
+- **MCP**: cross-project session search and recap, `ui_navigate` and `ui_state`, and project names resolved the way they are spoken
+
+### Fixed
+- Accounts: read Claude credentials from the macOS Keychain; stop switching from rolling back MCP tokens or overwriting the outgoing snapshot (#79)
+- Chat: chat sessions are no longer capped at 100 turns (#80); the applied cap is reported, and unattended hands-free sessions stay bounded
+- Chat: stop reporting "success" after an in-band API error (#103)
+- Chat: the CLI login error no longer becomes a tab name (#129)
+- Chat: mention picker items selectable with the keyboard
+- Chat: background tasks settle from the live set, not just the bookends (#114, #119)
+- Sessions: long sessions no longer freeze the app (#82)
+- Events: hook events routed by session id, not by project (#111)
+- Settings: concurrent writers can no longer wipe settings.json
+- Terminal: keep the session when switching between chat and terminal (#89)
+- Usage: limit bars built from the API rather than a hardcoded Sonnet (#97)
+- Accessibility: replayed chat history dimmed by colour instead of opacity, higher tool-detail contrast (#88)
+- Release: one macOS arch no longer cancels the other; mac sha512 computed from the authenticated asset download (#123, #124)
+
+### Performance
+- Bound the mounted transcript and pause idle animations while the window is unfocused (#105)
+
+## [1.2.1] - [1.2.18]
+
+Eighteen incremental releases between 1.2.0 and 1.3.0, not individually written up
+here. See the tag-to-tag comparison on GitHub for the full list:
+<https://github.com/Sterll/claude-terminal/compare/v1.2.0...v1.2.18>
+
 ## [1.2.0] - 2026-03-15
 
 ### Added

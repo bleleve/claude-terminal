@@ -8,6 +8,7 @@ const { BaseComponent } = require('../../core/BaseComponent');
 const { escapeHtml, highlight } = require('../../utils');
 const { BackgroundTaskReconciler } = require('../../services/BackgroundTaskReconciler');
 const { sanitizeColor } = require('../../utils/color');
+const { copyText } = require('../../utils/clipboard');
 const {
   getToolIcon,
   getToolDisplayInfo,
@@ -29,102 +30,20 @@ const {
 const { formatDuration: fmtDur } = require('../../utils/toolRegistry');
 const { heartbeat, skillsAgentsState, getProjectAccount } = require('../../state');
 const { createTranscriptPruner } = require('./TranscriptPruner');
+const { ensureBgTaskSubscription, ensureWakeupTicker } = require('./chat/liveCards');
+const { extractResultText, parseResultJson, parseCreatedTaskId } = require('./chat/resultParsing');
+const { createContextSuggestions } = require('./chat/contextSuggestions');
+const { createFollowupChips } = require('./chat/followupChips');
+const { createElapsedTimer } = require('./chat/elapsedTimer');
+const { createLightbox } = require('./chat/lightbox');
+const { attachExportMenu } = require('./chat/exportConversation');
+const { createTranscriptSearch } = require('./chat/transcriptSearch');
+const { createAttachmentTray } = require('./chat/attachmentTray');
+const { formatTokenCount, contextSummaryText, contextSummaryHtml, contextUsageRows } = require('./chat/contextUsage');
 
 /** Paperclip, for the chip an attached file leaves in the composer. */
 const ATTACHMENT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>';
 
-// ── Background task cards re-render on store update ─────────────────
-// Cards for Monitor/TaskOutput/TaskStop read state from bgTaskStore.
-// Any mutation refreshes every card currently showing that taskId.
-let _bgTaskSubStarted = false;
-function ensureBgTaskSubscription() {
-  if (_bgTaskSubStarted) return;
-  _bgTaskSubStarted = true;
-  bgTaskStore.subscribe((taskId) => {
-    if (!taskId) return;
-    let nodes;
-    try {
-      nodes = document.querySelectorAll(`[data-bg-task-id="${CSS.escape(taskId)}"]`);
-    } catch (_) { return; }
-    nodes.forEach((el) => {
-      const tool = el.dataset.bgTool || 'TaskOutput';
-      const card = el.closest('.chat-tool-card');
-      let input = {};
-      try {
-        input = card && card.dataset.toolInput ? JSON.parse(card.dataset.toolInput) : { task_id: taskId };
-      } catch (_) { input = { task_id: taskId }; }
-      el.outerHTML = renderBgTaskCard(tool, input);
-    });
-  });
-}
-
-// Parse a tool_result content block into plain text.
-function extractResultText(block) {
-  if (!block) return '';
-  if (typeof block.content === 'string') return block.content;
-  if (Array.isArray(block.content)) {
-    return block.content.map((b) => (b && (b.text || '')) || '').join('\n');
-  }
-  return '';
-}
-
-// Try to extract structured data from a tool_result text (best-effort).
-function parseResultJson(text) {
-  if (!text) return null;
-  const trimmed = text.trim();
-  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
-  try { return JSON.parse(trimmed); } catch (_) { return null; }
-}
-
-// TaskCreate answers with a plain sentence — "Task #3 created successfully: <subject>" —
-// not JSON. The id it hands back is the one every later TaskUpdate addresses, so failing
-// to read it leaves the task filed under its tool_use_id and freezes the bar at 0/N.
-const TASK_CREATED_RE = /task\s*#?\s*([A-Za-z0-9_-]+)\s+created/i;
-
-/** @returns {string|null} The task id a TaskCreate result reports, JSON or prose. */
-function parseCreatedTaskId(text) {
-  const parsed = parseResultJson(text);
-  const jsonId = parsed?.task?.id ?? parsed?.taskId ?? parsed?.id;
-  if (jsonId != null) return String(jsonId);
-  const match = TASK_CREATED_RE.exec(text || '');
-  return match ? match[1] : null;
-}
-
-// ── Wakeup countdown ticker (module-level, single global interval) ──
-// Runs only while a wakeup card is actually on screen. The first version armed
-// the interval on the first ScheduleWakeup of the session and then ticked for
-// the rest of the app's life, and its `[data-wakeup-at]` selector carried no
-// class or tag to index on — so every second it walked every element in the
-// document. On a few long transcripts that is ~20 ms a second, permanently.
-let _wakeupTimer = null;
-
-/** @returns {boolean} True while at least one wakeup card is still on screen. */
-function _tickWakeups() {
-  const nodes = document.querySelectorAll('.chat-wakeup-card[data-wakeup-at]');
-  if (!nodes.length) return false;
-  const now = Date.now();
-  nodes.forEach((el) => {
-    const at = Number(el.dataset.wakeupAt) || 0;
-    const cd = el.querySelector('[data-countdown]');
-    if (!cd) return;
-    const remaining = Math.max(0, Math.round((at - now) / 1000));
-    if (remaining === 0) {
-      cd.textContent = 'fired';
-      cd.classList.add('is-fired');
-    } else {
-      cd.textContent = 'in ' + fmtDur(remaining);
-    }
-  });
-  return true;
-}
-
-function ensureWakeupTicker() {
-  _tickWakeups();
-  if (_wakeupTimer) return;
-  _wakeupTimer = setInterval(() => {
-    if (!_tickWakeups()) { clearInterval(_wakeupTimer); _wakeupTimer = null; }
-  }, 1000);
-}
 const { getSetting, setSetting, isNotificationsEnabled } = require('../../state/settings.state');
 const { updateTerminal, getTerminal } = require('../../state/terminals.state');
 const { saveTerminalSessions } = require('../../services/TerminalSessionService');
@@ -162,229 +81,6 @@ function unescapeHtml(html) {
 }
 
 const { parseDroppedPathsPayload } = require('../../utils/dropPaths');
-
-// ── Context Suggestions ──
-
-function createContextSuggestions(api, project, inputAdapter, getDefaultPlaceholder) {
-  const CACHE_TTL = 30_000;
-  const ROTATION_INTERVAL = 4_000;
-
-  let suggestions = [];
-  let currentIndex = 0;
-  let rotationTimer = null;
-  let cache = null; // { suggestions: string[], timestamp: number }
-  let _refreshing = false;
-  let _initTimer = null;
-  let _postStreamTimer = null;
-
-  function buildSuggestions(todos, gitStatus) {
-    const result = [];
-    const gitCount = gitStatus
-      ? (gitStatus.modified?.length || 0) + (gitStatus.staged?.length || 0) + (gitStatus.untracked?.length || 0)
-      : 0;
-    if (gitCount > 0) result.push(t('chat.suggestGit', { count: gitCount }));
-    return result;
-  }
-
-  async function refresh() {
-    if (!project?.path || _refreshing) return;
-    _refreshing = true;
-    const now = Date.now();
-    if (cache && now - cache.timestamp < CACHE_TTL) {
-      suggestions = cache.suggestions;
-      _refreshing = false;
-      _start();
-      return;
-    }
-    try {
-      const [todos, gitStatus] = await Promise.all([
-        api.project.scanTodos(project.path).catch(() => []),
-        api.git.statusDetailed({ projectPath: project.path }).catch(() => null),
-      ]);
-      suggestions = buildSuggestions(todos, gitStatus);
-      cache = { suggestions, timestamp: Date.now() };
-    } catch {
-      suggestions = [];
-    } finally {
-      _refreshing = false;
-    }
-    _start();
-  }
-
-  function _start() {
-    stop();
-    if (!suggestions.length) return;
-    currentIndex = 0;
-    _apply();
-    if (suggestions.length > 1) {
-      rotationTimer = setInterval(() => {
-        if (!inputAdapter.isEmpty()) { stop(); return; }
-        currentIndex = (currentIndex + 1) % suggestions.length;
-        _apply();
-      }, ROTATION_INTERVAL);
-    }
-  }
-
-  function _apply() {
-    // Don't overwrite if user has typed something
-    if (!inputAdapter.isEmpty()) return;
-    inputAdapter.setPlaceholder(suggestions[currentIndex] || getDefaultPlaceholder());
-  }
-
-  function stop() {
-    if (rotationTimer) { clearInterval(rotationTimer); rotationTimer = null; }
-  }
-
-  function reset() {
-    stop();
-    if (_initTimer) { clearTimeout(_initTimer); _initTimer = null; }
-    if (_postStreamTimer) { clearTimeout(_postStreamTimer); _postStreamTimer = null; }
-    _refreshing = false;
-    suggestions = [];
-    inputAdapter.setPlaceholder(getDefaultPlaceholder());
-  }
-
-  function handleTab(event) {
-    if (!inputAdapter.isEmpty() || !suggestions.length) return false;
-    event.preventDefault();
-    // Strip the " [Tab]" hint from the raw i18n string and insert clean text
-    const raw = suggestions[currentIndex] || '';
-    const clean = raw.replace(/\s*\[Tab\]\s*$/, '');
-    inputAdapter.setText(clean);
-    reset();
-    return true;
-  }
-
-  return { refresh, stop, reset, handleTab, setInitTimer(t) { _initTimer = t; }, setPostStreamTimer(t) { _postStreamTimer = t; } };
-}
-
-// ── Follow-up Suggestion Chips ──
-
-const SPARKLE_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l1.5 4.5L18 8l-4.5 1.5L12 14l-1.5-4.5L6 8l4.5-1.5z"/><path d="M19 15l.75 2.25L22 18l-2.25.75L19 21l-.75-2.25L16 18l2.25-.75z"/></svg>`;
-
-function createFollowupChips(api, suggestionsContainerEl, inputAdapter, project) {
-  // The SDK emits `prompt_suggestion` *after* the `result` message, so it lands
-  // once the turn has already been flushed. Keep both sources in their own bucket
-  // and re-render whenever either one changes, instead of snapshotting on flush.
-  let _sdk = [];        // suggestions pushed by the SDK stream
-  let _ctx = [];        // context chips (TODOs), fetched when the turn ends
-  let _visible = false; // turn is over: chips are allowed on screen
-
-  function _render(chips) {
-    if (!chips || chips.length === 0) {
-      suggestionsContainerEl.style.display = 'none';
-      suggestionsContainerEl.innerHTML = '';
-      return;
-    }
-
-    const label = document.createElement('span');
-    label.className = 'chat-followup-label';
-    label.textContent = t('chat.suggestionsLabel') || 'Suggestions';
-
-    const chipsWrapper = document.createElement('div');
-    chipsWrapper.className = 'chat-followup-chips';
-    chipsWrapper.setAttribute('role', 'listbox');
-    chipsWrapper.setAttribute('aria-label', t('chat.suggestionsLabel') || 'Suggestions');
-
-    chips.forEach((text, chipIndex) => {
-      const chip = document.createElement('button');
-      chip.className = 'chat-followup-chip';
-      chip.setAttribute('role', 'option');
-      chip.setAttribute('aria-selected', 'false');
-      chip.setAttribute('tabindex', chipIndex === 0 ? '0' : '-1');
-      chip.innerHTML = `<span class="chat-followup-chip-icon">${SPARKLE_ICON}</span><span class="chat-followup-chip-text">${escapeHtml(text)}</span>`;
-      chip.title = text;
-      chip.addEventListener('click', () => {
-        const existing = inputAdapter.getText().trim();
-        if (existing) {
-          inputAdapter.setText(existing + ' ' + text);
-        } else {
-          inputAdapter.setText(text);
-        }
-        inputAdapter.resize();
-        inputAdapter.focus();
-        clear();
-      });
-      chip.addEventListener('keydown', (e) => {
-        const allChips = Array.from(chipsWrapper.querySelectorAll('.chat-followup-chip'));
-        const idx = allChips.indexOf(chip);
-        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-          e.preventDefault();
-          const next = allChips[idx + 1];
-          if (next) { chip.setAttribute('tabindex', '-1'); next.setAttribute('tabindex', '0'); next.focus(); }
-        } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-          e.preventDefault();
-          const prev = allChips[idx - 1];
-          if (prev) { chip.setAttribute('tabindex', '-1'); prev.setAttribute('tabindex', '0'); prev.focus(); }
-        } else if (e.key === 'Escape') {
-          e.preventDefault();
-          inputAdapter.focus();
-        }
-      });
-      chipsWrapper.appendChild(chip);
-    });
-
-    suggestionsContainerEl.innerHTML = '';
-    suggestionsContainerEl.appendChild(label);
-    suggestionsContainerEl.appendChild(chipsWrapper);
-    suggestionsContainerEl.style.display = 'flex';
-  }
-
-  /** Re-render from the current buckets. No-op while streaming or while typing. */
-  function _sync() {
-    if (!_visible) return;
-    if (!inputAdapter.isEmpty()) return;
-    const chips = [..._sdk.slice(0, 3), ..._ctx];
-    if (chips.length > 0) {
-      _render(chips);
-    }
-  }
-
-  /** Push a suggestion from the SDK stream. Arrives after the turn ended. */
-  function addSuggestion(text) {
-    if (typeof text === 'string' && text.trim() && _sdk.length < 5) {
-      _sdk.push(text.trim());
-      _sync();
-    }
-  }
-
-  /** Called when streaming ends: allow rendering, then fetch context chips */
-  async function flush() {
-    _visible = true;
-    _sync(); // show whatever already arrived
-    _ctx = await _fetchContextChips();
-    _sync();
-  }
-
-  async function _fetchContextChips() {
-    if (!project?.path) return [];
-    try {
-      const todos = await api.project.scanTodos(project.path).catch(() => []);
-      const todoCount = Array.isArray(todos) ? todos.length : 0;
-      if (todoCount > 0) {
-        return [t('chat.suggestTodos', { count: todoCount }).replace(/\s*\[Tab\]\s*$/, '')];
-      }
-    } catch { /* ignore */ }
-    return [];
-  }
-
-  function clear() {
-    _sdk = [];
-    _ctx = [];
-    _visible = false;
-    suggestionsContainerEl.style.display = 'none';
-    suggestionsContainerEl.innerHTML = '';
-  }
-
-  // Hide chips when user starts typing
-  inputAdapter.onInput(() => {
-    if (!inputAdapter.isEmpty() && suggestionsContainerEl.style.display !== 'none') {
-      clear();
-    }
-  });
-
-  return { addSuggestion, flush, clear };
-}
 
 // Tool icons, name formatter & detail extractor come from ../utils/toolRegistry
 
@@ -429,6 +125,10 @@ class ChatView extends BaseComponent {
   let isStreaming = false;
   let isAborting = false;
   let pendingResumeId = resumeSessionId || null;
+  // The transcript this tab replayed, kept after `pendingResumeId` is cleared by
+  // the first turn: an expanded tool card fetches its full output from that file,
+  // and it is not the session the SDK goes on to write.
+  const historySessionId = resumeSessionId || null;
   let pendingForkSession = forkSession || false;
   let pendingResumeAt = resumeSessionAt || null;
   // Prompt UUID of the turn a pending fork discards — arms the CLI fork guard.
@@ -521,10 +221,7 @@ class ChatView extends BaseComponent {
   const recapUserPrompts = []; // first 5 user prompts
   const recapSessionStartTime = Date.now();
 
-  // ── Lightbox state ──
-  let lightboxEl = null;
-  let lightboxImages = [];
-  let lightboxIndex = 0;
+  const lightbox = createLightbox();
 
   // ── Build DOM ──
 
@@ -640,6 +337,7 @@ class ChatView extends BaseComponent {
             <span class="chat-status-dot"></span>
             ${project.isCloud ? `<span class="chat-status-cloud-badge">${escapeHtml(t('chat.cloudBadge') || 'Cloud')}</span>` : ''}
             <span class="chat-status-text">${escapeHtml(t('chat.ready'))}</span>
+            <span class="chat-status-elapsed" title="${escapeHtml(t('chat.elapsedTitle') || 'Time spent on this turn')}" hidden></span>
             <button class="chat-search-btn" title="${escapeHtml(t('chat.searchConversation') || 'Search in conversation')}">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </button>
@@ -703,6 +401,7 @@ class ChatView extends BaseComponent {
   const tasksClearEl = chatView.querySelector('.chat-tasks-clear');
   const statusDot = chatView.querySelector('.chat-status-dot');
   const statusTextEl = chatView.querySelector('.chat-status-text');
+  const statusElapsedEl = chatView.querySelector('.chat-status-elapsed');
   const modelBtn = chatView.querySelector('.chat-model-btn');
   const modelLabel = chatView.querySelector('.chat-model-label');
   const modelDropdown = chatView.querySelector('.chat-model-dropdown');
@@ -730,273 +429,19 @@ class ChatView extends BaseComponent {
 
   // ── Transcript search (Ctrl+F) ──
 
-  const searchBarEl = chatView.querySelector('.chat-search');
-  const searchInputEl = chatView.querySelector('.chat-search-input');
-  const searchCountEl = chatView.querySelector('.chat-search-count');
-  const searchPrevBtn = chatView.querySelector('.chat-search-prev');
-  const searchNextBtn = chatView.querySelector('.chat-search-next');
-  const searchCloseBtn = chatView.querySelector('.chat-search-close');
-  const searchOpenBtn = chatView.querySelector('.chat-search-btn');
+  const search = createTranscriptSearch({
+    chatView, messagesEl, tabbarEl,
+    getInputEl: () => inputEl,
+    getPruner: () => transcriptPruner,
+  });
 
-  // Tags whose text is never user-visible prose, so never worth highlighting.
-  const SEARCH_SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION', 'SVG', 'CANVAS']);
-  const SEARCH_MAX_HITS = 500;
-
-  let searchHits = [];
-  let searchHitIndex = -1;
-  let searchDebounceTimer = null;
-  let searchLastQuery = '';
   // Assigned once the scroll state exists (it needs userHasScrolled); only
   // user-triggered paths run before that, and they all guard with ?.
   let transcriptPruner = null;
 
-  function clearSearchHighlights() {
-    for (const mark of messagesEl.querySelectorAll('mark.chat-search-hit')) {
-      const parent = mark.parentNode;
-      if (!parent) continue;
-      parent.replaceChild(document.createTextNode(mark.textContent), mark);
-      parent.normalize();
-    }
-    searchHits = [];
-    searchHitIndex = -1;
-  }
-
-  // Collapsed tool cards and hidden panels hold text we can never scroll to,
-  // so matches inside them would only inflate the counter.
-  function isSearchableElement(el, cache) {
-    if (!el || el === messagesEl) return true;
-    const cached = cache.get(el);
-    if (cached !== undefined) return cached;
-    let ok = true;
-    if (SEARCH_SKIP_TAGS.has(el.tagName.toUpperCase()) || el.hasAttribute('hidden')) {
-      ok = false;
-    } else if (el.offsetParent === null) {
-      ok = false;
-    } else {
-      ok = isSearchableElement(el.parentElement, cache);
-    }
-    cache.set(el, ok);
-    return ok;
-  }
-
-  function wrapSearchMatches(textNode, needle) {
-    const marks = [];
-    let current = textNode;
-    for (;;) {
-      const idx = current.nodeValue.toLowerCase().indexOf(needle);
-      if (idx === -1) break;
-      const matchNode = current.splitText(idx);
-      const tail = matchNode.splitText(needle.length);
-      const mark = document.createElement('mark');
-      mark.className = 'chat-search-hit';
-      matchNode.parentNode.replaceChild(mark, matchNode);
-      mark.appendChild(matchNode);
-      marks.push(mark);
-      current = tail;
-    }
-    return marks;
-  }
-
-  function runSearch(query, { keepIndex = false } = {}) {
-    const previousIndex = searchHitIndex;
-    clearSearchHighlights();
-    searchLastQuery = query;
-    const needle = query.trim().toLowerCase();
-    if (needle.length < 2) {
-      searchCountEl.textContent = '';
-      searchBarEl.classList.remove('no-results');
-      return;
-    }
-
-    const visibilityCache = new Map();
-    const walker = document.createTreeWalker(messagesEl, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        if (!node.nodeValue || !node.nodeValue.toLowerCase().includes(needle)) return NodeFilter.FILTER_REJECT;
-        return isSearchableElement(node.parentElement, visibilityCache)
-          ? NodeFilter.FILTER_ACCEPT
-          : NodeFilter.FILTER_REJECT;
-      }
-    });
-
-    const targets = [];
-    let node;
-    while ((node = walker.nextNode())) targets.push(node);
-
-    for (const target of targets) {
-      searchHits.push(...wrapSearchMatches(target, needle));
-      if (searchHits.length >= SEARCH_MAX_HITS) break;
-    }
-
-    searchBarEl.classList.toggle('no-results', searchHits.length === 0);
-    if (!searchHits.length) {
-      searchCountEl.textContent = t('chat.searchNoResults') || 'No results';
-      return;
-    }
-    const nextIndex = keepIndex && previousIndex >= 0
-      ? Math.min(previousIndex, searchHits.length - 1)
-      : 0;
-    focusSearchHit(nextIndex, { scroll: !keepIndex });
-  }
-
-  function focusSearchHit(index, { scroll = true } = {}) {
-    if (!searchHits.length) return;
-    searchHits[searchHitIndex]?.classList.remove('current');
-    searchHitIndex = (index + searchHits.length) % searchHits.length;
-    const hit = searchHits[searchHitIndex];
-    hit.classList.add('current');
-    if (scroll) hit.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    const total = searchHits.length >= SEARCH_MAX_HITS ? `${SEARCH_MAX_HITS}+` : `${searchHits.length}`;
-    searchCountEl.textContent = `${searchHitIndex + 1}/${total}`;
-  }
-
-  function navigateSearch(forward) {
-    // Streaming can replace message nodes under us, detaching the marks we hold.
-    if (searchHits.length && searchHits.some(h => !h.isConnected)) {
-      runSearch(searchLastQuery, { keepIndex: true });
-      if (!searchHits.length) return;
-    }
-    if (!searchHits.length) return;
-    focusSearchHit(searchHitIndex + (forward ? 1 : -1));
-  }
-
-  function openSearch() {
-    // The Changes tab hides the transcript, so there would be nothing to match against.
-    if (messagesEl.hidden) tabbarEl.querySelector('.chat-tab[data-tab="conversation"]')?.click();
-    // Search walks the mounted DOM — bring the pruned entries back for its
-    // whole lifetime, or matches in older messages would silently vanish.
-    transcriptPruner?.suspend();
-    transcriptPruner?.mountAll();
-    searchBarEl.hidden = false;
-    // Seed with the current selection so "select then Ctrl+F" works like a browser.
-    const selected = String(window.getSelection() || '').trim();
-    if (selected && selected.length <= 100 && messagesEl.contains(window.getSelection()?.anchorNode || null)) {
-      searchInputEl.value = selected;
-      runSearch(selected);
-    } else if (searchInputEl.value.trim()) {
-      runSearch(searchInputEl.value);
-    }
-    searchInputEl.focus();
-    searchInputEl.select();
-  }
-
-  function closeSearch({ refocusInput = true } = {}) {
-    if (searchBarEl.hidden) return;
-    clearTimeout(searchDebounceTimer);
-    clearSearchHighlights();
-    searchBarEl.hidden = true;
-    searchBarEl.classList.remove('no-results');
-    searchCountEl.textContent = '';
-    transcriptPruner?.resume();
-    if (refocusInput) inputEl?.focus();
-  }
-
-  searchInputEl.addEventListener('input', () => {
-    clearTimeout(searchDebounceTimer);
-    searchDebounceTimer = setTimeout(() => runSearch(searchInputEl.value), 180);
-  });
-
-  searchInputEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      if (searchInputEl.value !== searchLastQuery) {
-        clearTimeout(searchDebounceTimer);
-        runSearch(searchInputEl.value);
-        return;
-      }
-      navigateSearch(!e.shiftKey);
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      closeSearch();
-    }
-  });
-
-  searchPrevBtn.addEventListener('click', () => navigateSearch(false));
-  searchNextBtn.addEventListener('click', () => navigateSearch(true));
-  searchCloseBtn.addEventListener('click', () => closeSearch());
-  searchOpenBtn.addEventListener('click', () => {
-    if (searchBarEl.hidden) openSearch(); else closeSearch();
-  });
-
-  // Only the visible chat view claims Ctrl+F; hidden tabs keep display:none wrappers.
-  function _onSearchShortcut(e) {
-    if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'f' || e.altKey) return;
-    if (!chatView.isConnected || chatView.offsetParent === null) return;
-    const active = document.activeElement;
-    if (active && active !== document.body && !chatView.contains(active)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    openSearch();
-  }
-  document.addEventListener('keydown', _onSearchShortcut, true);
-
   // ── Export conversation ──
 
-  function exportConversation(format) {
-    if (!conversationHistory.length) return;
-    let content, ext, mime;
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const filename = `conversation-${timestamp}`;
-
-    if (format === 'json') {
-      content = JSON.stringify(conversationHistory, null, 2);
-      ext = 'json';
-      mime = 'application/json';
-    } else if (format === 'html') {
-      const msgs = conversationHistory.map(m => {
-        const role = m.role === 'user' ? 'You' : 'Claude';
-        const rendered = m.role === 'assistant' ? renderMarkdown(m.content) : escapeHtml(m.content);
-        return `<div class="msg ${m.role}"><strong>${role}:</strong><div>${rendered}</div></div>`;
-      }).join('\n');
-      content = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Conversation</title><style>body{font-family:system-ui;max-width:800px;margin:0 auto;padding:20px;background:#1a1a1a;color:#e0e0e0}.msg{margin:16px 0;padding:12px;border-radius:8px}.user{background:#252525}.assistant{background:#1e2a1e}strong{color:#d97706}pre{background:#111;padding:8px;border-radius:4px;overflow-x:auto}code{font-size:0.9em}</style></head><body><h1>Conversation Export</h1>${msgs}</body></html>`;
-      ext = 'html';
-      mime = 'text/html';
-    } else {
-      // markdown
-      content = conversationHistory.map(m => {
-        const role = m.role === 'user' ? '## You' : '## Claude';
-        return `${role}\n\n${m.content}\n`;
-      }).join('\n---\n\n');
-      ext = 'md';
-      mime = 'text/markdown';
-    }
-
-    // Download via blob
-    const blob = new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${filename}.${ext}`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  if (exportBtn) {
-    exportBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      // Show format dropdown
-      const existing = chatView.querySelector('.chat-export-dropdown');
-      if (existing) { existing.remove(); return; }
-      const dd = document.createElement('div');
-      dd.className = 'chat-export-dropdown';
-      dd.innerHTML = ['markdown', 'html', 'json'].map(f =>
-        `<button class="chat-export-option" data-format="${f}">${f.toUpperCase()}</button>`
-      ).join('');
-      dd.style.cssText = 'position:absolute;bottom:100%;left:0;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:var(--radius-sm);padding:4px;display:flex;gap:4px;z-index:100;margin-bottom:4px';
-      exportBtn.style.position = 'relative';
-      exportBtn.appendChild(dd);
-      dd.addEventListener('click', (ev) => {
-        const fmt = ev.target.dataset.format;
-        if (fmt) { exportConversation(fmt); dd.remove(); }
-      });
-      setTimeout(() => {
-        const close = () => { dd.remove(); document.removeEventListener('click', close); };
-        document.addEventListener('click', close);
-      }, 0);
-    });
-  }
+  attachExportMenu({ exportBtn, chatView, getHistory: () => conversationHistory });
 
   // ── Remote Control (claude.ai) for this one conversation ──
   //
@@ -1082,31 +527,16 @@ class ChatView extends BaseComponent {
 
   // ── File attachments ──
   //
-  // Three destinations, one per content block the CLI understands: images and
-  // PDFs travel as base64 and get their own payload, while text files reuse
-  // the mention channel — a mention has always been "a label plus some text
-  // resolved at send time", which is exactly what an attached .md is.
-
-  const pendingImages = []; // Array of { base64, mediaType, name, dataUrl }
-  const MAX_IMAGE_SIZE = MAX_IMAGE_BYTES;
-  const MAX_PENDING_IMAGES = 5;
-  const MAX_PENDING_DOCUMENTS = 5;
-  const MAX_PENDING_TEXTS = 10;
-  // What all inlined text files together may add to one turn. Ten files at the
-  // 128 KB per-file ceiling is 1.3 MB of context nobody asked to pay for, and
-  // a dropped folder reaches that without the user noticing they dropped one.
-  const MAX_TOTAL_INLINE_TEXT_BYTES = 512 * 1024;
-
-  // Reads are asynchronous, but addFiles() loops synchronously — so a cap
-  // tested against the landed count alone reads zero for every file of a
-  // batch: drop eight images and all eight pass the test, then five land and
-  // three vanish without a word. The reservation is taken in the loop and
-  // released when the read settles, so the count the cap sees is the count
-  // that will exist.
-  let inflightImages = 0;
-  let inflightDocuments = 0;
-  let inflightTexts = 0;
-  let inlinedTextBytes = 0;
+  // Built here rather than above because it reaches back for the mention
+  // helpers: an attached file is a chip on the same rail as an @mention.
+  const attachments = createAttachmentTray({
+    chatView, inputEl, imagePreview,
+    getProject: () => project,
+    onAttachmentChip: (name, data) => addAttachmentChip(name, data),
+    onMentionChip: (type, data) => addMentionChip(type, data),
+    countPdfAttachments: () => countPdfAttachments(),
+    countTextAttachments: () => countTextAttachments(),
+  });
 
   // ── Contenteditable helpers ──
 
@@ -2045,238 +1475,17 @@ class ChatView extends BaseComponent {
   // ── Follow-up suggestion chips (shown after Claude responds) ──
   const followupChips = createFollowupChips(api, followupSuggestionsEl, inputAdapter, project);
 
+  // ── Turn elapsed time (the footer's wall clock) ──
+  const elapsedTimer = createElapsedTimer(statusElapsedEl);
+
   attachBtn.addEventListener('click', () => fileInput.click());
 
   fileInput.addEventListener('change', () => {
     if (fileInput.files.length) {
-      addFiles(fileInput.files);
+      attachments.addFiles(fileInput.files);
       fileInput.value = '';
     }
   });
-
-  function attachmentToast(message, type = 'warning') {
-    const Toast = require('./Toast');
-    Toast.showToast({ message, type });
-  }
-
-  /**
-   * Route each file to the content block that fits it. Anything we cannot send
-   * now says so out loud — the old code dropped unsupported files in silence,
-   * which read as the composer being broken rather than as a refusal.
-   */
-  function addFiles(files) {
-    for (const file of files) {
-      switch (classifyFile(file)) {
-        case 'image': addImageFile(file); break;
-        case 'pdf': addPdfFile(file); break;
-        case 'text': addTextFile(file); break;
-        case 'secret':
-          attachmentToast(t('chat.attachSecret', { name: file.name }));
-          break;
-        default:
-          attachmentToast(t('chat.attachUnsupported', { name: file.name }));
-      }
-    }
-  }
-
-  function addImageFile(file) {
-    if (pendingImages.length + inflightImages >= MAX_PENDING_IMAGES) {
-      attachmentToast(t('chat.attachTooMany', { max: MAX_PENDING_IMAGES }));
-      return;
-    }
-    if (file.size > MAX_IMAGE_SIZE) {
-      attachmentToast(t('chat.attachTooLarge', { name: file.name, max: formatBytes(MAX_IMAGE_SIZE) }));
-      return;
-    }
-    inflightImages++;
-    const reader = new FileReader();
-    reader.onload = () => {
-      inflightImages--;
-      const dataUrl = reader.result;
-      const base64 = dataUrl.split(',')[1];
-      pendingImages.push({ base64, mediaType: file.type || 'image/png', name: file.name, dataUrl });
-      renderImagePreview();
-    };
-    reader.onerror = () => {
-      inflightImages--;
-      attachmentToast(t('chat.attachReadFailed', { name: file.name }), 'error');
-    };
-    reader.readAsDataURL(file);
-  }
-
-  /**
-   * PDFs travel as a base64 `document` block — the very shape the Claude Code
-   * binary builds itself when its Read tool opens one. Past the size ceiling we
-   * hand over the path instead, so a 200 MB scan does not become a 270 MB
-   * request that the API would refuse anyway.
-   */
-  function addPdfFile(file) {
-    if (file.size > MAX_PDF_BYTES) {
-      if ((file.path || api.getPathForFile?.(file))) {
-        addPathAttachment(file);
-      } else {
-        attachmentToast(t('chat.attachTooLarge', { name: file.name, max: formatBytes(MAX_PDF_BYTES) }));
-      }
-      return;
-    }
-    if (countPdfAttachments() + inflightDocuments >= MAX_PENDING_DOCUMENTS) {
-      attachmentToast(t('chat.attachTooMany', { max: MAX_PENDING_DOCUMENTS }));
-      return;
-    }
-    inflightDocuments++;
-    const reader = new FileReader();
-    reader.onload = () => {
-      inflightDocuments--;
-      addAttachmentChip(file.name, {
-        kind: 'pdf',
-        name: file.name,
-        base64: String(reader.result).split(',')[1],
-      });
-    };
-    reader.onerror = () => {
-      inflightDocuments--;
-      attachmentToast(t('chat.attachReadFailed', { name: file.name }), 'error');
-    };
-    reader.readAsDataURL(file);
-  }
-
-  /**
-   * Text files ride the mention channel: a chip in the composer, the contents
-   * resolved at send time. Above the inline ceiling only the path is sent and
-   * the agent's Read tool opens it — it can seek and page, where an inlined
-   * blob can only sit in the context being paid for.
-   */
-  function addTextFile(file) {
-    if (!shouldInlineText({ size: file.size, path: (file.path || api.getPathForFile?.(file)) })) {
-      addPathAttachment(file);
-      return;
-    }
-    // Images and PDFs were capped; text was not, so a dropped folder inlined
-    // every file in it. A file that would break either ceiling is handed over
-    // as a path when it has one — the agent's Read tool opens it on demand —
-    // and refused out loud when it does not.
-    const overBudget = inlinedTextBytes + file.size > MAX_TOTAL_INLINE_TEXT_BYTES;
-    if (countTextAttachments() + inflightTexts >= MAX_PENDING_TEXTS || overBudget) {
-      if ((file.path || api.getPathForFile?.(file))) {
-        addPathAttachment(file);
-      } else {
-        attachmentToast(t('chat.attachTooMany', { max: MAX_PENDING_TEXTS }));
-      }
-      return;
-    }
-    inflightTexts++;
-    inlinedTextBytes += file.size;
-    const reader = new FileReader();
-    reader.onload = () => {
-      inflightTexts--;
-      addAttachmentChip(file.name, {
-        kind: 'text',
-        name: file.name,
-        path: (file.path || api.getPathForFile?.(file)) || '',
-        content: String(reader.result ?? ''),
-      });
-    };
-    reader.onerror = () => {
-      inflightTexts--;
-      inlinedTextBytes -= file.size;
-      attachmentToast(t('chat.attachReadFailed', { name: file.name }), 'error');
-    };
-    reader.readAsText(file);
-  }
-
-  /** Hand the agent a path to read rather than the bytes themselves. */
-  function addPathAttachment(file) {
-    addAttachmentChip(file.name, {
-      kind: 'path',
-      name: file.name,
-      path: (file.path || api.getPathForFile?.(file)),
-      size: file.size,
-    });
-  }
-
-  function removeImage(index) {
-    pendingImages.splice(index, 1);
-    renderImagePreview();
-  }
-
-  function renderImagePreview() {
-    if (pendingImages.length === 0) {
-      imagePreview.style.display = 'none';
-      imagePreview.innerHTML = '';
-      return;
-    }
-    imagePreview.style.display = 'flex';
-    imagePreview.innerHTML = pendingImages.map((img, i) => `
-      <div class="chat-image-thumb" data-index="${i}">
-        <img src="${img.dataUrl}" alt="${escapeHtml(img.name)}" />
-        <button class="chat-image-remove" data-index="${i}" title="${t('common.remove')}">&times;</button>
-      </div>
-    `).join('');
-    imagePreview.querySelectorAll('.chat-image-remove').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        removeImage(parseInt(btn.dataset.index));
-      });
-    });
-  }
-
-  // Drag & drop on chat area
-  chatView.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    chatView.classList.add('chat-dragover');
-  });
-  chatView.addEventListener('dragleave', (e) => {
-    if (!chatView.contains(e.relatedTarget)) {
-      chatView.classList.remove('chat-dragover');
-    }
-  });
-  chatView.addEventListener('drop', (e) => {
-    e.preventDefault();
-    chatView.classList.remove('chat-dragover');
-    handleChatDrop(e);
-  });
-
-  function handleChatDrop(e) {
-    // Priority: real files dropped from the OS. Routing happens in addFiles,
-    // so a .md from the desktop lands here the same way a screenshot does —
-    // this used to filter on image MIME types and drop everything else.
-    const droppedFiles = Array.from(e.dataTransfer.files || []);
-    if (droppedFiles.length) {
-      addFiles(droppedFiles);
-      inputEl.focus();
-      return;
-    }
-
-    // Fallback: text/plain with file paths (from internal FileExplorer)
-    const textData = e.dataTransfer.getData('text/plain') || '';
-    const { fs, path } = window.electron_nodeModules;
-    const parsed = parseDroppedPathsPayload(textData, { fs, path, projectRoot: project?.path || '' });
-    if (!parsed) return;
-
-    for (const missing of parsed.missing) {
-      const Toast = require('./Toast');
-      Toast.showToast({
-        message: (t('chat.fileNotFound') || 'File not found') + ': ' + missing,
-        type: 'error',
-      });
-    }
-
-    for (const file of parsed.files) {
-      addMentionChip('file', { path: file.path, fullPath: file.fullPath });
-    }
-
-    if (parsed.directories.length > 0) {
-      const Toast = require('./Toast');
-      Toast.showToast({
-        message: t('chat.dropFolderNotSupported') || 'Folders cannot be attached, drop files instead',
-        type: 'warning',
-      });
-    }
-
-    if (parsed.files.length > 0) {
-      inputEl.focus();
-    }
-  }
 
   // Paste: images from clipboard + strip HTML for text
   inputEl.addEventListener('paste', (e) => {
@@ -2284,7 +1493,7 @@ class ChatView extends BaseComponent {
     if (imageItems.length > 0) {
       e.preventDefault();
       const files = imageItems.map(i => i.getAsFile()).filter(Boolean);
-      if (files.length) addFiles(files);
+      if (files.length) attachments.addFiles(files);
       return;
     }
     // Strip HTML formatting, insert as plain text
@@ -2352,21 +1561,14 @@ class ChatView extends BaseComponent {
       if ((e.key === 'Enter' || e.key === 'Tab') && mentionSelectedIndex >= 0 && items[mentionSelectedIndex]) {
         e.preventDefault();
         const item = items[mentionSelectedIndex];
-        if (mentionMode === 'file') {
-          selectMentionFile(item.dataset.path, item.dataset.fullpath);
-        } else if (mentionMode === 'projects') {
-          selectMentionProject(item.dataset.projectid, item.dataset.projectname, item.dataset.projectpath);
-        } else if (mentionMode === 'context') {
-          selectContextPack(item.dataset.packid, item.dataset.packname);
-        } else if (mentionMode === 'prompt') {
-          selectPromptTemplate(item.dataset.promptid, item.dataset.promptname);
-        } else {
-          // Any other picker mode (conversations, tabs, workspace, registry sources...)
-          // has no data-type on its items — delegate to the picker's own onSelect.
-          const cfg = Object.values(PICKER_CONFIGS).find(c => c.mode === mentionMode);
-          if (cfg) cfg.onSelect(item);
-          else selectMentionType(item.dataset.type);
-        }
+        // Every picker mode carries its own onSelect, and the click path
+        // (mousedown, below) has always gone straight through it. Keyboard
+        // selection does the same, so Enter and Tab land exactly where a click
+        // would. The fallback covers the type list itself, whose items have no
+        // picker mode of their own.
+        const cfg = Object.values(PICKER_CONFIGS).find(c => c.mode === mentionMode);
+        if (cfg) cfg.onSelect(item);
+        else selectMentionType(item.dataset.type);
         return;
       }
       if (e.key === 'Escape') {
@@ -3664,83 +2866,6 @@ class ChatView extends BaseComponent {
     });
   });
 
-  // ── Image Lightbox ──
-
-  function ensureLightbox() {
-    if (lightboxEl) return;
-    lightboxEl = document.createElement('div');
-    lightboxEl.className = 'chat-lightbox';
-    lightboxEl.innerHTML = `
-      <div class="chat-lightbox-backdrop"></div>
-      <button class="chat-lightbox-close" aria-label="Close">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-      </button>
-      <button class="chat-lightbox-prev" aria-label="Previous">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
-      </button>
-      <button class="chat-lightbox-next" aria-label="Next">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
-      </button>
-      <img class="chat-lightbox-img" alt="" />
-      <div class="chat-lightbox-counter"></div>
-    `;
-    document.body.appendChild(lightboxEl);
-
-    lightboxEl.querySelector('.chat-lightbox-backdrop').addEventListener('click', closeLightbox);
-    lightboxEl.querySelector('.chat-lightbox-close').addEventListener('click', closeLightbox);
-    lightboxEl.querySelector('.chat-lightbox-prev').addEventListener('click', () => navigateLightbox(-1));
-    lightboxEl.querySelector('.chat-lightbox-next').addEventListener('click', () => navigateLightbox(1));
-  }
-
-  function openLightbox(images, startIndex) {
-    ensureLightbox();
-    lightboxImages = images;
-    lightboxIndex = startIndex;
-    updateLightboxImage();
-    requestAnimationFrame(() => lightboxEl.classList.add('active'));
-    document.addEventListener('keydown', lightboxKeyHandler);
-  }
-
-  function closeLightbox() {
-    if (!lightboxEl) return;
-    lightboxEl.classList.remove('active');
-    document.removeEventListener('keydown', lightboxKeyHandler);
-  }
-
-  function navigateLightbox(delta) {
-    lightboxIndex = (lightboxIndex + delta + lightboxImages.length) % lightboxImages.length;
-    updateLightboxImage();
-  }
-
-  function updateLightboxImage() {
-    const img = lightboxEl.querySelector('.chat-lightbox-img');
-    const counter = lightboxEl.querySelector('.chat-lightbox-counter');
-    const prevBtn = lightboxEl.querySelector('.chat-lightbox-prev');
-    const nextBtn = lightboxEl.querySelector('.chat-lightbox-next');
-
-    img.src = lightboxImages[lightboxIndex];
-
-    if (lightboxImages.length > 1) {
-      counter.textContent = `${lightboxIndex + 1} / ${lightboxImages.length}`;
-      counter.style.display = '';
-      prevBtn.style.display = '';
-      nextBtn.style.display = '';
-    } else {
-      counter.style.display = 'none';
-      prevBtn.style.display = 'none';
-      nextBtn.style.display = 'none';
-    }
-  }
-
-  function lightboxKeyHandler(e) {
-    if (e.key === 'Escape') {
-      closeLightbox();
-    } else if (e.key === 'ArrowLeft') {
-      navigateLightbox(-1);
-    } else if (e.key === 'ArrowRight') {
-      navigateLightbox(1);
-    }
-  }
 
   // ── Delegated click handlers ──
 
@@ -3778,10 +2903,11 @@ class ChatView extends BaseComponent {
       let text = '';
       try { text = b64 ? decodeURIComponent(escape(window.atob(b64))) : ''; } catch (_) { text = ''; }
       if (text) {
-        navigator.clipboard.writeText(text).then(() => {
+        copyText(text).then((ok) => {
+          if (!ok) return;
           copyBtn.classList.add('copied');
           setTimeout(() => copyBtn.classList.remove('copied'), 1200);
-        }).catch(() => {});
+        });
       }
       return;
     }
@@ -3864,6 +2990,40 @@ class ChatView extends BaseComponent {
       return;
     }
 
+    // Image lightbox — checked before the tool card / group toggles below,
+    // because these images live *inside* an expandable tool card: matching the
+    // card first meant clicking the preview collapsed the card instead of
+    // enlarging the image.
+    const clickedImage = e.target.closest('.chat-msg-image');
+    if (clickedImage) {
+      e.stopPropagation();
+      const container = clickedImage.closest('.chat-msg-images');
+      if (container) {
+        const allImages = Array.from(container.querySelectorAll('.chat-msg-image'));
+        const srcs = allImages.map(img => img.src);
+        const index = allImages.indexOf(clickedImage);
+        lightbox.open(srcs, Math.max(0, index));
+      } else {
+        lightbox.open([clickedImage.src], 0);
+      }
+      return;
+    }
+
+    // Inline image lightbox. The wrapper is matched too: it carries the border
+    // and the pointer cursor, so a click landing on that 1px edge must not fall
+    // through to the tool card toggle either.
+    const inlineWrap = e.target.closest('.chat-inline-img-wrap');
+    const inlineImg = e.target.closest('.chat-inline-img') || inlineWrap?.querySelector('.chat-inline-img');
+    if (inlineImg) {
+      e.stopPropagation();
+      const container = inlineImg.closest('.chat-inline-images');
+      const allImgs = container ? Array.from(container.querySelectorAll('.chat-inline-img')) : [inlineImg];
+      const srcs = allImgs.map(i => i.src);
+      const index = allImgs.indexOf(inlineImg);
+      lightbox.open(srcs, Math.max(0, index));
+      return;
+    }
+
     // Tool group toggle
     const groupHeader = e.target.closest('.chat-tool-group-header');
     if (groupHeader && !e.target.closest('.chat-tool-card')) {
@@ -3882,30 +3042,6 @@ class ChatView extends BaseComponent {
       toggleToolCard(toolCard);
       return;
     }
-
-    // Image lightbox
-    const clickedImage = e.target.closest('.chat-msg-image');
-    if (clickedImage) {
-      const container = clickedImage.closest('.chat-msg-images');
-      if (container) {
-        const allImages = Array.from(container.querySelectorAll('.chat-msg-image'));
-        const srcs = allImages.map(img => img.src);
-        const index = allImages.indexOf(clickedImage);
-        openLightbox(srcs, Math.max(0, index));
-      }
-      return;
-    }
-
-    // Inline image lightbox
-    const inlineImg = e.target.closest('.chat-inline-img');
-    if (inlineImg) {
-      const container = inlineImg.closest('.chat-inline-images');
-      const allImgs = container ? Array.from(container.querySelectorAll('.chat-inline-img')) : [inlineImg];
-      const srcs = allImgs.map(i => i.src);
-      const index = allImgs.indexOf(inlineImg);
-      openLightbox(srcs, Math.max(0, index));
-      return;
-    }
   });
 
 
@@ -3918,7 +3054,7 @@ class ChatView extends BaseComponent {
   async function handleSend() {
     if (destroyed) return;
     const text = getInputText().trim();
-    const hasImages = pendingImages.length > 0;
+    const hasImages = attachments.count() > 0;
     const hasMentions = pendingMentions.length > 0;
     if ((!text && !hasImages && !hasMentions) || sendLock) return;
 
@@ -3963,9 +3099,8 @@ class ChatView extends BaseComponent {
     resetScrollDetection();
 
     // Snapshot images and mentions, then clear pending
-    const images = hasImages ? pendingImages.splice(0) : [];
+    const images = hasImages ? attachments.take() : [];
     const mentions = hasMentions ? pendingMentions.splice(0) : [];
-    renderImagePreview();
     renderMentionChips();
     hideMentionDropdown();
 
@@ -4381,6 +3516,48 @@ class ChatView extends BaseComponent {
 
   // ── Tool card expansion ──
 
+  // Full tool outputs pulled back from the transcript, one per card. Kept off
+  // the DOM on purpose: a single result reaches megabytes, and a dataset entry
+  // would park all of it in an HTML attribute for the rest of the session.
+  // Keyed by the card element, so it goes away when the card does.
+  const fullToolOutputs = new WeakMap();
+
+  /**
+   * The complete output of a replayed tool card, fetched once.
+   *
+   * Replay only carries a 2 KB preview of each result — the rest never crossed
+   * IPC — so a resumed conversation had no way to show what a tool actually
+   * printed. This reads it back out of the session file the tab replayed.
+   *
+   * @param {HTMLElement} card
+   * @returns {Promise<string|null>} - null when there is nothing more to fetch
+   * @throws when the result could not be read back
+   */
+  async function fetchFullToolOutput(card) {
+    if (fullToolOutputs.has(card)) return fullToolOutputs.get(card);
+    const toolUseId = card.dataset.toolUseId;
+    if (!toolUseId || !historySessionId || !api.chat?.loadToolOutput) return null;
+
+    const res = await api.chat.loadToolOutput({
+      projectPath: project.path,
+      sessionId: historySessionId,
+      toolUseId
+    });
+    if (!res?.success || typeof res.output !== 'string') {
+      throw new Error(res?.error || 'tool output unavailable');
+    }
+    fullToolOutputs.set(card, res.output);
+    // `truncated` here means the result was larger than the main process is
+    // willing to send at once — the card stays marked so it keeps saying so.
+    if (!res.truncated) delete card.dataset.toolOutputTruncated;
+    return res.output;
+  }
+
+  /** A one-line notice above an expanded tool card's content. */
+  function toolOutputNotice(text, modifier = '') {
+    return `<div class="chat-tool-output-notice${modifier}">${escapeHtml(text)}</div>`;
+  }
+
   async function toggleToolCard(card) {
     const existing = card.querySelector('.chat-tool-content');
     if (existing) {
@@ -4390,16 +3567,42 @@ class ChatView extends BaseComponent {
 
     const inputStr = card.dataset.toolInput;
     if (!inputStr) return;
+    // A second click while the full output is on its way must not ask again
+    if (card.dataset.toolOutputState === 'loading') return;
 
     try {
       const toolInput = JSON.parse(inputStr);
       const toolName = card.dataset.toolName || card.querySelector('.chat-tool-name')?.textContent || '';
-      const output = card.dataset.toolOutput || '';
       const contentEl = document.createElement('div');
       contentEl.className = 'chat-tool-content';
-      contentEl.innerHTML = await formatToolContent(toolName, toolInput, output);
       card.appendChild(contentEl);
       card.classList.add('expanded');
+
+      let output = fullToolOutputs.has(card) ? fullToolOutputs.get(card) : (card.dataset.toolOutput || '');
+      let notice = '';
+
+      if (card.dataset.toolOutputTruncated === '1' && !fullToolOutputs.has(card)) {
+        card.dataset.toolOutputState = 'loading';
+        contentEl.innerHTML = `<div class="chat-tool-output-loading"><span class="chat-tool-spinner"></span><span>${escapeHtml(t('chat.toolOutputLoading') || 'Loading full output…')}</span></div>`;
+        scrollToBottom();
+        try {
+          const full = await fetchFullToolOutput(card);
+          if (full !== null) output = full;
+        } catch {
+          // The preview is still worth showing — say what is missing and why,
+          // rather than replacing a usable card with an error.
+          notice = toolOutputNotice(t('chat.toolOutputFailed') || 'Could not load the full output — showing the stored preview.', ' error');
+        } finally {
+          delete card.dataset.toolOutputState;
+        }
+        if (!notice && card.dataset.toolOutputTruncated === '1') {
+          notice = toolOutputNotice(t('chat.toolOutputClipped') || 'Output too large to display in full.');
+        }
+        // The card is gone (a re-render, a closed tab) — nothing to fill in
+        if (!contentEl.isConnected) return;
+      }
+
+      contentEl.innerHTML = notice + await formatToolContent(toolName, toolInput, output);
       scrollToBottom();
     } catch (e) { /* ignore */ }
   }
@@ -5698,11 +4901,10 @@ class ChatView extends BaseComponent {
 
     switch (btn.dataset.action) {
       case 'copy':
-        try {
-          await navigator.clipboard.writeText(artifact.source);
+        if (await copyText(artifact.source)) {
           require('./Toast').showToast({ message: t('common.copied') || 'Copied', type: 'success' });
-        } catch (err) {
-          console.warn('[ChatView] artifact copy failed:', err.message);
+        } else {
+          console.warn('[ChatView] artifact copy failed');
         }
         break;
       case 'save': {
@@ -6943,9 +6145,13 @@ class ChatView extends BaseComponent {
     }
 
     if (streaming) {
+      elapsedTimer.start();
       inputEl.dataset.placeholder = t('chat.queuePlaceholder') || 'Queue a follow-up message...';
       setStatus('thinking', t('chat.thinking'));
     } else {
+      // Leave the total on screen: the turn's duration is the answer the user
+      // was counting for, and the next send clears it.
+      elapsedTimer.stop();
       // Refresh contextual suggestions (placeholder rotation) after streaming ends
       contextSuggestions.setPostStreamTimer(setTimeout(() => contextSuggestions.refresh(), 300));
       // Flush SDK prompt suggestions accumulated during the turn
@@ -7020,19 +6226,6 @@ class ChatView extends BaseComponent {
   }
 
   /** "371.3k", "1M", "820" — the compact shape the overlay reads in. */
-  function formatTokenCount(n) {
-    const round = (v) => String(Math.round(v * 10) / 10);
-    if (n >= 1e6) return `${round(n / 1e6)}M`;
-    if (n >= 1000) return `${round(n / 1000)}k`;
-    return String(Math.round(n));
-  }
-
-  /** "371.3k / 1M (37%)" */
-  function contextSummaryText(used, limit) {
-    const pct = limit > 0 ? Math.round((used / limit) * 100) : 0;
-    return `${formatTokenCount(used)} / ${formatTokenCount(limit)} (${pct}%)`;
-  }
-
   // ── Context usage overlay ───────────────────────────────────────────────
   //
   // Replaces the native `title`, which the OS holds back for about a second and
@@ -7040,50 +6233,6 @@ class ChatView extends BaseComponent {
   // in hand — no timer, no round trip — and the per-category breakdown
   // (SDK 0.2.86+) fills in underneath when a live session can supply it.
   let contextUsageBusy = false;
-
-  function contextSummaryHtml(used, limit) {
-    return `
-      <div class="ccp-header">
-        <span class="ccp-title">${escapeHtml(t('chat.contextWindowUsage') || 'Context window')}</span>
-        <span class="ccp-total">${escapeHtml(contextSummaryText(used, limit))}</span>
-      </div>`;
-  }
-
-  /**
-   * Rows the CLI reports that are not occupancy: what is left, and the slice it
-   * holds back for a compaction. Both belong to the window, neither is in use,
-   * and listing them next to "Messages" would read as if they were.
-   */
-  const CONTEXT_FREE_ROW = /^(free|autocompact|compaction)/i;
-
-  /**
-   * Categories, from whichever shape the CLI answered in.
-   *
-   * `getContextUsage()` returns `categories: [{ name, tokens, isDeferred }]`.
-   * The map-of-numbers this used to read never existed on that response, so
-   * `Object.entries` walked an array, `Number({...})` came back NaN, every row
-   * was filtered out and the overlay stayed on its header — the breakdown has
-   * simply never drawn. Both shapes are accepted so an older CLI still renders.
-   */
-  function contextUsageRows(usage) {
-    const raw = usage.categories || usage.breakdown || {};
-    const rows = Array.isArray(raw)
-      ? raw.map(c => ({
-          name: String(c?.name || ''),
-          tokens: Number(c?.tokens) || 0,
-          kind: c?.kind,
-          deferred: !!c?.isDeferred
-        }))
-      : Object.entries(raw).map(([name, tokens]) => ({
-          name: name.replace(/_/g, ' '),
-          tokens: Number(tokens) || 0
-        }));
-    return rows
-      .filter(r => r.tokens > 0
-        && !r.deferred
-        && (r.kind ? r.kind === 'used' : !CONTEXT_FREE_ROW.test(r.name)))
-      .sort((a, b) => b.tokens - a.tokens);
-  }
 
   function renderContextBreakdown(usage) {
     const rows = contextUsageRows(usage);
@@ -7187,6 +6336,9 @@ class ChatView extends BaseComponent {
     hasNewMessages = false;
     scrollButton.classList.remove('has-new-messages');
     scrollButton.style.display = 'none';
+    // Whatever streamed in while the reader was scrolled up is detached below;
+    // without this the jump lands on the pruner's marker, not on the newest turn.
+    transcriptPruner?.drainBelow();
     messagesEl.scrollTop = messagesEl.scrollHeight;
   });
 
@@ -7222,6 +6374,9 @@ class ChatView extends BaseComponent {
         _scrollRafId = requestAnimationFrame(() => {
           _scrollRafId = null;
           if (userHasScrolled || !messagesEl.clientHeight) return;
+          // Re-mount what the pruner took out below before measuring: the drain
+          // is what makes scrollHeight the real bottom again.
+          transcriptPruner?.drainBelow();
           lastScrollHeight = messagesEl.scrollHeight;
           lastViewportHeight = messagesEl.clientHeight;
           messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -9003,17 +8158,23 @@ class ChatView extends BaseComponent {
         historyTopEl = document.createElement('div');
         historyTopEl.className = 'chat-history-top';
       }
-      const hidden = Math.max(0, (result.total || 0) - shown);
-      historyTopEl.dataset.hidden = String(hidden);
+      // `total` is null when the main process read the tail backwards, which is
+      // the normal path: counting the rest of the file is exactly the work that
+      // read exists to skip. The marker then says there is more, without a
+      // number it would have to invent.
+      const hidden = result.total == null ? null : Math.max(0, result.total - shown);
+      historyTopEl.dataset.hidden = hidden == null ? '' : String(hidden);
       setHistoryTopIdle();
       messagesEl.prepend(historyTopEl);
     }
 
     function setHistoryTopIdle() {
       if (!historyTopEl) return;
-      const hidden = Number(historyTopEl.dataset.hidden || 0);
+      const hidden = historyTopEl.dataset.hidden;
       historyTopEl.classList.remove('loading');
-      historyTopEl.textContent = t('chat.olderMessages', { count: hidden });
+      historyTopEl.textContent = hidden === ''
+        ? (t('chat.olderMessagesUnknown') || 'Earlier messages')
+        : t('chat.olderMessages', { count: Number(hidden) });
     }
 
     function setHistoryTopLoading() {
@@ -9151,10 +8312,14 @@ class ChatView extends BaseComponent {
 
     // Build a map of tool_use_id -> tool_result output for enriching tool cards
     const toolResults = new Map();
+    // Results the main process could only send a preview of, by tool_use id.
+    // The card carries the real size so it can be fetched in full on expand.
+    const clippedResults = new Map();
     const questionAnswers = new Map();
     for (const msg of messages) {
       if (msg.role === 'tool_result' && msg.toolUseId) {
         toolResults.set(msg.toolUseId, msg.output || '');
+        if (msg.outputTruncated) clippedResults.set(msg.toolUseId, msg.outputLength || 0);
         if (msg.answers) questionAnswers.set(msg.toolUseId, msg.answers);
       }
     }
@@ -9324,6 +8489,12 @@ class ChatView extends BaseComponent {
           }
           if (msg.toolUseId && toolResults.has(msg.toolUseId)) {
             el.dataset.toolOutput = toolResults.get(msg.toolUseId);
+            if (clippedResults.has(msg.toolUseId)) {
+              // Expanding the card fetches the rest from the transcript
+              el.dataset.toolOutputTruncated = '1';
+              el.dataset.toolOutputLength = String(clippedResults.get(msg.toolUseId));
+              el.classList.add('expandable');
+            }
             // History carries results too, so a replayed publish recovers its
             // URL exactly like a live one.
             resolveArtifactPublish(msg.toolUseId, toolResults.get(msg.toolUseId));
@@ -9391,7 +8562,7 @@ class ChatView extends BaseComponent {
       // Inject initial images if provided (from Remote Control camera)
       if (initialImages && initialImages.length) {
         for (const img of initialImages) {
-          pendingImages.push({ base64: img.base64, mediaType: img.mediaType, name: 'remote-image', dataUrl: '' });
+          attachments.push({ base64: img.base64, mediaType: img.mediaType, name: 'remote-image', dataUrl: '' });
         }
       }
       setInputText(initialPrompt);
@@ -9427,6 +8598,7 @@ class ChatView extends BaseComponent {
       scrollChildrenObserver.disconnect();
       contextSuggestions.reset();
       followupChips.clear();
+      elapsedTimer.destroy();
       // Clear permission reminder timers
       for (const [id] of _permTimers) _clearPermTimers(id);
       if (_initSecondaryTimer) { clearTimeout(_initSecondaryTimer); _initSecondaryTimer = null; }
@@ -9523,16 +8695,12 @@ class ChatView extends BaseComponent {
       parallelPendingWidgets.clear();
       parallelToolIndices.clear();
       // Clean up image data
-      pendingImages.length = 0;
-      lightboxImages.length = 0;
+      attachments.clear();
+      lightbox.destroy();
       // Remove global listeners
-      clearTimeout(searchDebounceTimer);
-      document.removeEventListener('keydown', _onSearchShortcut, true);
+      search.destroy();
       window.removeEventListener('blur', _onShiftBlur);
       document.removeEventListener('click', _closeDropdowns);
-      document.removeEventListener('keydown', lightboxKeyHandler);
-      if (lightboxEl?.parentNode) lightboxEl.parentNode.removeChild(lightboxEl);
-      lightboxEl = null;
       // Release the 1 Hz presence ticker started by attachInteractivity(messagesEl);
       // its closure holds the transcript container, so it must go before we drop it.
       // Required directly: services/markdown/index.js only re-exports attachInteractivity.
@@ -9565,7 +8733,7 @@ class ChatView extends BaseComponent {
     },
     sendMessage(text, images = [], mentions = []) {
       for (const img of images) {
-        pendingImages.push({ base64: img.base64, mediaType: img.mediaType, name: img.name || 'visual', dataUrl: '' });
+        attachments.push({ base64: img.base64, mediaType: img.mediaType, name: img.name || 'visual', dataUrl: '' });
       }
       for (const m of mentions) {
         pendingMentions.push(m);

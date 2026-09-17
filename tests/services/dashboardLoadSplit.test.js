@@ -24,7 +24,7 @@ jest.mock('../../src/renderer/ui/components/Modal', () => ({
 }));
 jest.mock('../../src/renderer/utils', () => ({ escapeHtml: (s) => String(s ?? '') }));
 jest.mock('../../src/renderer/utils/color', () => ({ sanitizeColor: (c) => c }));
-jest.mock('../../src/renderer/utils/format', () => ({ formatDuration: () => '0m' }));
+jest.mock('../../src/renderer/utils/format', () => ({ formatDuration: () => '0m', redactUrlCredentials: url => url }));
 jest.mock('../../src/project-types/registry', () => ({
   get: jest.fn(() => ({ getDashboardBadge: () => ({ text: '', cssClass: '' }), getDashboardStats: () => '' })),
 }));
@@ -33,6 +33,11 @@ jest.mock('../../src/renderer/events', () => ({
   getActiveProvider: () => 'scraping',
   getDashboardStats: () => ({ hookSessionCount: 0, toolStats: {} }),
 }));
+jest.mock('../../src/renderer/services/ProjectTimeline', () => ({
+  ...jest.requireActual('../../src/renderer/services/ProjectTimeline'),
+  collect: jest.fn(async () => ({ events: [], failed: [] })),
+}));
+
 jest.mock('../../src/renderer/services/SessionRecapService', () => ({ getRecaps: jest.fn(async () => []) }));
 
 // Order of resolution is what this suite is about, so every call is recorded.
@@ -355,5 +360,44 @@ describe('dashboard navigation and first paint', () => {
     container.querySelector('[data-view="overview"]').click();
     await flushPromises();
     expect(container.querySelector('h2')?.textContent).toBe(project.name);
+  });
+
+  test('a late timeline response cannot replace another project', async () => {
+    const Timeline = require('../../src/renderer/services/ProjectTimeline');
+    const timeline = deferred();
+    Timeline.collect.mockReturnValueOnce(timeline.promise);
+    await DashboardService.renderDashboard(container, project);
+    container.querySelector('[data-view="timeline"]').click();
+    await flushPromises();
+    expect(container.querySelector('.timeline-loading')).not.toBeNull();
+
+    await DashboardService.renderDashboard(container, other);
+    timeline.resolve({ events: [], failed: [] });
+    await flushPromises();
+    expect(container.querySelector('h2')?.textContent).toBe(other.name);
+    expect(container.querySelector('.timeline-view')).toBeNull();
+
+    await DashboardService.renderDashboard(container, project);
+    container.querySelector('[data-view="overview"]').click();
+    await flushPromises();
+  });
+
+  test('background dashboard data preserves the active timeline and its selected period', async () => {
+    const remote = deferred();
+    window.electron_api.github.workflowRuns.mockReturnValue(remote.promise);
+    const rendering = DashboardService.renderDashboard(container, project);
+    container.querySelector('[data-view="timeline"]').click();
+    await flushPromises();
+    container.querySelector('.timeline-range[data-days="14"]').click();
+    await flushPromises();
+    const timeline = container.querySelector('.timeline-view');
+    remote.resolve({ runs: [] });
+    await rendering;
+    await flushPromises();
+
+    expect(container.querySelector('.timeline-view')).toBe(timeline);
+    expect(container.querySelector('.timeline-range.active').dataset.days).toBe('14');
+    container.querySelector('[data-view="overview"]').click();
+    await flushPromises();
   });
 });

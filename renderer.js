@@ -116,10 +116,220 @@ const {
 const registry = require('./src/project-types/registry');
 const { mergeTranslations } = require('./src/renderer/i18n');
 const ModalComponent = require('./src/renderer/ui/components/Modal');
-const { MemoryEditor, GitChangesPanel, ShortcutsManager, SettingsPanel, SkillsAgentsPanel, PluginsPanel, MarketplacePanel, McpPanel, WorkflowPanel, DatabasePanel, CloudPanel, ConnectivityPanel, ControlTowerPanel, SessionReplayPanel, ParallelTaskPanel, WorkspacePanel, ErrorLogPanel, FilesPanel, ArtifactsPanel } = require('./src/renderer/ui/panels');
+const WhatsNew = require('./src/renderer/ui/components/WhatsNew');
+const { MemoryEditor, GitChangesPanel, ShortcutsManager, SettingsPanel, SkillsAgentsPanel, PluginsPanel, MarketplacePanel, McpPanel, CloudPanel, ConnectivityPanel, WorkspacePanel, ErrorLogPanel, FilesPanel, ArtifactsPanel } = require('./src/renderer/ui/panels');
 // Not re-exported by the panels index: ConnectivityPanel embeds it as a sub-tab,
 // but its polling lifecycle is driven from the tab registry below.
 const RemotePanel = require('./src/renderer/ui/panels/RemotePanel');
+
+// ========== LAZILY-SPLIT PANELS ==========
+//
+// The five heaviest panels are kept out of the startup bundle. esbuild code
+// splitting (`splitting: true` + `format: 'esm'` in scripts/build-renderer.js)
+// gives each import() below a chunk of its own in dist/, fetched the first
+// time its tab is opened. Together that is ~12k lines — DatabasePanel,
+// WorkflowPanel (which drags in the graph engine, the 13 workflow fields and
+// the 12 trigger types behind it), ControlTowerPanel, SessionReplayPanel and
+// ParallelTaskPanel — that every session used to parse and evaluate at boot,
+// including the sessions that never open any of those tabs.
+//
+// These are dynamic imports INSIDE the single esbuild graph rather than a
+// standalone bundle per panel, and that distinction is the whole design. Each
+// panel reaches src/renderer/state/*, the DI container and i18n transitively;
+// bundling it on its own would hand every one of those a second live copy, so
+// a subscription would fire on one copy while the UI reads the other.
+// Splitting hoists the shared modules into shared chunks, evaluated once.
+//
+// They are dropped from src/renderer/ui/panels/index.js for the same reason a
+// lazy require() would not have been enough: that index is CommonJS, so the
+// require() is a side effect esbuild cannot shake out and the panel ships
+// eagerly whether or not anything reads the binding.
+const _LAZY_PANELS = {
+  DatabasePanel: {
+    root: 'database-content',
+    load: () => import('./src/renderer/ui/panels/DatabasePanel'),
+    init: (P) => P.init({ api, showModal, closeModal, showToast, projectsState, path, fs })
+  },
+  WorkflowPanel: {
+    root: 'workflow-panel',
+    load: () => import('./src/renderer/ui/panels/WorkflowPanel'),
+    init: (P) => P.init({ api, showToast, path, fs })
+  },
+  ControlTowerPanel: {
+    root: 'ct-panel-root',
+    load: () => import('./src/renderer/ui/panels/ControlTowerPanel')
+  },
+  SessionReplayPanel: {
+    root: 'tab-session-replay',
+    load: () => import('./src/renderer/ui/panels/SessionReplayPanel')
+  },
+  ParallelTaskPanel: {
+    root: 'tab-tasks',
+    load: () => import('./src/renderer/ui/panels/ParallelTaskPanel'),
+    init: (P) => P.init({
+      api,
+      showToast,
+      showModal,
+      closeModal,
+      projectsState,
+      openTerminalAtPath: (worktreePath) => {
+        // Switch to Claude tab and open a terminal at the worktree path
+        document.querySelector('[data-tab="claude"]')?.click();
+        const openedId = projectsState.get().openedProjectId;
+        const project = projectsState.get().projects.find(p => p.id === openedId)
+          || projectsState.get().projects[0];
+        if (project) {
+          TerminalManager.createTerminal(project, { cwd: worktreePath, runClaude: false });
+        }
+      }
+    })
+  }
+};
+
+/** name -> the panel module, once its chunk has arrived. */
+const _lazyPanelModules = new Map();
+/** name -> the in-flight import, so a chunk is fetched at most once. */
+const _lazyPanelPending = new Map();
+/** Tabs whose chunk is on its way, so a second click is inert rather than a second mount. */
+const _lazyPanelActivating = new Set();
+
+/**
+ * The panel module if its chunk is already in memory, else null. Never starts
+ * a fetch: for the callers that only refresh a panel already on screen.
+ * @param {string} name
+ * @returns {object|null}
+ */
+function lazyPanelIfLoaded(name) {
+  return _lazyPanelModules.get(name) || null;
+}
+
+/**
+ * Fetch a split panel chunk (once) and run the one-time init() that used to
+ * happen at startup. Resolves to null instead of rejecting when the chunk
+ * cannot be loaded, so a missing file costs one tab rather than the app.
+ * @param {string} name
+ * @returns {Promise<object|null>}
+ */
+function loadLazyPanel(name) {
+  const loaded = _lazyPanelModules.get(name);
+  if (loaded) return Promise.resolve(loaded);
+  const pending = _lazyPanelPending.get(name);
+  if (pending) return pending;
+  const entry = _LAZY_PANELS[name];
+  const promise = entry.load().then((mod) => {
+    // esbuild exposes a CommonJS module's exports as the default export.
+    const panel = mod.default || mod;
+    try {
+      entry.init?.(panel);
+    } catch (err) {
+      // The panel is still mountable; only its context injection failed.
+      console.error(`[panels] init failed for "${name}":`, err);
+    }
+    _lazyPanelModules.set(name, panel);
+    return panel;
+  }).catch((err) => {
+    console.error(`[panels] failed to load "${name}":`, err);
+    _lazyPanelPending.delete(name); // a later click may still succeed
+    return null;
+  });
+  _lazyPanelPending.set(name, promise);
+  return promise;
+}
+
+// ── Renderer halves of the project types ────────────────────────────────────
+//
+// Same reasoning as _LAZY_PANELS above, and the same mechanism. These modules
+// are the FiveM/webapp/API/Discord side of the app: 362 KB that only a user who
+// owns that kind of project ever needs, and that every user used to parse at
+// startup because a require() inside a function body is still a static edge as
+// far as esbuild is concerned.
+//
+// Code splitting (not a bundle per type) is what keeps this safe: ApiState and
+// DiscordState are observable state modules, and they are reached both from
+// here and from their type's own index.js. One module graph means esbuild
+// hoists each into a single shared chunk, so both importers see one instance
+// and a subscription cannot fire on a copy the UI is not reading.
+const _typeModules = new Map();
+
+/**
+ * Load a project-type renderer module once, memoized by name.
+ * Resolves to null rather than rejecting: the caller is usually an IPC handler
+ * for a server that is already running, and an unhandled rejection there is a
+ * worse outcome than a dropped log line.
+ * @param {string} name
+ * @param {() => Promise<any>} loader
+ * @returns {Promise<any|null>}
+ */
+function _typeModule(name, loader) {
+  if (!_typeModules.has(name)) {
+    _typeModules.set(name, loader().then((mod) => mod.default || mod).catch((err) => {
+      console.error(`[project-types] failed to load "${name}":`, err);
+      _typeModules.delete(name); // a later call may still succeed
+      return null;
+    }));
+  }
+  return _typeModules.get(name);
+}
+
+const _webappService = () => _typeModule('webapp/RendererService', () => import('./src/project-types/webapp/renderer/WebAppRendererService'));
+const _webappPanel = () => _typeModule('webapp/TerminalPanel', () => import('./src/project-types/webapp/renderer/WebAppTerminalPanel'));
+const _apiService = () => _typeModule('api/RendererService', () => import('./src/project-types/api/renderer/ApiRendererService'));
+const _apiState = () => _typeModule('api/State', () => import('./src/project-types/api/renderer/ApiState'));
+const _discordService = () => _typeModule('discord/RendererService', () => import('./src/project-types/discord/renderer/DiscordRendererService'));
+const _discordState = () => _typeModule('discord/State', () => import('./src/project-types/discord/renderer/DiscordState'));
+
+/**
+ * Spinner in the root the panel is about to fill, so a tab waiting on its
+ * chunk reads as loading rather than as broken. Drawn inside the panel root
+ * rather than over the whole tab so the screen's own header stays put, and
+ * wiped by the panel's first render.
+ * @param {string} name
+ */
+function _showLazyPanelLoading(name) {
+  const root = document.getElementById(_LAZY_PANELS[name]?.root);
+  if (!root || root.querySelector('.lazy-panel-loading')) return;
+  const el = document.createElement('div');
+  el.className = 'lazy-panel-loading';
+  el.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;flex:1 1 auto;min-height:200px;color:var(--text-muted);font-size:var(--font-sm)';
+  el.innerHTML = `<div class="loading-spinner"></div><div>${escapeHtml(t('common.loading'))}</div>`;
+  root.appendChild(el);
+}
+
+/** @param {string} name */
+function _clearLazyPanelLoading(name) {
+  document.getElementById(_LAZY_PANELS[name]?.root)?.querySelector('.lazy-panel-loading')?.remove();
+}
+
+/**
+ * Run `use` with a split panel, fetching its chunk first when needed.
+ *
+ * Three things this has to get right, all of which exist only because opening
+ * these tabs became asynchronous: a blank tab while the chunk is in flight
+ * reads as a broken tab; a second click during the fetch must not mount the
+ * panel twice; and a chunk that never arrives must leave the app usable.
+ * @param {string} name
+ * @param {string} tabId
+ * @param {(panel: object) => void} use
+ */
+function withLazyPanel(name, tabId, use) {
+  const loaded = lazyPanelIfLoaded(name);
+  if (loaded) return use(loaded); // warm: the same synchronous path as before
+  if (_lazyPanelActivating.has(tabId)) return; // already on its way
+  _lazyPanelActivating.add(tabId);
+  _showLazyPanelLoading(name);
+  return loadLazyPanel(name).then((panel) => {
+    _lazyPanelActivating.delete(tabId);
+    _clearLazyPanelLoading(name);
+    if (!panel) {
+      showToast({ type: 'error', title: t('common.errorOccurred'), message: name });
+      return;
+    }
+    // The user may have moved on while the chunk loaded; mounting into a tab
+    // nobody is looking at would start its timers behind their back.
+    if (_currentTabId !== tabId) return;
+    use(panel);
+  });
+}
 
 // ========== LOCAL MODAL FUNCTIONS ==========
 // These work with the existing HTML modal elements in index.html
@@ -233,6 +443,28 @@ const { loadSessionData, clearProjectSessions, saveTerminalSessions } = require(
   syncOverviewEntry();
   syncFilesDock();
 
+  // First launch on a new version: say what moved, since the update banner's
+  // "What's new" was only ever shown before the restart. A profile with no
+  // projects is a fresh install and has nothing to catch up on.
+  WhatsNew.setCallbacks({
+    onOpenTab: (tab) => document.querySelector(`.nav-tab[data-tab="${tab}"]`)?.click(),
+    onOpenSetting: (key) => {
+      // The button says "turn it on", so it turns it on rather than dropping
+      // the user in Settings to find the switch themselves.
+      if (key === 'filesDockedInChat') {
+        setFilesDocked(true);
+        document.querySelector('.nav-tab[data-tab="claude"]')?.click();
+        return;
+      }
+      _switchToSettingsTab();
+    }
+  });
+  WhatsNew.maybeShow({
+    showModal,
+    closeModal,
+    hasHistory: (projectsState.get().projects || []).length > 0,
+  }).catch(() => {});
+
   // Initialize Claude event bus and provider (hooks or scraping)
   initClaudeEvents();
 
@@ -316,10 +548,38 @@ const { loadSessionData, clearProjectSessions, saveTerminalSessions } = require(
     if (firstOpen) selectProjectFromBar(getProjectIndex(firstOpen.id));
   }
 
-  // Initialize project types registry
+  // Initialize project types registry. discoverAll() registers seven identities
+  // and no behaviour; the hooks arrive with ensureLoadedMany() below.
   registry.discoverAll();
   registry.loadAllTranslations(mergeTranslations);
   registry.injectAllStyles();
+
+  // The behaviour half of every type the user actually owns, awaited here so
+  // that every registry.get(project.type) from the first render onwards finds a
+  // fully-formed type. A machine with only plain projects never fetches the
+  // FiveM, Minecraft, Discord or API renderers at all — which is the whole
+  // point — and the wizard and the settings panel load the rest on demand.
+  await registry.ensureLoadedMany(projectsState.get().projects.map(p => p.type));
+
+  // A project of a type nothing has loaded yet can turn up at any moment: the
+  // new-project wizard is only one way in, and drag-drop, the MCP
+  // project_create tool, a cloud sync pull and the three-way merge with
+  // another process are the others. Watching the list covers all of them at
+  // once, and the repaint is what makes the type's own sidebar buttons appear
+  // with it rather than at the next launch. ensureLoadedMany() resolves to the
+  // empty array when there is nothing new, which is the case every other time
+  // this fires.
+  projectsState.subscribe((state) => {
+    registry.ensureLoadedMany(state.projects.map(p => p.type))
+      .then(loaded => { if (loaded.length) ProjectList.render(); });
+  });
+
+  // Third-party project types, if the user has opted in. Deliberately not
+  // awaited: extensions are cosmetic (an icon, a name, a colour in the wizard)
+  // and boot must not wait on a disk scan for a feature that is off by default.
+  // loadExtensions() is written never to reject — see the file's header.
+  require('./src/renderer/services/ProjectTypeExtensionLoader')
+    .loadExtensions({ mergeTranslations });
 
   // Preload dashboard data in background at startup
   DashboardService.loadAllDiskCaches().then(() => {
@@ -382,30 +642,11 @@ const { loadSessionData, clearProjectSessions, saveTerminalSessions } = require(
     projectsState, path, fs
   });
 
-  WorkflowPanel.init({ api, showToast, path, fs });
-
-  ParallelTaskPanel.init({
-    api,
-    showToast,
-    showModal,
-    closeModal,
-    projectsState,
-    openTerminalAtPath: (worktreePath) => {
-      // Switch to Claude tab and open a terminal at the worktree path
-      document.querySelector('[data-tab="claude"]')?.click();
-      const openedId = projectsState.get().openedProjectId;
-      const project = projectsState.get().projects.find(p => p.id === openedId)
-        || projectsState.get().projects[0];
-      if (project) {
-        TerminalManager.createTerminal(project, { cwd: worktreePath, runClaude: false });
-      }
-    }
-  });
-
-  DatabasePanel.init({
-    api, showModal, closeModal, showToast,
-    projectsState, path, fs
-  });
+  // WorkflowPanel, ParallelTaskPanel and DatabasePanel are split out of the
+  // startup bundle: their init() moved into _LAZY_PANELS and runs the first
+  // time their tab is opened. Each one only stored a context object and
+  // subscribed to language changes behind an "am I rendered yet" guard, so
+  // nothing here had to happen at boot.
 
   // Share notification fn with event bus consumer so hooks use the same logic
   setNotificationFn(showNotification);
@@ -591,7 +832,11 @@ async function checkProjectGitStatus(project) {
 }
 
 // ========== TOAST NOTIFICATIONS ==========
-const toastContainer = document.getElementById('toast-container');
+// One implementation, in ui/components/Toast.js. This file used to carry a second
+// one that rendered a different DOM into a different container while sharing the
+// same CSS classes, so the same notification looked different depending on which
+// module raised it.
+const ToastComponent = require('./src/renderer/ui/components/Toast');
 
 /**
  * Show a toast notification
@@ -600,57 +845,10 @@ const toastContainer = document.getElementById('toast-container');
  * @param {string} options.title - Toast title
  * @param {string} options.message - Toast message
  * @param {number} options.duration - Duration in ms (0 for no auto-hide)
+ * @returns {HTMLElement} the toast element
  */
 function showToast({ type = 'info', title, message, duration = 5000 }) {
-  const icons = {
-    success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
-    error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
-    warning: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
-    info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'
-  };
-
-  const toast = document.createElement('div');
-  toast.className = `toast toast-${type}`;
-
-  const displayMessage = message && message.length > 200 ? message.substring(0, 200) + '...' : message;
-  // Escape HTML then convert newlines to <br> for proper display
-  const formattedMessage = displayMessage ? escapeHtml(displayMessage).replace(/\n/g, '<br>') : '';
-
-  toast.innerHTML = `
-    <span class="toast-icon">${icons[type] || icons.info}</span>
-    <div class="toast-content">
-      <div class="toast-title">${escapeHtml(title)}</div>
-      ${formattedMessage ? `<div class="toast-message">${formattedMessage}</div>` : ''}
-    </div>
-    <button class="toast-close" aria-label="${t('common.close')}">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-    </button>
-  `;
-
-  // Progress bar for auto-hide
-  if (duration > 0) {
-    const progressBar = document.createElement('div');
-    progressBar.className = 'toast-progress';
-    progressBar.style.animationDuration = `${duration}ms`;
-    toast.appendChild(progressBar);
-  }
-
-  toastContainer.appendChild(toast);
-
-  // Close button handler
-  const closeToast = () => {
-    toast.classList.add('toast-exit');
-    setTimeout(() => toast.remove(), 300);
-  };
-
-  toast.querySelector('.toast-close').onclick = closeToast;
-
-  // Auto hide
-  if (duration > 0) {
-    setTimeout(closeToast, duration);
-  }
-
-  return toast;
+  return ToastComponent.showToast({ type, title, message, duration });
 }
 
 // Backward compatible wrapper for showGitToast
@@ -1015,14 +1213,16 @@ async function startWebAppServer(projectIndex) {
   const project = projects[projectIndex];
   if (!project) return;
 
-  const { startDevServer } = require('./src/project-types/webapp/renderer/WebAppRendererService');
-  await startDevServer(projectIndex);
+  const mod = await _webappService();
+  if (!mod) return;
+  await mod.startDevServer(projectIndex);
   ProjectList.render();
 }
 
 async function stopWebAppServer(projectIndex) {
-  const { stopDevServer } = require('./src/project-types/webapp/renderer/WebAppRendererService');
-  await stopDevServer(projectIndex);
+  const mod = await _webappService();
+  if (!mod) return;
+  await mod.stopDevServer(projectIndex);
   ProjectList.render();
 }
 
@@ -1045,8 +1245,9 @@ function refreshWebAppInfoPanel(projectIndex) {
       const projects = projectsState.get().projects;
       const project = projects[projectIndex];
       if (project) {
-        const { renderInfoView } = require('./src/project-types/webapp/renderer/WebAppTerminalPanel');
-        renderInfoView(wrapper, projectIndex, project, { t });
+        // The panel is on screen already, so redrawing one of its views a tick
+        // later is invisible; what must not happen is throwing at it.
+        _webappPanel().then(mod => mod && mod.renderInfoView(wrapper, projectIndex, project, { t }));
       }
     }
   });
@@ -1517,14 +1718,16 @@ async function startApiServer(projectIndex) {
   const project = projects[projectIndex];
   if (!project) return;
 
-  const { startApiServer: doStart } = require('./src/project-types/api/renderer/ApiRendererService');
-  await doStart(projectIndex);
+  const mod = await _apiService();
+  if (!mod) return;
+  await mod.startApiServer(projectIndex);
   ProjectList.render();
 }
 
 async function stopApiServer(projectIndex) {
-  const { stopApiServer: doStop } = require('./src/project-types/api/renderer/ApiRendererService');
-  await doStop(projectIndex);
+  const mod = await _apiService();
+  if (!mod) return;
+  await mod.stopApiServer(projectIndex);
   ProjectList.render();
 }
 
@@ -1538,23 +1741,26 @@ function openApiConsole(projectIndex) {
 
 // Register API listeners - state + TerminalManager console
 api.api.onData(({ projectIndex, data }) => {
-  const { addApiLog } = require('./src/project-types/api/renderer/ApiState');
-  addApiLog(projectIndex, data);
+  _apiState().then(mod => mod && mod.addApiLog(projectIndex, data));
   TerminalManager.writeTypeConsole(projectIndex, 'api', data);
 });
 
 api.api.onExit(({ projectIndex, code }) => {
-  const { setApiServerStatus, setApiPort } = require('./src/project-types/api/renderer/ApiState');
-  setApiServerStatus(projectIndex, 'stopped');
-  setApiPort(projectIndex, null);
+  _apiState().then(mod => {
+    if (!mod) return;
+    mod.setApiServerStatus(projectIndex, 'stopped');
+    mod.setApiPort(projectIndex, null);
+    ProjectList.render();
+  });
   TerminalManager.writeTypeConsole(projectIndex, 'api', `\r\n[API server exited with code ${code}]\r\n`);
-  ProjectList.render();
 });
 
 api.api.onPortDetected(({ projectIndex, port }) => {
-  const { setApiPort } = require('./src/project-types/api/renderer/ApiState');
-  setApiPort(projectIndex, port);
-  ProjectList.render();
+  _apiState().then(mod => {
+    if (!mod) return;
+    mod.setApiPort(projectIndex, port);
+    ProjectList.render();
+  });
 });
 
 // ========== DISCORD ==========
@@ -1563,14 +1769,16 @@ async function startDiscordBot(projectIndex) {
   const project = projects[projectIndex];
   if (!project) return;
 
-  const { startBot } = require('./src/project-types/discord/renderer/DiscordRendererService');
-  await startBot(projectIndex);
+  const mod = await _discordService();
+  if (!mod) return;
+  await mod.startBot(projectIndex);
   ProjectList.render();
 }
 
 async function stopDiscordBot(projectIndex) {
-  const { stopBot } = require('./src/project-types/discord/renderer/DiscordRendererService');
-  await stopBot(projectIndex);
+  const mod = await _discordService();
+  if (!mod) return;
+  await mod.stopBot(projectIndex);
   ProjectList.render();
 }
 
@@ -1583,32 +1791,39 @@ function openDiscordConsole(projectIndex) {
 }
 
 async function scanDiscordCommands(projectIndex) {
-  const { scanCommands } = require('./src/project-types/discord/renderer/DiscordRendererService');
-  await scanCommands(projectIndex);
+  const mod = await _discordService();
+  if (!mod) return;
+  await mod.scanCommands(projectIndex);
 }
 
 // Register Discord listeners - write to TerminalManager's Discord console
 api.discord.onData(({ projectIndex, data }) => {
-  const { addDiscordLog, setDiscordServerStatus } = require('./src/project-types/discord/renderer/DiscordState');
-  addDiscordLog(projectIndex, data);
-  setDiscordServerStatus(projectIndex, 'running');
+  _discordState().then(mod => {
+    if (!mod) return;
+    mod.addDiscordLog(projectIndex, data);
+    mod.setDiscordServerStatus(projectIndex, 'running');
+  });
   TerminalManager.writeTypeConsole(projectIndex, 'discord', data);
 });
 
 api.discord.onExit(({ projectIndex, code }) => {
-  const { setDiscordServerStatus } = require('./src/project-types/discord/renderer/DiscordState');
-  setDiscordServerStatus(projectIndex, 'stopped');
+  _discordState().then(mod => {
+    if (!mod) return;
+    mod.setDiscordServerStatus(projectIndex, 'stopped');
+    ProjectList.render();
+  });
   TerminalManager.writeTypeConsole(projectIndex, 'discord', `\r\n[Bot exited with code ${code}]\r\n`);
-  ProjectList.render();
 });
 
 api.discord.onStatusChange(({ projectIndex, status, botName, guildCount }) => {
-  const { setDiscordServerStatus, setDiscordBotInfo } = require('./src/project-types/discord/renderer/DiscordState');
-  if (status) setDiscordServerStatus(projectIndex, status);
-  if (botName !== undefined || guildCount !== undefined) {
-    setDiscordBotInfo(projectIndex, { botName, guildCount });
-  }
-  ProjectList.render();
+  _discordState().then(mod => {
+    if (!mod) return;
+    if (status) mod.setDiscordServerStatus(projectIndex, status);
+    if (botName !== undefined || guildCount !== undefined) {
+      mod.setDiscordBotInfo(projectIndex, { botName, guildCount });
+    }
+    ProjectList.render();
+  });
 });
 
 // ========== DELETE PROJECT ==========
@@ -1887,40 +2102,15 @@ const MODAL_SVG_DEFS = `<svg style="display:none" xmlns="http://www.w3.org/2000/
   <symbol id="sm-move" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h5a2 2 0 0 0 2-2V6a2 2 0 0 1 2-2h7"/><polyline points="17 1 21 5 17 9"/></symbol>
 </svg>`;
 
-function _cleanModalSessionText(text) {
-  if (!text) return { text: '', skillName: '' };
-  let skillName = '';
-  const cmdMatch = text.match(/<command-name>\/?([^<]+)<\/command-name>/);
-  if (cmdMatch) skillName = cmdMatch[1].trim().replace(/^\//, '');
-  const argsMatch = text.match(/<command-args>([^<]+)<\/command-args>/);
-  const argsText = argsMatch ? argsMatch[1].trim() : '';
-  let cleaned = text.replace(/<[^>]+>[^<]*<\/[^>]+>/g, '');
-  cleaned = cleaned.replace(/<[^>]+>/g, '');
-  cleaned = cleaned.replace(/\[Request interrupted[^\]]*\]/g, '');
-  cleaned = cleaned.replace(/\s+/g, ' ').trim();
-  if (!cleaned && argsText) cleaned = argsText;
-  return { text: cleaned, skillName };
-}
-
-function _formatModalTime(dateString) {
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffMs = now - date;
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-  if (diffMins < 1) return t('time.justNow');
-  if (diffMins < 60) return t('time.minutesAgo', { count: diffMins });
-  if (diffHours < 24) return t('time.hoursAgo', { count: diffHours });
-  if (diffDays < 7) return t('time.daysAgo', { count: diffDays });
-  const locale = getCurrentLanguage() === 'fr' ? 'fr-FR' : 'en-US';
-  return date.toLocaleDateString(locale, { day: 'numeric', month: 'short' });
-}
-
-function _truncateModalText(text, max) {
-  if (!text) return '';
-  return text.length <= max ? text : text.slice(0, max) + '...';
-}
+// The sessions modal shows the same records as the Sessions panel, so it
+// reads them with the same code. It used to carry its own copy of all four
+// of these, and the copy had drifted: its date formatter knew only French.
+const {
+  cleanSessionText: _cleanModalSessionText,
+  formatRelativeTime: _formatModalTime,
+  truncateText: _truncateModalText,
+  groupSessionsByTime: _groupModalSessions,
+} = require('./src/renderer/ui/components/terminal/sessionCards');
 
 async function _preprocessModalSessions(sessions) {
   const now = Date.now();
@@ -1952,29 +2142,6 @@ async function _preprocessModalSessions(sessions) {
     const pinned = !!pins[session.sessionId];
     return { ...session, displayTitle, displaySubtitle, isSkill, nameLocked: Boolean(lockedName), freshness, searchText, pinned };
   });
-}
-
-function _groupModalSessions(sessions) {
-  const groups = {
-    pinned: { key: 'pinned', label: t('sessions.pinned'), sessions: [] },
-    today: { key: 'today', label: t('sessions.today'), sessions: [] },
-    yesterday: { key: 'yesterday', label: t('sessions.yesterday'), sessions: [] },
-    thisWeek: { key: 'thisWeek', label: t('sessions.thisWeek'), sessions: [] },
-    older: { key: 'older', label: t('sessions.older'), sessions: [] }
-  };
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
-  const weekAgo = new Date(today); weekAgo.setDate(weekAgo.getDate() - 7);
-  sessions.forEach(s => {
-    if (s.pinned) { groups.pinned.sessions.push(s); return; }
-    const d = new Date(s.modified);
-    if (d >= today) groups.today.sessions.push(s);
-    else if (d >= yesterday) groups.yesterday.sessions.push(s);
-    else if (d >= weekAgo) groups.thisWeek.sessions.push(s);
-    else groups.older.sessions.push(s);
-  });
-  return Object.values(groups).filter(g => g.sessions.length > 0);
 }
 
 // ── Moving a session to another project ──────────────────────────────────────
@@ -2822,9 +2989,9 @@ function applyProjectContext(projectIndex) {
   } else if (activeTab === 'dashboard') {
     renderDashboardForScope();
   } else if (activeTab === 'session-replay') {
-    SessionReplayPanel.setProject();
+    lazyPanelIfLoaded('SessionReplayPanel')?.setProject();
   } else if (activeTab === 'tasks') {
-    ParallelTaskPanel.onProjectChanged?.();
+    lazyPanelIfLoaded('ParallelTaskPanel')?.onProjectChanged?.();
   } else if (activeTab === 'artifacts') {
     ArtifactsPanel.setProject(project);
   }
@@ -3564,7 +3731,10 @@ document.getElementById('btn-notifications').onclick = () => {
  */
 function _switchToSettingsTab(...args) {
   _leaveCurrentTab('settings');
-  SettingsPanel.switchToSettingsTab(...args);
+  // Settings builds a tab per type that contributes settings fields, so it is
+  // the second surface (with the new-project wizard) that needs every type's
+  // behaviour half. Awaited before the panel renders, not after.
+  registry.ensureAllLoaded().then(() => SettingsPanel.switchToSettingsTab(...args));
 }
 
 document.getElementById('btn-settings').onclick = () => {
@@ -3577,17 +3747,33 @@ document.getElementById('btn-settings').onclick = () => {
 // Sidebar collapse toggle
 const sidebarEl = document.querySelector('.sidebar');
 const btnCollapseSidebar = document.getElementById('btn-collapse-sidebar');
-if (localStorage.getItem('sidebar-collapsed') === 'true') {
-  sidebarEl.classList.add('collapsed');
+
+/**
+ * Below 768 CSS px there is no room for labels, but there is no second compact
+ * mode either: the rail gets the same `.collapsed` class the toggle sets, so
+ * the footer, the tooltips and the scrolling behave identically. The user's own
+ * preference is kept in localStorage and restored when the window grows back.
+ */
+const _narrowRail = window.matchMedia('(max-width: 768px)');
+
+function _applyRailMode() {
+  const collapsed = _narrowRail.matches || localStorage.getItem('sidebar-collapsed') === 'true';
+  sidebarEl.classList.toggle('collapsed', collapsed);
+  // Hidden below 768px (see layout.css): there is nothing to unfold into, and
+  // a visible control that no-ops on click is worse than an absent one.
+  btnCollapseSidebar.disabled = _narrowRail.matches;
+  _applySidebarTooltips(collapsed);
 }
+
+_narrowRail.addEventListener('change', _applyRailMode);
+
 btnCollapseSidebar.onclick = () => {
-  sidebarEl.classList.toggle('collapsed');
-  const isCollapsed = sidebarEl.classList.contains('collapsed');
-  localStorage.setItem('sidebar-collapsed', isCollapsed);
-  _applySidebarTooltips(isCollapsed);
+  if (_narrowRail.matches) return;
+  localStorage.setItem('sidebar-collapsed', String(!sidebarEl.classList.contains('collapsed')));
+  _applyRailMode();
 };
 
-// Toggle title ↔ data-tooltip for CSS tooltips in collapsed sidebar
+// Toggle title ↔ data-tooltip for the portal tooltips of the collapsed rail
 function _applySidebarTooltips(isCollapsed) {
   const sidebar = document.querySelector('.sidebar');
   if (!sidebar) return;
@@ -3606,7 +3792,51 @@ function _applySidebarTooltips(isCollapsed) {
       }
     }
   });
+  if (!isCollapsed) _hideRailTooltip();
 }
+
+// ── Collapsed rail tooltips ───────────────────────────────────────────────
+// A single body-level node, not an `::after` on each item: the rail is a
+// scroll container, and it clips any pseudo-element reaching past its 56px.
+let _railTooltipEl = null;
+
+function _railTooltip() {
+  if (!_railTooltipEl) {
+    _railTooltipEl = document.createElement('div');
+    _railTooltipEl.className = 'rail-tooltip';
+    document.body.appendChild(_railTooltipEl);
+  }
+  return _railTooltipEl;
+}
+
+function _showRailTooltip(el) {
+  const label = el.dataset.tooltip;
+  if (!label) return;
+  const tip = _railTooltip();
+  tip.textContent = label;
+  const r = el.getBoundingClientRect();
+  tip.style.left = `${Math.round(r.right + 8)}px`;
+  tip.style.top = `${Math.round(r.top + r.height / 2)}px`;
+  tip.classList.add('visible');
+}
+
+function _hideRailTooltip() {
+  if (_railTooltipEl) _railTooltipEl.classList.remove('visible');
+}
+
+sidebarEl.addEventListener('mouseover', e => {
+  const el = e.target.closest?.('[data-tooltip]');
+  if (el && sidebarEl.contains(el)) _showRailTooltip(el);
+  else _hideRailTooltip();
+});
+sidebarEl.addEventListener('mouseleave', _hideRailTooltip);
+// The rail scrolls under a pinned tooltip otherwise, and a click usually means
+// the pointer is about to leave the item anyway.
+sidebarEl.addEventListener('scroll', _hideRailTooltip, true);
+sidebarEl.addEventListener('click', _hideRailTooltip, true);
+
+// Last: _applyRailMode reaches _hideRailTooltip, whose `let` is declared above.
+_applyRailMode();
 
 // ========== TAB NAVIGATION ==========
 // Scroll position preservation across tab switches.
@@ -3708,19 +3938,20 @@ const _TAB_LIFECYCLE = {
       if (project) GitTabService.selectProject(project.id);
     }
   },
-  database: { activate: () => DatabasePanel.loadPanel() },
+  database: { activate: () => withLazyPanel('DatabasePanel', 'database', (P) => P.loadPanel()) },
   mcp: { activate: () => McpPanel.loadMcps() },
   plugins: { activate: () => PluginsPanel.loadPlugins() },
   skills: { activate: () => SkillsAgentsPanel.loadSkills() },
   agents: { activate: () => SkillsAgentsPanel.loadAgents() },
-  workflows: { activate: () => WorkflowPanel.load() },
-  tasks: { activate: () => ParallelTaskPanel.load() },
+  workflows: { activate: () => withLazyPanel('WorkflowPanel', 'workflows', (P) => P.load()) },
+  tasks: { activate: () => withLazyPanel('ParallelTaskPanel', 'tasks', (P) => P.load()) },
   'control-tower': {
-    activate: () => {
+    activate: () => withLazyPanel('ControlTowerPanel', 'control-tower', (P) => {
       const root = document.getElementById('ct-panel-root');
-      if (root) ControlTowerPanel.loadPanel(root);
-    },
-    deactivate: () => ControlTowerPanel.cleanup()
+      if (root) P.loadPanel(root);
+    }),
+    // A panel whose chunk was never fetched has nothing to tear down.
+    deactivate: () => lazyPanelIfLoaded('ControlTowerPanel')?.cleanup()
   },
   dashboard: {
     activate: () => renderDashboardForScope(),
@@ -3736,20 +3967,20 @@ const _TAB_LIFECYCLE = {
     deactivate: () => TimeTrackingDashboard.cleanup()
   },
   'session-replay': {
-    activate: () => {
+    activate: () => withLazyPanel('SessionReplayPanel', 'session-replay', (P) => {
       const container = document.getElementById('tab-session-replay');
       if (container && !container.dataset.initialized) {
-        SessionReplayPanel.init(container, { projectsState, openedProjectId: projectsState.get().openedProjectId });
+        P.init(container, { projectsState, openedProjectId: projectsState.get().openedProjectId });
         container.dataset.initialized = 'true';
       }
       // The project bar may have moved to another project while this tab was
       // hidden; setProject() is a no-op when it did not.
-      SessionReplayPanel.setProject();
-      SessionReplayPanel.onActivate();
-    },
+      P.setProject();
+      P.onActivate();
+    }),
     // Pauses the replay clock only — a full cleanup() would destroy the custom
     // <select> widgets that init() builds exactly once.
-    deactivate: () => SessionReplayPanel.onDeactivate()
+    deactivate: () => lazyPanelIfLoaded('SessionReplayPanel')?.onDeactivate()
   },
   files: {
     activate: () => {
@@ -3818,7 +4049,12 @@ function _runTabHook(tabId, hook) {
   const fn = _TAB_LIFECYCLE[tabId]?.[hook];
   if (!fn) return;
   try {
-    fn();
+    const result = fn();
+    // Panels behind a split chunk make activate() asynchronous. Without this,
+    // one that fails to mount would surface only as an unhandled rejection.
+    if (result && typeof result.then === 'function') {
+      result.catch((e) => console.error(`[tabs] ${hook} failed for "${tabId}":`, e));
+    }
   } catch (e) {
     // One panel throwing must never strand the app mid-switch.
     console.error(`[tabs] ${hook} failed for "${tabId}":`, e);
@@ -4109,8 +4345,12 @@ function _initSidebarDragDrop() {
       indicator.className = 'nav-tab-drop-indicator';
       nav.appendChild(indicator);
     }
+    // The indicator is absolutely positioned inside the rail, so it scrolls
+    // with the content: its offset is measured from the top of the scrolled
+    // content, not from the visible box. Add scrollTop rather than subtract it
+    // — the sign only started to matter now that the rail can scroll.
     const navRect = nav.getBoundingClientRect();
-    indicator.style.top = (after ? rect.bottom : rect.top) - navRect.top - nav.scrollTop + 'px';
+    indicator.style.top = (after ? rect.bottom : rect.top) - navRect.top + nav.scrollTop + 'px';
   });
 
   nav.addEventListener('drop', e => {
@@ -4750,7 +4990,11 @@ document.addEventListener('click', (e) => {
   if (!e.target.closest('.wizard-account-field')) panel.hidden = true;
 });
 
-document.getElementById('btn-new-project').onclick = () => {
+document.getElementById('btn-new-project').onclick = async () => {
+  // The wizard draws a card per type and then asks the selected one for its
+  // fields, so this is one of the two places that needs all of them.
+  await registry.ensureAllLoaded();
+
   const projectTypes = registry.getAll();
   const categoriesGrouped = registry.getByCategory();
 
@@ -6508,6 +6752,14 @@ const PLACEHOLDER_USAGE_BUCKETS = [
   { id: 'weekly',  type: 'weekly',  label: null, labelKey: 'ui.weekly',  utilization: null, resetsAt: null }
 ];
 
+// Building a bar, painting a percentage and spelling a countdown do not need
+// the chip's own state, so they live apart and are tested there.
+const {
+  createUsageBucketEl,
+  updateUsageBar,
+  updateResetEl,
+} = require('./src/renderer/ui/components/usageChip');
+
 /** bucket id -> its rendered nodes */
 const usageBucketEls = new Map();
 /** bucket id -> reset Date, for the once-a-minute countdown */
@@ -6671,40 +6923,6 @@ function renderUsageAccountLabel() {
  * @param {Object} bucket
  * @returns {{item: Element, label: Element, bar: Element, percent: Element, reset: Element}}
  */
-function createUsageBucketEl(bucket) {
-  const item = document.createElement('div');
-  item.className = 'usage-item';
-  item.dataset.type = bucket.type;
-
-  const header = document.createElement('div');
-  header.className = 'usage-header';
-
-  const label = document.createElement('span');
-  label.className = 'usage-label';
-  if (bucket.labelKey) label.dataset.i18n = bucket.labelKey;
-
-  const value = document.createElement('span');
-  value.className = 'usage-value';
-  const percent = document.createElement('span');
-  percent.className = 'usage-percent';
-  percent.textContent = '--';
-  const reset = document.createElement('span');
-  reset.className = 'usage-reset';
-  value.append(percent, reset);
-
-  header.append(label, value);
-
-  const barContainer = document.createElement('div');
-  barContainer.className = 'usage-bar-container';
-  const bar = document.createElement('div');
-  bar.className = 'usage-bar';
-  bar.style.width = '0%';
-  barContainer.appendChild(bar);
-
-  item.append(header, barContainer);
-  return { item, label, bar, percent, reset };
-}
-
 /**
  * Reconcile the rendered bars against a bucket list, keyed by bucket id, so a
  * limit the API stops sending takes its bar with it instead of freezing on its
@@ -6752,29 +6970,6 @@ function renderUsageBuckets(buckets) {
 /**
  * Update a single usage bar
  */
-function updateUsageBar(elements, percent) {
-  if (!elements.bar || !elements.percent) return;
-
-  if (percent === null || percent === undefined) {
-    elements.percent.textContent = '--';
-    elements.bar.style.width = '0%';
-    elements.bar.classList.remove('warning', 'danger');
-    return;
-  }
-
-  const roundedPercent = Math.round(percent);
-  elements.percent.textContent = `${roundedPercent}%`;
-  elements.bar.style.width = `${Math.min(roundedPercent, 100)}%`;
-
-  // Set color based on usage level
-  elements.bar.classList.remove('warning', 'danger');
-  if (roundedPercent >= 90) {
-    elements.bar.classList.add('danger');
-  } else if (roundedPercent >= 70) {
-    elements.bar.classList.add('warning');
-  }
-}
-
 /**
  * Update extra usage display (paid tokens beyond plan)
  * extraUsage from API: { cost_usd: number } or null
@@ -6845,25 +7040,6 @@ function startResetCountdown() {
 function updateAllResets() {
   for (const [id, els] of usageBucketEls) {
     updateResetEl(els.reset, usageResetTargets.get(id) || null);
-  }
-}
-
-function updateResetEl(el, target) {
-  if (!el) return;
-  if (!target) { el.textContent = ''; return; }
-  const remaining = target.getTime() - Date.now();
-  if (remaining <= 0) { el.textContent = ''; return; }
-  const lang = getCurrentLanguage();
-  const d = Math.floor(remaining / 86400000);
-  const h = Math.floor((remaining % 86400000) / 3600000);
-  const m = Math.floor((remaining % 3600000) / 60000);
-  const dU = lang === 'fr' ? 'j' : 'd';
-  if (d > 0) {
-    el.textContent = `${d}${dU} ${h}h`;
-  } else if (h > 0) {
-    el.textContent = `${h}h ${String(m).padStart(2, '0')}min`;
-  } else {
-    el.textContent = `${m}min`;
   }
 }
 

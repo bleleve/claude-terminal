@@ -54,6 +54,12 @@ const systemRoots = (process.platform === 'win32'
   ? [process.env.SystemRoot || 'C:\\Windows', process.env.ProgramFiles || 'C:\\Program Files', process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', process.env.ProgramData || 'C:\\ProgramData']
   : ['/etc', '/bin', '/sbin', '/usr', '/sys', '/proc', '/dev', ...(process.platform === 'darwin' ? ['/Library/System', '/System'] : ['/boot', '/lib', '/lib64'])])
   .map(root => { try { return canonical(root); } catch { return path.resolve(root); } });
+// The renderer has no legitimate reason to touch live credential material, and
+// ~/.claude is granted wholesale below for settings, skills and agents - so the
+// store sitting inside it has to be refused by name. Account switching reads
+// credentials in the main process, never through this bridge.
+const deniedFiles = [path.join(os.homedir(), '.claude', '.credentials.json')]
+  .map(file => { try { return canonical(file); } catch { return path.resolve(file); } });
 const inside = (file, root) => {
   if (process.platform === 'win32') { file = file.toLowerCase(); root = root.toLowerCase(); }
   return file === root || file.startsWith(root + path.sep);
@@ -68,6 +74,7 @@ function permitted(file, write = false) {
   try {
     const target = canonical(file);
     if (process.platform === 'win32' && file.startsWith('\\\\')) return false;
+    if (deniedFiles.some(denied => inside(target, denied))) return false;
     // Keep the system-directory protection; packaged application resources are
     // the only read exception (e.g. an installation under Program Files).
     if (systemRoots.some(root => inside(target, root)) && (write || !applicationRoots.some(root => inside(target, root)))) return false;

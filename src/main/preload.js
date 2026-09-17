@@ -219,7 +219,7 @@ contextBridge.exposeInMainWorld('electron_api', {
   // ==================== MCP ====================
   mcp: {
     saveServer: (name, config) => ipcRenderer.invoke('mcp-save-server', { name, config }),
-    saveConfig: (servers) => ipcRenderer.invoke('mcp-save-config', servers),
+    saveConfig: (servers, knownIds) => ipcRenderer.invoke('mcp-save-config', servers, knownIds),
     start: (params) => ipcRenderer.invoke('mcp-start', params),
     stop: (params) => ipcRenderer.invoke('mcp-stop', params),
     onOutput: createListener('mcp-output'),
@@ -351,6 +351,14 @@ contextBridge.exposeInMainWorld('electron_api', {
     deleteDoc: (params) => ipcRenderer.invoke('workspace-delete-doc', params),
   },
 
+  // ==================== PROJECT TYPE EXTENSIONS ====================
+  // Declarative only — an extension is data this bridge carries, never code it
+  // loads. See design/project-type-extensions.md.
+  projectTypes: {
+    listExtensions: () => ipcRenderer.invoke('project-types:list-extensions'),
+    ensureDir: () => ipcRenderer.invoke('project-types:ensure-dir'),
+  },
+
   // ==================== KNOWLEDGE (global memory) ====================
   knowledge: {
     list: () => ipcRenderer.invoke('knowledge-list'),
@@ -448,6 +456,7 @@ contextBridge.exposeInMainWorld('electron_api', {
     onForkRejected: createListener('chat-fork-rejected'),
     generateTabName: (params) => ipcRenderer.invoke('chat-generate-tab-name', params),
     loadHistory: (params) => ipcRenderer.invoke('chat-load-history', params),
+    loadToolOutput: (params) => ipcRenderer.invoke('chat-tool-output', params),
     generateSkillAgent: (params) => ipcRenderer.invoke('chat-generate-skill-agent', params),
     cancelGeneration: (params) => ipcRenderer.send('chat-cancel-generation', params),
     onGenerationProgress: createListener('chat-generation-progress'),
@@ -608,7 +617,8 @@ contextBridge.exposeInMainWorld('electron_api', {
   // ==================== UPDATES ====================
   updates: {
     onStatus: createListener('update-status'),
-    checkForUpdates: () => ipcRenderer.invoke('check-for-updates')
+    checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+    releaseNotes: (version) => ipcRenderer.invoke('get-release-notes', version)
   },
 
   // ==================== SETUP WIZARD ====================

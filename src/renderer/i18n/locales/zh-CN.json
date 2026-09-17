@@ -33,6 +33,7 @@
     "remove": "移除",
     "ignore": "忽略",
     "copied": "已复制！",
+    "copyFailed": "复制失败",
     "justNow": "刚刚",
     "add": "添加",
     "yesterday": "昨天"
@@ -299,6 +300,8 @@
     "confirmRemoveWorktree": "移除此工作树？对应目录也会被删除。",
     "forceRemoveWorktree": "强制移除工作树",
     "confirmForceRemoveWorktree": "此工作树存在未提交的更改。仍要强制移除吗？",
+    "confirmForceRemoveLockedWorktree": "此工作树已锁定。仍要移除吗？",
+    "confirmForceRemoveLockedWorktreeReason": "此工作树已锁定（原因：{reason}）。仍要移除吗？",
     "forceRemove": "强制删除",
     "existingBranch": "现有分支",
     "worktreeNewBranch": "新建分支",
@@ -437,6 +440,7 @@
     "mergeConflict": "检测到合并冲突。在继续之前解决它们。",
     "unrelatedHistories": "无法合并不相关的历史记录。这些分支没有共同的祖先。",
     "lockFailed": "无法锁定参考。另一个 Git 操作可能正在进行中。",
+    "worktreeLocked": "此工作树已锁定。请先解锁，或强制移除。",
     "alreadyExists": "这已经存在了。选择不同的名称。",
     "nothingToCommit": "没有需要提交的更改。工作树是干净的。"
   },
@@ -765,6 +769,9 @@
     "minutesAgo": "{count} 分钟前",
     "hoursAgo": "{count}h 前",
     "yesterday": "昨天",
+    "unitDayShort": "天",
+    "unitHourShort": "小时",
+    "unitMinuteShort": "分",
     "daysAgo": "{count}d 前"
   },
   "settings": {
@@ -776,6 +783,8 @@
     "accentColorDesc": "自定义主界面颜色",
     "terminalTheme": "终端主题",
     "terminalThemeDesc": "更改终端颜色",
+    "terminalFontSize": "终端字体大小",
+    "terminalFontSizeDesc": "调整终端选项卡中使用的字体大小",
     "theme": "终端主题",
     "notifications": "通知",
     "closeAction": "关闭行为",
@@ -924,6 +933,8 @@
     "terminalGroup": "终端",
     "tabRenameOnSlashCommand": "重命名斜杠命令上的选项卡",
     "tabRenameOnSlashCommandDesc": "自动将终端选项卡重命名为最后执行的斜杠命令（例如 /gsd:verify-work 12）",
+    "confirmCloseTab": "关闭标签页前确认",
+    "confirmCloseTabDesc": "当标签页的 × 会结束正在运行的会话时要求确认",
     "aiTabNaming": "AI选项卡命名",
     "aiTabNamingDesc": "使用 AI 从消息中生成简短的选项卡名称",
     "enableFollowupSuggestions": "后续建议",
@@ -1007,7 +1018,17 @@
     "backupRecovered": "备份已恢复到所选文件。",
     "searchPlaceholder": "搜索设置…",
     "searchCount": "找到 {count} 项设置",
-    "searchEmpty": "没有匹配的设置"
+    "searchEmpty": "没有匹配的设置",
+    "search": {
+      "placeholder": "搜索设置…",
+      "ariaLabel": "搜索设置",
+      "clear": "清除搜索",
+      "results": "{count} 条结果",
+      "empty": "没有设置匹配「{query}」",
+      "emptyHint": "试试更短的词，或者设置说明里的一部分。",
+      "sourceLabel": "设置",
+      "resultsPlural": "{count} 条结果"
+    }
   },
   "ui": {
     "notifications": "通知",
@@ -1750,6 +1771,7 @@
     "streaming": "写作...",
     "stopped": "已停止",
     "ready": "准备好了",
+    "elapsedTitle": "本轮已用时",
     "openFile": "打开文件",
     "binaryFile": "二进制文件",
     "cloudBadge": "云",
@@ -1787,6 +1809,11 @@
     "conversationResumed": "谈话继续",
     "loadingHistory": "正在加载对话...",
     "olderMessages": "更早的 {count} 条消息",
+    "olderMessagesUnknown": "更早的消息",
+    "newerMessages": "更新的 {count} 条消息",
+    "toolOutputLoading": "正在加载完整输出…",
+    "toolOutputFailed": "无法加载完整输出 — 显示已保存的预览。",
+    "toolOutputClipped": "输出过大，无法完整显示。",
     "loading": "正在加载...",
     "tabConversation": "对话",
     "tabChanges": "变化",
@@ -1997,7 +2024,8 @@
     "tabDocuments": "文档",
     "runInBackground": "转入后台运行",
     "backgroundWorkFailed": "无法将任务转入后台。 {error}",
-    "slashRemoteControl": "将此对话分享到 claude.ai（on / off）"
+    "slashRemoteControl": "将此对话分享到 claude.ai（on / off）",
+    "mentionKnowledge": "全局知识"
   },
   "hooks": {
     "consent": {
@@ -2577,6 +2605,7 @@
     "closeToRight": "关闭右侧选项卡",
     "closeTabTitle": "关闭 {name}？",
     "closeTabMessage": "此标签页将被关闭，其中正在运行的会话也会结束。",
+    "closeTabRemember": "记住我的选择",
     "closeAll": "关闭全部"
   },
   "telemetry": {
@@ -3217,6 +3246,9 @@
         "minutesAgo": "{n} 分钟前",
         "hoursAgo": "{n}h 前",
         "yesterdayAt": "昨天 {time}",
+    "unitDayShort": "天",
+    "unitHourShort": "小时",
+    "unitMinuteShort": "分",
         "daysAgo": "{n}d 前"
       },
       "autocomplete": {
@@ -4187,5 +4219,99 @@
     "dock": "停靠在聊天旁边",
     "undock": "隐藏该列",
     "openScreen": "打开文件页面"
+  },
+  "timeline": {
+    "tab": "时间线",
+    "title": "时间线",
+    "subtitle": "此项目的所有记录，汇成一条线",
+    "empty": "该时段内此项目没有任何记录。",
+    "emptyHint": "提交、会话、计时、工作流与并行运行、以及产物都会在此显示。",
+    "today": "今天",
+    "yesterday": "昨天",
+    "period": "时段",
+    "days": "{count} 天",
+    "eventCount": "{count} 条记录",
+    "messageCount": "{count} 条消息",
+    "taskCount": "{count} 个任务",
+    "workedFor": "工作 {duration}",
+    "filterAll": "全部",
+    "copyMarkdown": "复制为 Markdown",
+    "copied": "时间线已复制到剪贴板",
+    "sourcesFailed": "无法读取：{sources}",
+    "untitledSession": "未命名会话",
+    "untitledWorkflow": "未命名工作流",
+    "untitledRun": "未命名运行",
+    "untitledArtifact": "未命名产物",
+    "kind": {
+      "commit": "提交",
+      "session": "会话",
+      "time": "工作",
+      "workflow": "工作流",
+      "parallel": "并行运行",
+      "artifact": "产物"
+    },
+    "status": {
+      "success": "成功",
+      "failed": "失败",
+      "running": "运行中",
+      "pending": "等待中",
+      "cancelled": "已取消",
+      "skipped": "已跳过",
+      "timeout": "已超时",
+      "interrupted": "已中断",
+      "done": "已完成",
+      "merged": "已合并",
+      "merging": "合并中",
+      "decomposing": "规划中",
+      "reviewing": "审阅中"
+    }
+  },
+  "whatsNew": {
+    "title": "v{version} 有什么新变化",
+    "movedTitle": "位置变动",
+    "notesTitle": "发行说明",
+    "notesUnavailable": "无法加载发行说明 — 请在线查看更新日志。",
+    "showMe": "带我去看",
+    "turnItOn": "开启",
+    "gotIt": "知道了",
+    "moves": {
+      "filesScreen": {
+        "title": "文件浏览器变成了独立页面",
+        "body": "它以前是 Claude 布局中的一列，藏在一个不起眼的侧栏按钮后面。现在它是「项目」分组下的文件页面，还能显示每个历史会话改动了什么。"
+      },
+      "filesDock": {
+        "title": "文件树可以重新停靠在聊天旁边",
+        "body": "如果你习惯让文件树一直可见，它可以重新以一列的形式停靠在对话旁边。默认关闭；文件页面仍然负责查看器和会话差异。"
+      }
+    }
+  },
+  "projectTypes": {
+    "title": "项目类型扩展",
+    "description": "从 ~/.claude-terminal/project-types/ 加载声明式项目类型。扩展是清单文件而非代码：其中的内容不会被执行。",
+    "enable": "启用项目类型扩展",
+    "openFolder": "打开扩展文件夹",
+    "none": "未找到扩展",
+    "status": {
+      "enabled": "已启用",
+      "disabled": "已禁用",
+      "incompatible": "不兼容"
+    },
+    "problem": {
+      "title": "部分项目类型扩展无法加载",
+      "andMore": "另有 {count} 个",
+      "no-manifest": "此文件夹中没有 project-type.json",
+      "unreadable": "无法读取 project-type.json",
+      "not-an-object": "project-type.json 不是 JSON 对象",
+      "bad-manifest-version": "不支持的清单版本",
+      "bad-id": "无效的 id",
+      "bad-name": "无效的名称",
+      "incompatible": "为其他版本的 Claude Terminal 构建",
+      "duplicate-id": "另一个扩展已使用该 id",
+      "unreadable-dir": "无法读取扩展文件夹",
+      "too-many": "扩展过多，其余已被忽略",
+      "threw": "扩展加载失败",
+      "register-failed": "无法注册该扩展",
+      "loader-failed": "扩展加载器失败"
+    }
   }
 }

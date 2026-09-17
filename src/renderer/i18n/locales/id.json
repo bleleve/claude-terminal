@@ -33,6 +33,7 @@
     "remove": "Hapus",
     "ignore": "Abaikan",
     "copied": "Tersalin!",
+    "copyFailed": "Gagal menyalin",
     "justNow": "Baru saja",
     "add": "Tambah",
     "yesterday": "Kemarin"
@@ -299,6 +300,8 @@
     "confirmRemoveWorktree": "Hapus worktree ini? Direktorinya akan dihapus.",
     "forceRemoveWorktree": "Hapus Paksa Worktree",
     "confirmForceRemoveWorktree": "Worktree ini memiliki perubahan yang belum di-commit. Hapus paksa?",
+    "confirmForceRemoveLockedWorktree": "Worktree ini terkunci. Tetap hapus?",
+    "confirmForceRemoveLockedWorktreeReason": "Worktree ini terkunci (alasan: {reason}). Tetap hapus?",
     "forceRemove": "Hapus Paksa",
     "existingBranch": "Branch yang ada",
     "worktreeNewBranch": "Branch baru",
@@ -437,6 +440,7 @@
     "mergeConflict": "Terdeteksi konflik merge. Selesaikan sebelum melanjutkan.",
     "unrelatedHistories": "Tidak dapat me-merge riwayat yang tidak berkaitan. Branch tidak memiliki leluhur bersama.",
     "lockFailed": "Tidak dapat mengunci referensi. Mungkin ada operasi git lain yang sedang berjalan.",
+    "worktreeLocked": "Worktree ini terkunci. Buka kuncinya, atau paksa penghapusan.",
     "alreadyExists": "Ini sudah ada. Pilih nama lain.",
     "nothingToCommit": "Tidak ada yang di-commit. Working tree bersih."
   },
@@ -765,6 +769,9 @@
     "minutesAgo": "{count} menit lalu",
     "hoursAgo": "{count} jam lalu",
     "yesterday": "Kemarin",
+    "unitDayShort": "h",
+    "unitHourShort": "j",
+    "unitMinuteShort": "mnt",
     "daysAgo": "{count} hari lalu"
   },
   "settings": {
@@ -776,6 +783,8 @@
     "accentColorDesc": "Sesuaikan warna utama antarmuka",
     "terminalTheme": "Tema terminal",
     "terminalThemeDesc": "Ubah warna terminal",
+    "terminalFontSize": "Ukuran font terminal",
+    "terminalFontSizeDesc": "Sesuaikan ukuran font yang digunakan di tab terminal",
     "theme": "Tema terminal",
     "notifications": "Notifikasi",
     "closeAction": "Aksi penutupan",
@@ -924,6 +933,8 @@
     "terminalGroup": "Terminal",
     "tabRenameOnSlashCommand": "Ganti nama tab pada slash command",
     "tabRenameOnSlashCommandDesc": "Otomatis mengganti nama tab terminal menjadi slash command terakhir yang dijalankan (mis. /gsd:verify-work 12)",
+    "confirmCloseTab": "Konfirmasi sebelum menutup tab",
+    "confirmCloseTabDesc": "Minta konfirmasi ketika tombol × tab mengakhiri sesi yang sedang berjalan",
     "aiTabNaming": "Penamaan tab dengan AI",
     "aiTabNamingDesc": "Gunakan AI untuk membuat nama tab singkat dari pesan",
     "enableFollowupSuggestions": "Saran lanjutan",
@@ -1007,7 +1018,17 @@
     "backupRecovered": "Cadangan dipulihkan ke berkas yang dipilih.",
     "searchPlaceholder": "Cari pengaturan…",
     "searchCount": "{count} pengaturan ditemukan",
-    "searchEmpty": "Tidak ada pengaturan yang cocok"
+    "searchEmpty": "Tidak ada pengaturan yang cocok",
+    "search": {
+      "placeholder": "Cari pengaturan…",
+      "ariaLabel": "Cari pengaturan",
+      "clear": "Hapus pencarian",
+      "results": "{count} hasil",
+      "empty": "Tidak ada pengaturan yang cocok dengan \"{query}\"",
+      "emptyHint": "Coba kata yang lebih pendek, atau sebagian dari keterangan di bawah pengaturan.",
+      "sourceLabel": "Pengaturan",
+      "resultsPlural": "{count} hasil"
+    }
   },
   "ui": {
     "notifications": "Notifikasi",
@@ -1750,6 +1771,7 @@
     "streaming": "Menulis...",
     "stopped": "Dihentikan",
     "ready": "Siap",
+    "elapsedTitle": "Waktu yang dihabiskan pada giliran ini",
     "openFile": "Buka file",
     "binaryFile": "file biner",
     "cloudBadge": "Cloud",
@@ -1787,6 +1809,11 @@
     "conversationResumed": "Percakapan dilanjutkan",
     "loadingHistory": "Memuat percakapan...",
     "olderMessages": "{count} pesan sebelumnya",
+    "olderMessagesUnknown": "Pesan sebelumnya",
+    "newerMessages": "{count} pesan lebih baru",
+    "toolOutputLoading": "Memuat keluaran lengkap…",
+    "toolOutputFailed": "Tidak dapat memuat keluaran lengkap — menampilkan pratinjau tersimpan.",
+    "toolOutputClipped": "Keluaran terlalu besar untuk ditampilkan seluruhnya.",
     "loading": "Memuat...",
     "tabConversation": "Percakapan",
     "tabChanges": "Perubahan",
@@ -1997,7 +2024,8 @@
     "tabDocuments": "Dokumen",
     "runInBackground": "Jalankan di latar belakang",
     "backgroundWorkFailed": "Tidak dapat memindahkan pekerjaan ke latar belakang. {error}",
-    "slashRemoteControl": "Bagikan percakapan ini ke claude.ai (on / off)"
+    "slashRemoteControl": "Bagikan percakapan ini ke claude.ai (on / off)",
+    "mentionKnowledge": "Pengetahuan global"
   },
   "hooks": {
     "consent": {
@@ -2577,6 +2605,7 @@
     "closeToRight": "Tutup Tab di Sebelah Kanan",
     "closeTabTitle": "Tutup {name}?",
     "closeTabMessage": "Tab ini akan ditutup. Sesi apa pun yang berjalan di dalamnya akan berakhir.",
+    "closeTabRemember": "Ingat pilihan saya",
     "closeAll": "Tutup Semua"
   },
   "telemetry": {
@@ -3217,6 +3246,9 @@
         "minutesAgo": "{n} menit lalu",
         "hoursAgo": "{n} jam lalu",
         "yesterdayAt": "Kemarin {time}",
+    "unitDayShort": "h",
+    "unitHourShort": "j",
+    "unitMinuteShort": "mnt",
         "daysAgo": "{n} hari lalu"
       },
       "autocomplete": {
@@ -4187,5 +4219,99 @@
     "dock": "Tambatkan di samping chat",
     "undock": "Sembunyikan kolom",
     "openScreen": "Buka layar Files"
+  },
+  "timeline": {
+    "tab": "Linimasa",
+    "title": "Linimasa",
+    "subtitle": "Semua yang tercatat di proyek ini, dalam satu alur",
+    "empty": "Tidak ada yang tercatat untuk proyek ini pada periode ini.",
+    "emptyHint": "Commit, sesi, waktu terlacak, run workflow dan paralel, serta artifact muncul di sini.",
+    "today": "Hari ini",
+    "yesterday": "Kemarin",
+    "period": "Periode",
+    "days": "{count} hari",
+    "eventCount": "{count} peristiwa",
+    "messageCount": "{count} pesan",
+    "taskCount": "{count} tugas",
+    "workedFor": "Bekerja {duration}",
+    "filterAll": "Semua",
+    "copyMarkdown": "Salin sebagai Markdown",
+    "copied": "Linimasa disalin ke papan klip",
+    "sourcesFailed": "Tidak dapat dibaca: {sources}",
+    "untitledSession": "Sesi tanpa judul",
+    "untitledWorkflow": "Workflow tanpa nama",
+    "untitledRun": "Run tanpa judul",
+    "untitledArtifact": "Artifact tanpa judul",
+    "kind": {
+      "commit": "Commit",
+      "session": "Sesi",
+      "time": "Kerja",
+      "workflow": "Workflow",
+      "parallel": "Run paralel",
+      "artifact": "Artifact"
+    },
+    "status": {
+      "success": "berhasil",
+      "failed": "gagal",
+      "running": "berjalan",
+      "pending": "menunggu",
+      "cancelled": "dibatalkan",
+      "skipped": "dilewati",
+      "timeout": "kehabisan waktu",
+      "interrupted": "terputus",
+      "done": "selesai",
+      "merged": "digabungkan",
+      "merging": "menggabungkan",
+      "decomposing": "perencanaan",
+      "reviewing": "ditinjau"
+    }
+  },
+  "whatsNew": {
+    "title": "Yang baru di v{version}",
+    "movedTitle": "Yang berpindah",
+    "notesTitle": "Catatan rilis",
+    "notesUnavailable": "Catatan rilis tidak dapat dimuat — lihat changelog secara daring.",
+    "showMe": "Tunjukkan",
+    "turnItOn": "Aktifkan",
+    "gotIt": "Mengerti",
+    "moves": {
+      "filesScreen": {
+        "title": "Penjelajah file kini menjadi layar tersendiri",
+        "body": "Dulu berupa kolom di tata letak Claude, di balik tombol panel samping kecil. Sekarang menjadi layar Files, di grup Project, dan juga menampilkan apa yang diubah setiap sesi sebelumnya."
+      },
+      "filesDock": {
+        "title": "Pohon file bisa kembali berada di samping chat",
+        "body": "Jika Anda bekerja dengan pohon file terlihat, kini bisa ditambatkan lagi sebagai kolom di samping percakapan. Nonaktif secara bawaan; layar Files tetap memegang penampil dan diff sesi."
+      }
+    }
+  },
+  "projectTypes": {
+    "title": "Ekstensi tipe proyek",
+    "description": "Muat tipe proyek deklaratif dari ~/.claude-terminal/project-types/. Ekstensi adalah manifes, bukan kode: tidak ada isinya yang dieksekusi.",
+    "enable": "Aktifkan ekstensi tipe proyek",
+    "openFolder": "Buka folder ekstensi",
+    "none": "Tidak ada ekstensi ditemukan",
+    "status": {
+      "enabled": "Aktif",
+      "disabled": "Nonaktif",
+      "incompatible": "Tidak kompatibel"
+    },
+    "problem": {
+      "title": "Beberapa ekstensi tipe proyek gagal dimuat",
+      "andMore": "dan {count} lainnya",
+      "no-manifest": "tidak ada project-type.json di folder ini",
+      "unreadable": "project-type.json tidak dapat dibaca",
+      "not-an-object": "project-type.json bukan objek JSON",
+      "bad-manifest-version": "versi manifes tidak didukung",
+      "bad-id": "id tidak valid",
+      "bad-name": "nama tidak valid",
+      "incompatible": "dibuat untuk versi Claude Terminal yang berbeda",
+      "duplicate-id": "ekstensi lain sudah memakai id ini",
+      "unreadable-dir": "folder ekstensi tidak dapat dibaca",
+      "too-many": "terlalu banyak ekstensi; sisanya diabaikan",
+      "threw": "ekstensi gagal dimuat",
+      "register-failed": "ekstensi tidak dapat didaftarkan",
+      "loader-failed": "pemuat ekstensi gagal"
+    }
   }
 }
