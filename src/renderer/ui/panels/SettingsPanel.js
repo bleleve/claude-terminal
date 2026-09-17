@@ -26,6 +26,8 @@ const { getProjectsForAccount } = require('../../state/projects.state');
 // wherever the user finds it.
 
 /** Rows the filter operates on. Everything else is group-level furniture. */
+const { bilingualMatch } = require('../components/settingsSearchMatching');
+
 const SETTINGS_ROW_SELECTOR = '.settings-row, .settings-toggle-row';
 
 /** Attribute holding a node's pre-highlight text, so highlighting is reversible. */
@@ -65,9 +67,14 @@ function settingMatches(parts, query) {
   const q = String(query || '').trim();
   if (!q) return true;
   const { substringMatch } = _searchApi();
-  return substringMatch(q, parts.label || '').match
-    || substringMatch(q, parts.desc || '').match
-    || (!!parts.fallback && substringMatch(q, parts.fallback).match);
+  if (substringMatch(q, parts.label || '').match) return true;
+  if (substringMatch(q, parts.desc || '').match) return true;
+  if (parts.fallback && substringMatch(q, parts.fallback).match) return true;
+  // Second pass, only once the literal one has failed: the same row read
+  // through its English original and a short synonym table, so `shortcut`
+  // reaches "Raccourcis". It cannot drive the highlight - there is no matched
+  // substring to mark - so the row simply shows unmarked.
+  return bilingualMatch([parts.label, parts.desc, parts.fallback].filter(Boolean).join(' '), q);
 }
 
 /**
@@ -166,7 +173,8 @@ function applySettingsFilter(container, rawQuery) {
 
     panel.querySelectorAll('.settings-group').forEach(group => {
       const titleEl = groupTitleEl(group);
-      const titleMatches = active && !!titleEl && substringMatch(query, titleEl.textContent).match;
+      const titleMatches = active && !!titleEl
+        && (substringMatch(query, titleEl.textContent).match || bilingualMatch(titleEl.textContent, query));
       highlightSettingText(titleEl, titleMatches ? query : '');
 
       // A group whose *title* matches keeps all of its content: the user asked

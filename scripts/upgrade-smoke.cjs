@@ -68,12 +68,37 @@ app.whenReady().then(async () => {
   assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'settings.json'), 'utf8')).upgradeSentinel, 'preserved');
   console.log(`PASS full sandboxed app boot and legacy profile migration (${Date.now() - start} ms)`);
   await js('document.getElementById("btn-settings").click()');
-  await until(() => js('!!document.querySelector(".settings-search input")'), 'Settings search did not load');
-  await js(`(() => { const input = document.querySelector('.settings-search input'); input.value = 'raccourci'; input.dispatchEvent(new Event('input')); })()`);
-  assert(await js('document.querySelectorAll("#settings-search-results button").length > 0'));
-  await js("document.querySelector('#settings-search-results button').click()");
-  assert(await js("document.activeElement !== document.body"));
-  assert(await js("document.querySelector('.settings-tab.active').dataset.tab === document.activeElement.closest('[data-panel]').dataset.panel"));
+  await until(() => js('!!document.querySelector("#settings-search-input")'), 'Settings search did not load');
+  // Type into the real field and return how many sub-tabs kept something. The
+  // filter runs on `input`, synchronously, so the count is final on return.
+  const search = (query) => js(`(() => {
+    const input = document.querySelector('#settings-search-input');
+    input.value = ${JSON.stringify(query)};
+    input.dispatchEvent(new Event('input'));
+    return document.querySelectorAll('.settings-panel.settings-search-match').length;
+  })()`);
+  const emptyShown = () => js('!document.querySelector("#settings-search-empty").hidden');
+
+  // This profile runs in French, so the localized word is the plain case.
+  assert((await search('raccourci')) > 0);
+  assert(!(await emptyShown()));
+  const visibleGroups = () => js('document.querySelectorAll(".settings-group:not(.settings-search-hidden)").length');
+  assert((await visibleGroups()) > 0);
+
+  // The English word for the same setting reaches it only through the en.json
+  // pairing in settingsSearchMatching - nothing in the French text contains it.
+  // This is the one assertion that fails if that second pass is unwired.
+  assert((await search('shortcut')) > 0);
+  assert((await visibleGroups()) > 0);
+
+  // A word in neither language matches nothing, and the panel says so rather
+  // than showing an empty screen with no explanation.
+  assert.equal(await search('zzzznotasetting'), 0);
+  assert(await emptyShown());
+
+  // Clearing leaves search mode, so the panel is usable again afterwards.
+  await search('');
+  assert(await js('!document.querySelector(".settings-inline-wrapper").classList.contains("settings-search-active")'));
   await wait(200);
   if (process.env.CT_UPGRADE_SCREENSHOT) fs.writeFileSync(process.env.CT_UPGRADE_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
   await js('document.querySelector(\'.nav-tab[data-tab="control-tower"]\').click()');

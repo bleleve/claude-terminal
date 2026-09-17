@@ -287,3 +287,44 @@ describe('highlighting', () => {
     expect(el.innerHTML).toBe(before);
   });
 });
+
+// ── The second pass: the other language, and the word we never shipped ──
+//
+// settingMatches falls back to settingsSearchMatching once its literal pass has
+// failed. These pin that wiring; the matching itself is covered by
+// tests/features/settingsSearchMatching.test.js.
+describe('bilingual matching', () => {
+  const { initI18n } = require('../../src/renderer/i18n');
+
+  // A real translation, so it pairs with the en.json original. 'reset' is
+  // neither a substring of the French nor one of the synonyms, so nothing but
+  // that pairing can match it.
+  const RESET_ALL = 'Réinitialiser tous les raccourcis';   // shortcuts.resetAll
+
+  beforeEach(() => {
+    initI18n('fr');
+    container
+      .querySelector('[data-panel="claude"] .settings-card')
+      .insertAdjacentHTML('beforeend', row(RESET_ALL, 'Revenir aux valeurs par défaut'));
+  });
+
+  test('reaches a French label from the English word', () => {
+    expect(settingMatches({ label: RESET_ALL }, 'reset')).toBe(true);
+  });
+
+  test('accepts a word we never shipped for a setting', () => {
+    expect(settingMatches({ label: 'Permissions' }, 'autorisations')).toBe(true);
+  });
+
+  test('and still refuses an unrelated word', () => {
+    expect(settingMatches({ label: RESET_ALL }, 'mermaid')).toBe(false);
+  });
+
+  test('the filter keeps such a row, in whichever sub-tab it lives', () => {
+    applySettingsFilter(container, 'reset');
+    expect(visibleRows(container)).toEqual([RESET_ALL]);
+    expect(
+      container.querySelector('[data-panel="claude"]').classList.contains('settings-search-match')
+    ).toBe(true);
+  });
+});

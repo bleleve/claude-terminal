@@ -46,7 +46,10 @@ file. Exports retry from the beginning using the same result data.
 ## Local recovery and long operations
 
 Settings search filters every sub-tab at once on localized labels and descriptions.
-Selecting a result opens its settings tab and focuses the option without changing it.
+A word that matches neither is tried again against the English original each string
+was translated from, and against a small synonym table, so `shortcut` finds
+"Raccourcis" and "autorisations" finds Permissions. Labels only: a token or a
+password typed into a settings field is never searchable.
 Control Tower adds unavailable workflow triggers, latest failed runs and sync conflicts;
 its actions open the existing workflow or conflict views, or rebuild a failed trigger.
 Trigger state includes missing projects, invalid cron/regex configuration, watcher errors
