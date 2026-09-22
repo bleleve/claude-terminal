@@ -1928,6 +1928,7 @@
     "effortPart": "{effort} effort",
     "modePart": "{mode} mode",
     "modelSwitched": "Model switched from {previous} to {model}",
+    "appliesNextTurn": "Applies to your next message",
     "effortSwitched": "Effort switched from {previous} to {effort}",
     "modeTitle": "Mode",
     "modeAuto": "Auto",
@@ -3978,6 +3979,7 @@
     "usageRefresh": "Refresh usage"
   },
   "usage": {
+    "staleRetry": "Usage data may be out of date - the last refresh failed. Next attempt at {time}; click to try now. {error}",
     "stale": "Usage data may be out of date - the last refresh failed. {error}"
   },
   "github": {

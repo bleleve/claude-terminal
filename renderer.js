@@ -4290,6 +4290,9 @@ function _initSidebarDragDrop() {
   if (!nav) return;
   let draggedId = null;
   let indicator = null;
+  // Last drop position written to the DOM, so an unchanged one writes nothing.
+  let dropTarget = null;
+  let dropAfter = null;
 
   // Add drag handle on each tab
   nav.querySelectorAll('.nav-tab[data-tab]').forEach(tab => {
@@ -4328,35 +4331,57 @@ function _initSidebarDragDrop() {
       t.draggable = false;
     });
     indicator?.remove(); indicator = null; draggedId = null;
+    dropTarget = null; dropAfter = null;
   });
 
+  // ── Why this handler is written read-then-write, and bails early ──
+  //
+  // `dragover` fires on every pointer move for as long as the drag lasts.
+  // The version this replaces wrote the indicator's `top` and then, on the
+  // very next event, called getBoundingClientRect(), a read that cannot be
+  // answered from the cached layout once anything has been written to the
+  // document. So every single event forced a full synchronous layout, of the
+  // whole page, not just the rail: with the chat transcript or a file tree
+  // mounted underneath, one of those costs hundreds of milliseconds and they
+  // queue up behind each other. That is the "the UI freezes for fifteen
+  // seconds when I move a tab" report.
+  //
+  // Two changes fix it. Every measurement happens before any mutation, and
+  // nothing is written at all while the drop position has not actually
+  // changed, which is most events, since a tab is many pixels tall.
   nav.addEventListener('dragover', e => {
     if (!draggedId) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     const target = e.target.closest('.nav-tab[data-tab]');
     if (!target || target.id === 'btn-more-tabs' || target.dataset.tab === draggedId) {
-      indicator?.remove(); indicator = null; return;
+      if (indicator) { indicator.remove(); indicator = null; }
+      dropTarget = null; dropAfter = null;
+      return;
     }
     const rect = target.getBoundingClientRect();
     const after = e.clientY > rect.top + rect.height / 2;
+    if (target === dropTarget && after === dropAfter && indicator) return;
+    // The indicator is absolutely positioned inside the rail, so it scrolls
+    // with the content: its offset is measured from the top of the scrolled
+    // content, not from the visible box. Add scrollTop rather than subtract it:
+    // the sign only started to matter now that the rail can scroll.
+    const navRect = nav.getBoundingClientRect();
+    const top = (after ? rect.bottom : rect.top) - navRect.top + nav.scrollTop;
+    dropTarget = target; dropAfter = after;
     if (!indicator) {
       indicator = document.createElement('div');
       indicator.className = 'nav-tab-drop-indicator';
       nav.appendChild(indicator);
     }
-    // The indicator is absolutely positioned inside the rail, so it scrolls
-    // with the content: its offset is measured from the top of the scrolled
-    // content, not from the visible box. Add scrollTop rather than subtract it
-    // — the sign only started to matter now that the rail can scroll.
-    const navRect = nav.getBoundingClientRect();
-    indicator.style.top = (after ? rect.bottom : rect.top) - navRect.top + nav.scrollTop + 'px';
+    indicator.style.top = top + 'px';
   });
 
   nav.addEventListener('drop', e => {
     if (!draggedId) return;
     e.preventDefault();
     indicator?.remove(); indicator = null;
+    dropTarget = null; dropAfter = null;
     const target = e.target.closest('.nav-tab[data-tab]');
     if (!target || target.id === 'btn-more-tabs') return;
     const rect = target.getBoundingClientRect();
@@ -4434,6 +4459,9 @@ function _initCustomizeModalDragDrop() {
   const list = document.getElementById('sc-tab-list');
   if (!list) return;
   let draggedId = null;
+  // Drop position currently marked in the DOM, so an unchanged one writes nothing.
+  let dropAnchor = null;
+  let dropClass = null;
 
   list.addEventListener('dragstart', e => {
     const item = e.target.closest('.sc-item');
@@ -4447,21 +4475,31 @@ function _initCustomizeModalDragDrop() {
     list.querySelectorAll('.sc-item').forEach(el => {
       el.classList.remove('sc-item--dragging', 'sc-item--drag-over-before', 'sc-item--drag-over-after');
     });
-    draggedId = null;
+    draggedId = null; dropAnchor = null; dropClass = null;
   });
 
+  // Same shape as the sidebar rail's handler, and for the same reason: a
+  // class sweep over every row followed by a getBoundingClientRect() forced a
+  // full synchronous layout on every pointer move. See the comment on
+  // `_initSidebarDragDrop`'s dragover.
   list.addEventListener('dragover', e => {
     if (!draggedId) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
+
     const target = e.target.closest('.sc-item');
-    list.querySelectorAll('.sc-item').forEach(el => {
-      el.classList.remove('sc-item--drag-over-before', 'sc-item--drag-over-after');
-    });
-    if (!target || target.dataset.scId === draggedId) return;
-    const rect = target.getBoundingClientRect();
-    const after = e.clientY > rect.top + rect.height / 2;
-    target.classList.add(after ? 'sc-item--drag-over-after' : 'sc-item--drag-over-before');
+    let cls = null;
+    if (target && target.dataset.scId !== draggedId) {
+      const rect = target.getBoundingClientRect();
+      cls = e.clientY > rect.top + rect.height / 2 ? 'sc-item--drag-over-after' : 'sc-item--drag-over-before';
+    }
+    const anchor = cls ? target : null;
+    if (anchor === dropAnchor && cls === dropClass) return;
+
+    if (dropAnchor) dropAnchor.classList.remove('sc-item--drag-over-before', 'sc-item--drag-over-after');
+    dropAnchor = anchor;
+    dropClass = cls;
+    if (anchor) anchor.classList.add(cls);
   });
 
   list.addEventListener('drop', e => {
@@ -4470,6 +4508,7 @@ function _initCustomizeModalDragDrop() {
     list.querySelectorAll('.sc-item').forEach(el => {
       el.classList.remove('sc-item--drag-over-before', 'sc-item--drag-over-after');
     });
+    dropAnchor = null; dropClass = null;
     const target = e.target.closest('.sc-item');
     if (!target || target.dataset.scId === draggedId) return;
     const dragged = list.querySelector(`.sc-item[data-sc-id="${draggedId}"]`);
@@ -7055,6 +7094,30 @@ function updateAllResets() {
  *
  * @param {boolean} [force]
  */
+/**
+ * Why the figures are not current, and what the user can do about it.
+ *
+ * A credential store that gave back no usable token parks the account on an
+ * escalating backoff rather than being retried every minute, which is right,
+ * but it used to leave the chip silently frozen. Naming the retry time makes
+ * the difference between "waiting" and "broken" visible, and the click that
+ * skips the wait is the chip itself.
+ *
+ * @param {{ error?: string, retryAt?: string|null }} info
+ * @returns {string}
+ */
+function _usageStaleTitle(info) {
+  const error = (info && info.error) || '';
+  const retryAt = info && info.retryAt ? new Date(info.retryAt) : null;
+  if (retryAt && !Number.isNaN(retryAt.getTime())) {
+    return t('usage.staleRetry', {
+      error,
+      time: retryAt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
+    });
+  }
+  return t('usage.stale', { error });
+}
+
 async function refreshUsageDisplay(force = false) {
   if (!usageElements.container) return;
 
@@ -7075,9 +7138,7 @@ async function refreshUsageDisplay(force = false) {
         lastFetch: result.lastFetch || new Date().toISOString()
       });
       usageElements.container.classList.toggle('stale', !!result.stale);
-      usageElements.container.title = result.stale
-        ? t('usage.stale', { error: result.error || '' })
-        : '';
+      usageElements.container.title = result.stale ? _usageStaleTitle(result) : '';
     } else {
       usageElements.container.classList.remove('loading', 'stale');
       renderUsageBuckets(PLACEHOLDER_USAGE_BUCKETS);
@@ -7132,7 +7193,7 @@ if (usageElements.container) {
         // and confident: the stale class was only ever set on the click path.
         usageElements.container.classList.toggle('stale', !!data.stale);
         usageElements.container.title = data.stale
-          ? t('usage.stale', { error: data.error || '' })
+          ? _usageStaleTitle(data)
           : '';
       }
     } catch (e) {
