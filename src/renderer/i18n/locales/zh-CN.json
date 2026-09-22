@@ -1928,6 +1928,7 @@
     "effortPart": "{effort} 工作量",
     "modePart": "{mode} 模式",
     "modelSwitched": "模型已从 {previous} 切换为 {model}",
+    "appliesNextTurn": "将应用于您的下一条消息",
     "effortSwitched": "工作量已从 {previous} 切换为 {effort}",
     "modeTitle": "模式",
     "modeAuto": "自动",
@@ -3978,6 +3979,7 @@
     "usageRefresh": "刷新用量"
   },
   "usage": {
+    "staleRetry": "使用情况数据可能已过时 - 上次刷新失败。下次尝试时间 {time}；点击可立即重试。 {error}",
     "stale": "使用情况数据可能已过时 - 上次刷新失败。 {error}"
   },
   "github": {
