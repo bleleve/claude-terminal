@@ -142,7 +142,7 @@ Remote UI (PWA for mobile)
 | `TerminalService.js` | node-pty management, adaptive output batching (4/16/32 ms), Claude CLI launch with `--resume` |
 | `ChatService.js` | Claude Agent SDK bridge: streaming input mode, `maxTurns: 100`, permission forwarding, persistent haiku naming session, fork/rewind |
 | `GitHubAuthService.js` | GitHub OAuth Device Flow + API, keytar storage, GitHub Enterprise support (Client ID: `Ov23liYfl42qwDVVk99l`) |
-| `UsageService.js` | Claude usage via OAuth API (`api.anthropic.com/api/oauth/usage`) with PTY fallback, 5 min staleness |
+| `UsageService.js` | Claude usage via OAuth API (`api.anthropic.com/api/oauth/usage`) with PTY fallback, 5 min staleness. A credential store that gives back no usable token parks the account on an **escalating, bounded** backoff (5 min doubling to 1 h), not on `Infinity`: that never recovered, so one unreadable store or one token caught between two CLI rotations froze the chip for the life of the process. `getUsageData().retryAt` carries the next attempt so the tooltip can say "waiting" rather than leaving the user with a chip that stopped |
 | `McpService.js` | MCP server child process spawning with env vars, force-kill via taskkill |
 | `MarketplaceService.js` | Skill marketplace (`skills.sh/api/search`), git clone install, caching (5-30 min TTL) |
 | `McpRegistryService.js` | MCP server registry browsing (`registry.modelcontextprotocol.io/v0.1`), pagination, caching |
