@@ -343,6 +343,39 @@ const PRICE_SEGMENT = /^\$|per\s+Mtok/i;
 // The CLI spells the large-context build into the prose too; the id already
 // carries it, so repeating it in the label is noise.
 const CONTEXT_NOTE = /\s*(?:with\s+1M\s+context|\(1M\s+context\))/i;
+// Family and version out of a wire id: 'claude-haiku-4-5-20251001' -> haiku 4.5.
+// The version is one or two short numeric segments, so a trailing date is not
+// read as part of it.
+const WIRE_VERSION = /(fable|opus|sonnet|haiku)-(\d{1,2})(?:-(\d{1,2}))?(?!\d)/;
+
+/**
+ * 'Opus 4.8' for 'claude-opus-4-8', or '' when the id does not spell a family
+ * and version this way (a provider-prefixed id, an older naming scheme).
+ *
+ * @param {string} id
+ * @returns {string}
+ */
+function wireModelName(id) {
+  const v = wireVersion(id);
+  if (!v) return '';
+  const family = v.family[0].toUpperCase() + v.family.slice(1);
+  return `${family} ${v.minor ? `${v.major}.${v.minor}` : v.major}`;
+}
+
+/**
+ * Family and numeric version of a wire id, or null when it spells neither.
+ *
+ * @param {string} id e.g. 'claude-opus-4-8[1m]'
+ * @returns {{family: string, major: number, minor: number}|null}
+ */
+function wireVersion(id) {
+  const m = WIRE_VERSION.exec(baseModelId(id).toLowerCase());
+  return m ? { family: m[1], major: Number(m[2]), minor: m[3] ? Number(m[3]) : 0 } : null;
+}
+
+function compareVersions(a, b) {
+  return (a.major - b.major) || (a.minor - b.minor);
+}
 
 /**
  * Turn a CLI row into what the picker should actually show.
@@ -359,6 +392,14 @@ const CONTEXT_NOTE = /\s*(?:with\s+1M\s+context|\(1M\s+context\))/i;
  * the CLI's `default` row reads that way ("Use the default model (currently
  * …)"), and while the catalog now drops it before this runs, any future row
  * with prose in that slot must not lose it either.
+ *
+ * The description is prose, `resolvedModel` is what the CLI will actually
+ * request, and they can disagree. `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-8`
+ * remaps the `opus` alias, and CLI 0.3.280 then reports that row as resolving
+ * to `claude-opus-4-8` while its description still opens with "Opus 5.5". The
+ * menu said Opus 5.5, every turn ran on Opus 4.8, and the chip flipped to 4.8
+ * as soon as the stream named the model. When the two name different versions
+ * the label follows `resolvedModel`.
  *
  * @param {object} m Catalog row (SDK ModelInfo shape).
  * @returns {object} a copy with `displayName`/`description` rewritten
@@ -380,9 +421,14 @@ function normalizeModelRow(m) {
   const rest = (leadIsName ? segments.slice(1) : segments)
     .filter(s => !PRICE_SEGMENT.test(s));
 
+  const served = wireModelName(m.resolvedModel);
+  const name = leadIsName && served && served.toLowerCase() !== lead.toLowerCase()
+    ? served
+    : (leadIsName ? lead : String(m.displayName || ''));
+
   return {
     ...m,
-    displayName: leadIsName ? lead : String(m.displayName || ''),
+    displayName: name,
     description: rest.join(' · '),
   };
 }
@@ -496,6 +542,84 @@ function dedupeLegacy(primary, legacy) {
   return (legacy || []).filter(m => !seen.has(baseModelId(m.value)));
 }
 
+/**
+ * Split CLI rows into the lineup it currently offers and the models a newer
+ * version of the same family has replaced.
+ *
+ * The CLI does not always build its list from the one compiled into its
+ * binary. Behind a server-side flag it serves a published catalog instead, and
+ * that catalog holds the current lineup followed by every older model the CLI
+ * still accepts (Sonnet 5, Opus 5, Fable 5, Opus 4.x, Sonnet 4.6), flattened
+ * into one array. `ModelInfo` carries no section, so no row says which part it
+ * came from. Taken as-is, every older model lands in the primary menu and More
+ * models is left empty.
+ *
+ * A row is superseded when it names a model by explicit id and the list also
+ * offers a newer version of the same family. Two kinds of row never are:
+ *
+ * - An alias row (`opus`, `sonnet`, `opus[1m]`). It is what the CLI resolves a
+ *   family to, `ANTHROPIC_DEFAULT_OPUS_MODEL` included, so an alias pointing at
+ *   an older version is somebody's choice, not a leftover.
+ * - A row whose id spells no family and version, a provider-prefixed one for
+ *   instance. What cannot be placed stays where the CLI put it.
+ *
+ * Same version, different context window (`opus` and `opus[1m]`) is not
+ * "newer", so both stay. And a CLI that lists a single version per family, the
+ * compiled list, gets back exactly what it sent.
+ *
+ * @param {Array<object>} models Catalog rows, `default` alias already dropped.
+ * @returns {{current: Array<object>, superseded: Array<object>}}
+ */
+function splitSuperseded(models) {
+  const rows = Array.isArray(models) ? models : [];
+  const versionOf = m => wireVersion(m?.resolvedModel || m?.value);
+
+  const newest = new Map();
+  for (const m of rows) {
+    const v = versionOf(m);
+    if (v && (!newest.has(v.family) || compareVersions(v, newest.get(v.family)) > 0)) {
+      newest.set(v.family, v);
+    }
+  }
+
+  const current = [];
+  const superseded = [];
+  for (const m of rows) {
+    const v = versionOf(m);
+    const explicit = baseModelId(m?.value).startsWith('claude-');
+    const replaced = explicit && !!v && compareVersions(v, newest.get(v.family)) < 0;
+    (replaced ? superseded : current).push(m);
+  }
+  return { current, superseded };
+}
+
+/**
+ * The More models tier: the hand-curated legacy rows the primary tier does not
+ * cover, plus any superseded CLI row the curated list does not name.
+ *
+ * Curated rows win a tie, so what More models says about a model does not
+ * change with the CLI's catalog source. Family order, stable, so a CLI-only row
+ * lands next to its own family instead of trailing the list.
+ *
+ * @param {Array<object>} primary Rows the primary menu shows.
+ * @param {Array<object>} superseded From `splitSuperseded`.
+ * @param {Array<object>} [curated]
+ * @returns {Array<object>}
+ */
+function legacyTier(primary, superseded, curated = LEGACY_MODELS) {
+  const rows = dedupeLegacy(primary, curated);
+  const seen = new Set(rows.map(m => baseModelId(m.value)));
+  // dedupeLegacy again: an alias can resolve to the very model a superseded
+  // explicit row names, and one model must not sit in both menus.
+  for (const m of dedupeLegacy(primary, superseded)) {
+    const id = baseModelId(m?.resolvedModel || m?.value);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    rows.push(m);
+  }
+  return orderPrimary(rows);
+}
+
 module.exports = {
   CLAUDE_MODEL_VALUES,
   MODEL_OPTIONS,
@@ -516,6 +640,8 @@ module.exports = {
   resolveModelSelection,
   uncataloguedModelLabel,
   dedupeLegacy,
+  splitSuperseded,
+  legacyTier,
   hasOneMContext,
   orderPrimary,
   normalizeModelRow,
