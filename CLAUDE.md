@@ -22,7 +22,7 @@ npm run build:win        # Windows NSIS installer
 npm run build:mac        # macOS DMG
 npm run build:linux      # Linux AppImage
 npm run publish          # Build and publish Windows installer to update server
-npm test                 # Run Jest tests (jsdom, 213 test files)
+npm test                 # Run Jest tests (jsdom, 215 test files)
 npm run test:watch       # Jest in watch mode
 npm run check:docs       # Fail if CLAUDE.md or the README translations have drifted
 npm run lint             # ESLint over main, renderer, shared, MCP servers and scripts
@@ -39,8 +39,8 @@ Electron Main Process (Node.js)
 ├── main.js                          # Bootstrap, lifecycle, single-instance lock, global shortcuts
 ├── src/main/preload.js              # IPC bridge (window.electron_api)
 ├── src/main/preload-quickpicker.js  # Preload for Quick Picker window
-├── src/main/ipc/                    # 37 IPC files, 339 handlers total
-├── src/main/services/               # 37 services
+├── src/main/ipc/                    # 37 IPC files, 340 handlers total
+├── src/main/services/               # 38 services
 ├── src/main/windows/                # 5 window managers
 ├── src/main/utils/                  # 23 utilities
 ├── src/main/issue-trackers/         # Ticket provider adapters (*.tracker.js) + contract
@@ -59,7 +59,7 @@ Electron Renderer Process (Browser)
 ├── src/renderer/workflow-fields/    # 13 custom UI fields for workflow nodes
 ├── src/renderer/workflow-triggers/  # 12 trigger types (definition + configurator)
 ├── src/renderer/viewers/            # PDF viewer + 3D (three.js) viewer
-├── src/renderer/i18n/               # EN/FR/ES/ID/zh-CN locales (3832 keys each)
+├── src/renderer/i18n/               # EN/FR/ES/ID/zh-CN locales (3872 keys each)
 └── src/renderer/utils/              # DOM, color, format, paths, icons, syntax highlighting
 
 Project Types (Plugin System)
@@ -88,7 +88,7 @@ Remote UI (PWA for mobile)
 | File | Handlers | Key Operations |
 |------|---------:|----------------|
 | `terminal.ipc.js` | 4 | Create PTY (node-pty), input, resize, kill |
-| `git.ipc.js` | 69 | Status, branches, pull/push/merge/rebase, clone, stash, cherry-pick, revert, tag, blame, worktree, AI commit message, PR description, inline diff |
+| `git.ipc.js` | 70 | Status, branches, pull/push/merge/rebase, clone, stash, cherry-pick, revert, tag, blame, worktree, AI commit message, PR description, inline diff |
 | `chat.ipc.js` | 26 | Agent SDK streaming sessions, permissions, interrupt, model/effort/permission-mode switching, tab name generation, fork/rewind, skill/agent generation, session recap |
 | `github.ipc.js` | 25 | OAuth Device Flow, workflow runs, PRs, issues, reviews, GitHub Enterprise, repo search |
 | `dialog.ipc.js` | 23 | Window controls, file/folder dialogs, open in explorer/editor/browser, notifications, updates + release notes, startup, clipboard |
@@ -126,7 +126,7 @@ Remote UI (PWA for mobile)
 | `cloud-shared.js` | - | Helpers shared by the three cloud IPC files |
 | `index.js` | - | Orchestrator - registers all handlers |
 
-**Total: 339 IPC handlers across 37 files.**
+**Total: 340 IPC handlers across 37 files.**
 
 ### Services (`src/main/services/`)
 
@@ -145,6 +145,7 @@ Remote UI (PWA for mobile)
 | `TerminalService.js` | node-pty management, adaptive output batching (4/16/32 ms), Claude CLI launch with `--resume` |
 | `ChatService.js` | Claude Agent SDK bridge: streaming input mode, `maxTurns: 100`, permission forwarding, persistent haiku naming session, fork/rewind |
 | `GitHubAuthService.js` | GitHub OAuth Device Flow + API, keytar storage, GitHub Enterprise support (Client ID: `Ov23liYfl42qwDVVk99l`) |
+| `SessionGitService.js` | Everything the chat's **Git tab** shows, in one read-only call (`git-session-summary`): branch, upstream and drift, uncommitted counts, the branch's own commits against its base, and its pull request with checks and reviews. The base comes from the remote the branch *tracks* first (a branch pushed to a fork is measured against the fork's main; against origin/main it would list every fork-only commit), and the PR is looked up on that repository under the fork's owner, then on origin. Only git calls that fail as control flow, which `execGit` does not log, so a tab polled every 30 s never fills the error log |
 | `UsageService.js` | Claude usage via OAuth API (`api.anthropic.com/api/oauth/usage`) with PTY fallback, 5 min staleness. A credential store that gives back no usable token parks the account on an **escalating, bounded** backoff (5 min doubling to 1 h), not on `Infinity`: that never recovered, so one unreadable store or one token caught between two CLI rotations froze the chip for the life of the process. `getUsageData().retryAt` carries the next attempt so the tooltip can say "waiting" rather than leaving the user with a chip that stopped |
 | `McpService.js` | MCP server child process spawning with env vars, force-kill via taskkill |
 | `MarketplaceService.js` | Skill marketplace (`skills.sh/api/search`), git clone install, caching (5-30 min TTL) |
@@ -299,7 +300,7 @@ Base class `State.js`: observable, `subscribe()`, batched notifications via `req
 
 > `ChatView.js` is 8,641 lines, `renderer.js` 7,654 and `TerminalManager.js` 4,539 - still the three largest files in the repo, ~20,800 lines between them, and still past the point where they should be split. Splitting is underway and has its own conventions, below. Prefer adding new chat behaviour as a sibling module over growing `ChatView.js` further.
 
-**`components/chat/` and `components/terminal/`** hold what has been lifted out so far, following `src/renderer/services/markdown/`: `chat/` has `liveCards`, `resultParsing`, `contextSuggestions`, `followupChips`, `lightbox`, `exportConversation`, `contextUsage`, `transcriptSearch`, `attachmentTray` and `elapsedTimer`; `terminal/` has `osc52`, `claudeSignals`, `keyBindings`, `sessionCards` and `markdownViewer`.
+**`components/chat/` and `components/terminal/`** hold what has been lifted out so far, following `src/renderer/services/markdown/`: `chat/` has `gitTab` (the session's Git tab, beside Changes; classes are `session-git-*` because `.chat-git-*` already belongs to the git-commit / git-status markdown blocks), `liveCards`, `resultParsing`, `contextSuggestions`, `followupChips`, `lightbox`, `exportConversation`, `contextUsage`, `transcriptSearch`, `attachmentTray` and `elapsedTimer`; `terminal/` has `osc52`, `claudeSignals`, `keyBindings`, `sessionCards` and `markdownViewer`.
 
 Two things make this harder than it looks and set the shape of the modules. `ChatView.js`'s body is a single ~8,600-line closure, so every helper in it closes over the same mutable session state; a unit only comes out as a `createXxx(deps)` factory taking its dependencies explicitly, reading late-bound ones (`getPruner`, `getInputEl`, `getProject`) through getters, and owning its own `destroy()` rather than leaving listeners for `createChatView`'s to remember. And the units have real couplings worth naming rather than hiding: `attachmentTray` reaches the mention rail because an attached file *is* a chip there, and `transcriptSearch` has to suspend the pruner because it walks the mounted tree.
 
@@ -373,7 +374,7 @@ The dashboard has three sub-views, switched by `_dashViews` and rendered from `D
 ### Internationalization (`src/renderer/i18n/locales/`)
 
 - **Languages:** French (default), English (fallback), Spanish, Indonesian, Simplified Chinese (`fr.json`, `en.json`, `es.json`, `id.json`, `zh-CN.json`)
-- **Keys:** 3832 per locale, all five in exact sync (enforced by `tests/i18n/i18n-coherence.test.js`)
+- **Keys:** 3872 per locale, all five in exact sync (enforced by `tests/i18n/i18n-coherence.test.js`)
 - **Loading:** only `en.json` is bundled eagerly, as the guaranteed-loaded fallback for `t()`; the others are fetched by `initI18n()`
 - **Detection:** auto-detect from `navigator.language`, `DEFAULT_LANGUAGE` is `fr`
 - **Usage:** `t('projects.openFolder')`, `t('key', { count: 5 })`, `data-i18n="..."` for static HTML
@@ -466,7 +467,7 @@ system**: no light mode, no `prefers-color-scheme`, no `data-theme`. `--accent` 
 | File | Lines | Section |
 |------|------:|---------|
 | `workflow.css` | 7506 | Visual workflow editor (custom canvas engine) |
-| `chat.css` | 5583 | Chat UI, messages, permissions, thinking, subagents |
+| `chat.css` | 5861 | Chat UI, messages, permissions, thinking, subagents |
 | `projects.css` | 4627 | Project list, tree, project bar, drag-drop, customize |
 | `git.css` | 4285 | Git panel, diff view, worktrees, commit graph |
 | `settings.css` | 3166 | Settings forms |
@@ -512,7 +513,7 @@ system**: no light mode, no `prefers-color-scheme`, no `data-theme`. `--accent` 
 
 Exposes API namespaces on `window.electron_api`:
 
-`terminal` | `git` (69 methods) | `github` | `chat` | `claude` | `accounts` | `mcp` | `mcpRegistry` | `mcpTerminal` | `mcpTab` | `marketplace` | `plugins` | `dialog` | `explorer` | `window` | `app` | `notification` | `usage` | `project` | `hooks` | `updates` | `setupWizard` | `lifecycle` | `quickPicker` | `tray` | `fivem` | `webapp` | `api` | `python` | `minecraft` | `discord` | `discordRpc` | `remote` | `remoteControl` | `workspace` | `workflow` | `parallel` | `database` | `time` | `telemetry` | `cloud` | `knowledge` | `artifacts` | `chrome` | `errorLog` | `voice` | `issueTrackers` | `preview` | `controlTower` | `projectTypes`
+`terminal` | `git` (70 methods) | `github` | `chat` | `claude` | `accounts` | `mcp` | `mcpRegistry` | `mcpTerminal` | `mcpTab` | `marketplace` | `plugins` | `dialog` | `explorer` | `window` | `app` | `notification` | `usage` | `project` | `hooks` | `updates` | `setupWizard` | `lifecycle` | `quickPicker` | `tray` | `fivem` | `webapp` | `api` | `python` | `minecraft` | `discord` | `discordRpc` | `remote` | `remoteControl` | `workspace` | `workflow` | `parallel` | `database` | `time` | `telemetry` | `cloud` | `knowledge` | `artifacts` | `chrome` | `errorLog` | `voice` | `issueTrackers` | `preview` | `controlTower` | `projectTypes`
 
 Also exposes `window.electron_nodeModules`: `path`, `fs` (sync + promises, guarded by a system-path blocklist in `preload.js`), `os.homedir()`, a small allowlist of `process.env` vars, and `__dirname`.
 
@@ -643,7 +644,7 @@ Worker); neither is bundled into the desktop app.
 ## Testing
 
 ```bash
-npm test                    # Run all 213 unit test files (jsdom environment)
+npm test                    # Run all 215 unit test files (jsdom environment)
 npm run test:watch          # Watch mode
 npm run check:docs          # Verify this file and the READMEs still match the tree
 npm run lint                # ESLint (see below)
@@ -652,7 +653,7 @@ npm run test:e2e            # Playwright smoke test against the real Electron ap
 
 ### Unit tests (Jest)
 
-- **Framework:** Jest with jsdom, 213 test files
+- **Framework:** Jest with jsdom, 215 test files
 - **Setup:** `tests/setup.js` mocks `window.electron_nodeModules`, `window.electron_api`, `requestAnimationFrame`
 - **Pattern:** `**/tests/**/*.test.js`
 - **Directories:**

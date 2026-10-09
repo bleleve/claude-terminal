@@ -12,6 +12,7 @@
 
 const { t, getCurrentLanguage } = require('../../../i18n');
 const { escapeHtml } = require('../../../utils');
+const { formatRelativeTimeIntl } = require('../../../utils/format');
 const { STATE_CATEGORIES, PRIORITY_LEVELS } = require('../../../../shared/issue-trackers');
 
 /** What a first visit shows: every ticket still open. */
@@ -314,20 +315,8 @@ function statesForIssue(issue, metadata) {
 // ── HTML ─────────────────────────────────────────────────────────────────────
 
 function relativeTime(iso, now = Date.now()) {
-  const ms = Date.parse(iso);
-  if (!Number.isFinite(ms)) return '';
-  const diff = (ms - now) / 1000;
-  const units = [['year', 31_536_000], ['month', 2_592_000], ['week', 604_800], ['day', 86_400], ['hour', 3_600], ['minute', 60]];
-  let rtf;
-  try {
-    rtf = new Intl.RelativeTimeFormat(getCurrentLanguage() || 'en', { numeric: 'auto', style: 'short' });
-  } catch {
-    rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto', style: 'short' });
-  }
-  for (const [unit, seconds] of units) {
-    if (Math.abs(diff) >= seconds) return rtf.format(Math.round(diff / seconds), unit);
-  }
-  return rtf.format(0, 'second');
+  if (typeof iso !== 'string' || !Number.isFinite(Date.parse(iso))) return '';
+  return formatRelativeTimeIntl(iso, { now, language: getCurrentLanguage() });
 }
 
 function initials(name) {
