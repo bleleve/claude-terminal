@@ -9,6 +9,7 @@ const api = window.electron_api;
 const { path, fs, process: nodeProcess, __dirname } = window.electron_nodeModules;
 const { fileExists, fsp, ensureDirs } = require('./src/renderer/utils/fs-async');
 const { matchesSessionQuery } = require('./src/renderer/utils/sessionSearch');
+const { createTerminalTicketsButton } = require('./src/renderer/ui/components/terminal/ticketsButton');
 const { applyNavigationMode, isSidebarNavigation, isProjectsPopoverOpen } = require('./src/renderer/ui/navigationMode');
 
 document.body.classList.add(`platform-${nodeProcess.platform}`);
@@ -145,6 +146,20 @@ const RemotePanel = require('./src/renderer/ui/panels/RemotePanel');
 // require() is a side effect esbuild cannot shake out and the panel ships
 // eagerly whether or not anything reads the binding.
 const _LAZY_PANELS = {
+  IssuesPanel: {
+    root: 'tickets-panel-root',
+    load: () => import('./src/renderer/ui/panels/IssuesPanel'),
+    init: (P) => P.init({
+      api,
+      showToast,
+      openSettings: (subTab) => _switchToSettingsTab(subTab),
+      getProjects: () => {
+        const s = projectsState.get();
+        return { projects: s.projects || [], openedProjectId: s.openedProjectId || null };
+      },
+      startSession: (project, opts) => startChatFromTicket(project, opts),
+    })
+  },
   DatabasePanel: {
     root: 'database-content',
     load: () => import('./src/renderer/ui/panels/DatabasePanel'),
@@ -603,6 +618,19 @@ const { loadSessionData, clearProjectSessions, saveTerminalSessions } = require(
 
   // ========== PANELS INIT (must run after state is loaded) ==========
   MemoryEditor.init({ showModal, closeModal, showToast });
+
+  // Tickets for Claude sessions in terminal mode; chat tabs have their own tab.
+  // Toasts go straight to the component: this one carries an action button.
+  const sessionBar = document.querySelector('.session-actions');
+  if (sessionBar) {
+    createTerminalTicketsButton({
+      api,
+      hostEl: sessionBar,
+      terminalsState,
+      activateTerminal: (id) => TerminalManager.setActiveTerminal(id),
+      showToast: (opts) => ToastComponent.showToast(opts),
+    });
+  }
 
   ShortcutsManager.init({
     settingsState, saveSettings,
@@ -1911,6 +1939,27 @@ async function deleteProjectUI(projectId) {
 function createTerminalForProject(project) {
   TerminalManager.createTerminal(project, {
     skipPermissions: settingsState.get().skipPermissions
+  });
+}
+
+/**
+ * A chat started from the Tickets screen: on the chosen project, shown as if
+ * picked in the sidebar, with the ticket linked and its content in the
+ * composer, unsent.
+ */
+function startChatFromTicket(project, { draftPrompt, initialTickets }) {
+  const projectIndex = projectsState.get().projects.findIndex((p) => p.id === project.id);
+  document.querySelector('[data-tab="claude"]')?.click();
+  if (projectIndex !== -1) {
+    setSelectedProjectFilter(projectIndex);
+    ProjectList.render();
+    TerminalManager.filterByProject(projectIndex);
+  }
+  return TerminalManager.createTerminal(project, {
+    mode: 'chat',
+    skipPermissions: settingsState.get().skipPermissions,
+    draftPrompt,
+    initialTickets,
   });
 }
 
@@ -3758,6 +3807,10 @@ function _switchToSettingsTab(...args) {
   registry.ensureAllLoaded().then(() => SettingsPanel.switchToSettingsTab(...args));
 }
 
+// Components without access to the navigation (the chat's Git tab) ask for a
+// settings sub-tab through this event rather than reaching into renderer.js.
+document.addEventListener('ct-open-settings', (e) => _switchToSettingsTab(e.detail?.tab));
+
 document.getElementById('btn-settings').onclick = () => {
   const currentActive = document.querySelector('.nav-tab[data-tab].active');
   if (currentActive) _saveScrollPositions(currentActive.dataset.tab);
@@ -4034,6 +4087,14 @@ const _TAB_LIFECYCLE = {
     // Releases the artifacts-changed IPC listener registered on activate.
     deactivate: () => ArtifactsPanel.cleanup()
   },
+  tickets: {
+    activate: () => withLazyPanel('IssuesPanel', 'tickets', (P) => {
+      const root = document.getElementById('tickets-panel-root');
+      if (root) P.loadPanel(root);
+    }),
+    // Stops the 60 s refresh; what was loaded stays for the next visit.
+    deactivate: () => lazyPanelIfLoaded('IssuesPanel')?.cleanup()
+  },
   errorlog: {
     activate: () => {
       const root = document.getElementById('errorlog-panel-root');
@@ -4144,7 +4205,7 @@ document.querySelectorAll('.nav-tab[data-tab]').forEach(tab => {
 // index.html because the screen cannot be populated (see the note there). Both
 // the customize modal and the More dropdown are built from this list, so
 // leaving it in would offer a tab that no longer exists in the DOM.
-const _ALL_TABS_ORDER = ['claude', 'dashboard', 'files', 'git', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
+const _ALL_TABS_ORDER = ['claude', 'dashboard', 'files', 'git', 'tickets', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
 
 function applyPinnedTabs() {
   const pinned = settingsState.get().pinnedTabs || _ALL_TABS_ORDER;

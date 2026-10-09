@@ -97,8 +97,9 @@ function createClient({ secret }) {
       }
       if (query.mine === 'assigned') list = list.filter((r) => r.assignee === ME.id);
       if (query.mine === 'created') list = list.filter((r) => r.author === ME.id);
-      if (query.stateCategories.length) list = list.filter((r) => query.stateCategories.includes(state(r.state).category));
-      if (query.stateIds.length) list = list.filter((r) => query.stateIds.includes(r.state));
+      if (query.stateCategories.length || query.stateIds.length) {
+        list = list.filter((r) => query.stateCategories.includes(state(r.state).category) || query.stateIds.includes(r.state));
+      }
       if (query.assigneeIds.length) {
         list = list.filter((r) => query.assigneeIds.some((a) =>
           (a === 'me' && r.assignee === ME.id) || (a === 'none' && !r.assignee) || a === r.assignee));
