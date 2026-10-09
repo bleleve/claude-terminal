@@ -61,6 +61,9 @@ function entryFor(accountId) {
       // How long the next refused or unreadable store read waits before being
       // tried again. Zero means the next failure starts the ladder over.
       tokenBackoff: 0,
+      // The store answered, but with an access token past its expiry. Not a
+      // refusal: see TOKEN_EXPIRED_RECHECK.
+      tokenExpired: false,
       // Bumped whenever the account's credentials are invalidated, so a store
       // read still in flight from before the switch is discarded rather than
       // writing the outgoing account's token back into the cache.
@@ -107,6 +110,23 @@ const TOKEN_CACHE_MAX = 6 * 60 * 60 * 1000;   // cap for a long-lived token
 // on its own once the CLI writes a token that works.
 const TOKEN_BACKOFF_MIN = 5 * 60 * 1000;
 const TOKEN_BACKOFF_MAX = 60 * 60 * 1000;
+/**
+ * How long a store that answered with an expired access token waits before it
+ * is read again.
+ *
+ * That store is not refusing anything. It answered; its token simply ran out
+ * because nothing has used the account since, and the CLI renews it the next
+ * time it runs there. It is the normal state of an account the user stopped
+ * using, and the usual reason they stopped is that it hit its limit. Running it
+ * up the refusal ladder parked that account for up to an hour at a time, so the
+ * last figure ever fetched, a full bar, stayed on screen for up to an hour after
+ * the user went back to it.
+ *
+ * A flat recheck instead, never escalated. Five minutes is the ladder's own
+ * first step, so this reads the store no more often than a single refusal
+ * already did.
+ */
+const TOKEN_EXPIRED_RECHECK = TOKEN_BACKOFF_MIN;
 const TOKEN_EXPIRY_MARGIN = 60 * 1000;        // re-read shortly before expiry
 
 // How long a caller waits for the credential store before giving up on this
@@ -197,6 +217,7 @@ async function readOAuthToken(accountId, force = false) {
   if (force) {
     entry.rejectedToken = null;
     entry.tokenBackoff = 0;
+    entry.tokenExpired = false;
   }
 
   return awaitWithTimeout(startTokenRead(entry), TOKEN_READ_TIMEOUT, () => {
@@ -225,10 +246,12 @@ function startTokenRead(entry) {
   const read = (async () => {
     let token = null;
     let expiresAt = null;
+    let expired = false;
     try {
       const creds = await readCredentialsFor(entry.accountId);
       token = tokenFromCredentials(creds);
       expiresAt = creds?.claudeAiOauth?.expiresAt ?? null;
+      expired = !token && !!creds?.claudeAiOauth?.accessToken;
     } catch (e) {
       // Store unreadable: Keychain access refused, or the file is malformed.
       // Treated as no token, and backed off, rather than retried on every tick.
@@ -251,6 +274,14 @@ function startTokenRead(entry) {
     // During the last minute the CLI may not have rotated the token yet.
     // Caching to expiresAt - margin would already be in the past and re-open
     // the Keychain on every tab switch. Keep that token until its real expiry.
+    entry.tokenExpired = expired;
+    if (expired) {
+      // The store answered, so the refusal ladder starts over, and the token
+      // is looked at again shortly in case the CLI has renewed it.
+      entry.tokenBackoff = 0;
+      entry.tokenCacheUntil = now + TOKEN_EXPIRED_RECHECK;
+      return null;
+    }
     if (!token) {
       backOffToken(entry, now);
       return null;
@@ -309,6 +340,7 @@ function invalidateCredentials(accountId) {
     entry.tokenCache = null;
     entry.tokenCacheUntil = 0;
     entry.tokenBackoff = 0;
+    entry.tokenExpired = false;
     entry.rejectedToken = null;
     entry.readGeneration += 1;
     entry.tokenRead = null;
@@ -411,6 +443,36 @@ function readBuckets(json) {
 }
 
 /**
+ * Cached figures as they stand now rather than as they stood when fetched.
+ *
+ * A bucket whose window has reset is reported the way the API reports an idle
+ * window: 0%, no reset time. Within a window usage only goes up, so its last
+ * figure was a floor until the reset and says nothing about the window after
+ * it. Served as is, it turned an account that ran out last night into one that
+ * still read 100% this morning, for as long as no fetch could replace it: an
+ * account left alone at its limit has an expired token, and the endpoint
+ * answers 429 often enough on its own.
+ *
+ * Applied when figures are served, never to what is stored, so `lastFetch` and
+ * the stale flag still describe the fetch that produced them.
+ *
+ * @param {Object|null} data - as built by fetchUsageFromAPI
+ * @param {number} [now]
+ * @returns {Object|null} the same object when nothing has reset
+ */
+function asOfNow(data, now = Date.now()) {
+  if (!Array.isArray(data?.buckets)) return data;
+  let rolled = false;
+  const buckets = data.buckets.map((bucket) => {
+    const resetsAt = bucket?.resetsAt ? Date.parse(bucket.resetsAt) : NaN;
+    if (!(resetsAt <= now)) return bucket;
+    rolled = true;
+    return { ...bucket, utilization: 0, resetsAt: null };
+  });
+  return rolled ? { ...data, buckets } : data;
+}
+
+/**
  * Fetch usage data from the OAuth API
  * @returns {Promise<Object>} Parsed usage data in standard format
  */
@@ -470,7 +532,7 @@ async function fetchUsage(accountId, force = false) {
   // as wedged rather than slow. Without this, a single await that never
   // settles froze usage for the rest of the session: every tick returned here.
   if (entry.isFetching && Date.now() - entry.fetchStartedAt < FETCH_WATCHDOG) {
-    return entry.usageData;
+    return asOfNow(entry.usageData);
   }
   entry.isFetching = true;
   const startedAt = Date.now();
@@ -508,6 +570,11 @@ async function fetchUsage(accountId, force = false) {
       // letting them pass for current, and leave the next tick to use the token
       // once the read lands.
       console.log('[Usage] ' + entry.lastError);
+    } else if (entry.tokenExpired) {
+      // Nothing to log in again for: the CLI renews the token on its own the
+      // next time it runs on this account, and the recheck picks it up.
+      entry.lastError = 'OAuth token expired; the CLI renews it the next time it runs on this account';
+      console.log('[Usage] ' + entry.lastError);
     } else {
       entry.lastError = 'No valid Claude OAuth token (missing or expired — run /login in a terminal)';
       console.log('[Usage] ' + entry.lastError);
@@ -521,7 +588,7 @@ async function fetchUsage(accountId, force = false) {
     mirrorToDisk();
     if (entry.usageData) {
       console.warn('[Usage] API unavailable, serving STALE cached data:', entry.lastError);
-      return entry.usageData;
+      return asOfNow(entry.usageData);
     }
     console.warn('[Usage] API unavailable and no cached data:', entry.lastError);
     return null;
@@ -593,7 +660,7 @@ function getUsageData(accountId) {
   const entry = entryFor(accountId);
   return {
     accountId: entry.accountId,
-    data: entry.usageData,
+    data: asOfNow(entry.usageData),
     lastFetch: entry.lastFetch ? entry.lastFetch.toISOString() : null,
     isFetching: entry.isFetching,
     stale: isEntryStale(entry),
@@ -771,14 +838,15 @@ function mirrorFile() {
 function mirrorToDisk() {
   try {
     const entry = entryFor(getFocusedAccount());
+    const data = asOfNow(entry.usageData);
     const payload = {
       accountId: entry.accountId,
       timestamp: entry.usageData?.timestamp || null,
       lastFetch: entry.lastFetch ? entry.lastFetch.toISOString() : null,
       stale: isEntryStale(entry),
       error: entry.lastError || null,
-      buckets: entry.usageData?.buckets || [],
-      extraUsage: entry.usageData?.extraUsage ?? null
+      buckets: data?.buckets || [],
+      extraUsage: data?.extraUsage ?? null
     };
     const file = mirrorFile();
     const tmp = `${file}.tmp`;
@@ -881,6 +949,7 @@ function stopRefreshWatch() {
 
 module.exports = {
   readBuckets,
+  asOfNow,
   startRefreshWatch,
   stopRefreshWatch,
   startPeriodicFetch,
