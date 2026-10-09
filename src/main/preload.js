@@ -672,6 +672,9 @@ contextBridge.exposeInMainWorld('electron_api', {
     connect: (provider, secret) => ipcRenderer.invoke('issue-trackers:connect', provider, secret),
     disconnect: (connectionId) => ipcRenderer.invoke('issue-trackers:disconnect', connectionId),
     test: (connectionId) => ipcRenderer.invoke('issue-trackers:test', connectionId),
+    metadata: (connectionId, opts) => ipcRenderer.invoke('issue-trackers:metadata', connectionId, opts),
+    listIssues: (connectionId, query, cursor) => ipcRenderer.invoke('issue-trackers:list-issues', connectionId, query, cursor),
+    getIssue: (connectionId, key) => ipcRenderer.invoke('issue-trackers:get-issue', connectionId, key),
   },
 
   // ==================== VOICE ====================

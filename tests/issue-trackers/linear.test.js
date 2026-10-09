@@ -250,3 +250,10 @@ describe('refs', () => {
     expect(fromToolCall({ name, input: { id: 'ENG-1' }, result: '' })).toEqual([]);
   });
 });
+
+describe('status is one filter', () => {
+  test('a category and a single state add up instead of cancelling out', async () => {
+    expect(await keysOf({ stateCategories: ['todo'], stateIds: ['s-eng-review'] }))
+      .toEqual(['DES-31', 'ENG-128', 'ENG-137', 'ENG-148', 'ENG-151']);
+  });
+});

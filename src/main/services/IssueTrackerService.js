@@ -19,11 +19,20 @@ const crypto = require('crypto');
 const { dataDir } = require('../utils/paths');
 const registry = require('../issue-trackers/_registry');
 const { trackerError } = require('../issue-trackers/_contract');
-const { sanitizePerson } = require('../../shared/issue-trackers');
+const {
+  sanitizePerson,
+  sanitizeIssue,
+  sanitizeIssueDetail,
+  sanitizeMetadata,
+  normalizeQuery,
+} = require('../../shared/issue-trackers');
 
 const STORE_FILE = path.join(dataDir, 'issue-trackers.json');
 const STORE_VERSION = 1;
 const KEYCHAIN_SERVICE = 'claude-terminal';
+
+/** Teams, states, people and labels change rarely; filters can live with ten minutes. */
+const METADATA_TTL_MS = 10 * 60 * 1000;
 
 const keychainAccount = (connectionId) => `issue-tracker:${connectionId}`;
 
@@ -65,8 +74,16 @@ function cleanWorkspace(raw) {
  * @param {typeof fetch} deps.fetch
  * @param {() => string} [deps.now]
  */
-function createIssueTrackerService({ storePath, secrets, registry: trackers, fetch, now = () => new Date().toISOString() }) {
+function createIssueTrackerService({
+  storePath,
+  secrets,
+  registry: trackers,
+  fetch,
+  now = () => new Date().toISOString(),
+  clock = () => Date.now(),
+}) {
   const clients = new Map();
+  const metadataCache = new Map();
   let queue = Promise.resolve();
 
   /** Store mutations run one after the other: each is a whole-file read-modify-write. */
@@ -139,6 +156,31 @@ function createIssueTrackerService({ storePath, secrets, registry: trackers, fet
     return { user, workspace };
   }
 
+  function forget(connectionId) {
+    clients.delete(connectionId);
+    metadataCache.delete(connectionId);
+  }
+
+  /** The stored connection and its client, built once and reused. */
+  async function resolve(connectionId) {
+    const store = await readStore();
+    const entry = store.connections.find((c) => c.id === connectionId);
+    if (!entry) throw trackerError('NOT_FOUND', `No connection ${connectionId}`);
+    if (!clients.has(connectionId)) {
+      const secret = await secrets.get(keychainAccount(connectionId));
+      if (!secret) throw trackerError('AUTH', 'No API key is stored for this connection');
+      clients.set(connectionId, providerOf(entry.provider).createClient({ secret, fetch }));
+    }
+    return { entry, client: clients.get(connectionId) };
+  }
+
+  /** Adapter output that had to be fixed is logged once per call, never silently kept. */
+  function report(connectionId, what, problems) {
+    if (problems.length) {
+      console.warn(`[IssueTrackers] ${connectionId} ${what}: ${problems.length} problem(s), first: ${problems[0]}`);
+    }
+  }
+
   return {
     listProviders() {
       return trackers.describe();
@@ -181,7 +223,7 @@ function createIssueTrackerService({ storePath, secrets, registry: trackers, fet
           if (!existing) await secrets.delete(keychainAccount(entry.id)).catch(() => {});
           throw err;
         }
-        clients.delete(entry.id);
+        forget(entry.id);
         return publicConnection(entry);
       });
     },
@@ -194,7 +236,7 @@ function createIssueTrackerService({ storePath, secrets, registry: trackers, fet
           store.connections = remaining;
           await writeStore(store);
         }
-        clients.delete(connectionId);
+        forget(connectionId);
         await secrets.delete(keychainAccount(connectionId)).catch(() => {});
       });
     },
@@ -219,15 +261,41 @@ function createIssueTrackerService({ storePath, secrets, registry: trackers, fet
 
     /** The adapter client for a connection, created once and reused. */
     async client(connectionId) {
-      if (clients.has(connectionId)) return clients.get(connectionId);
-      const store = await readStore();
-      const entry = store.connections.find((c) => c.id === connectionId);
-      if (!entry) throw trackerError('NOT_FOUND', `No connection ${connectionId}`);
-      const secret = await secrets.get(keychainAccount(connectionId));
-      if (!secret) throw trackerError('AUTH', 'No API key is stored for this connection');
-      const client = providerOf(entry.provider).createClient({ secret, fetch });
-      clients.set(connectionId, client);
-      return client;
+      return (await resolve(connectionId)).client;
+    },
+
+    /** What the filter bar and the board need, cached per connection. */
+    async metadata(connectionId, { refresh = false } = {}) {
+      const hit = metadataCache.get(connectionId);
+      if (hit && !refresh && clock() - hit.at < METADATA_TTL_MS) return hit.value;
+      const { client } = await resolve(connectionId);
+      const { metadata, problems } = sanitizeMetadata(await client.metadata());
+      report(connectionId, 'metadata', problems);
+      metadataCache.set(connectionId, { at: clock(), value: metadata });
+      return metadata;
+    },
+
+    /** One page of issues. An issue the sanitiser cannot use is dropped, not shown half-empty. */
+    async listIssues(connectionId, rawQuery, cursor = null) {
+      const { entry, client } = await resolve(connectionId);
+      const page = await client.listIssues(normalizeQuery(rawQuery), typeof cursor === 'string' ? cursor : null);
+      const issues = [];
+      const problems = [];
+      for (const raw of Array.isArray(page?.issues) ? page.issues : []) {
+        const res = sanitizeIssue(raw, entry.provider);
+        if (res.issue) issues.push(res.issue);
+        problems.push(...res.problems);
+      }
+      report(connectionId, 'issues', problems);
+      return { issues, next: typeof page?.next === 'string' ? page.next : null };
+    },
+
+    async getIssue(connectionId, key) {
+      const { entry, client } = await resolve(connectionId);
+      const { issue, problems } = sanitizeIssueDetail(await client.getIssue(String(key || '')), entry.provider);
+      report(connectionId, `issue ${key}`, problems);
+      if (!issue) throw trackerError('PROVIDER', `${entry.provider} returned an unusable issue for ${key}`);
+      return issue;
     },
   };
 }

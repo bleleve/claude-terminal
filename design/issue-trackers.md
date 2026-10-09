@@ -1,6 +1,6 @@
 # Issue trackers: a provider-neutral ticket layer
 
-**Status:** core contract and the Linear adapter shipped; a workspace is connected in Settings → Tickets. The screens land in the PRs listed under *Delivery*.
+**Status:** core contract, Linear adapter and the read-only Tickets screen shipped; a workspace is connected in Settings → Tickets. The rest lands in the PRs listed under *Delivery*.
 **Scope:** `src/shared/issue-trackers.js`, `src/main/issue-trackers/`, and later the Tickets screen and the per-session Tickets and Git tabs.
 **Audience:** anyone writing an adapter for a new provider, and anyone about to change the contract.
 
@@ -100,6 +100,8 @@ Every method is async. Failures reject with an `Error` whose `code` is one of `A
 - **Priority** follows Linear's scale. A provider with no priorities reports `null`, never `0`: "no priority set" and "this tracker has no priorities" are different facts for the filter bar.
 
 A **query** (`normalizeQuery()`) is the only thing an adapter receives: `text`, `mine` (`assigned`, `created`, `subscribed`), `stateCategories`, `stateIds`, `assigneeIds` (with the special values `me` and `none`), `priorities`, `labelIds`, `facets`, `updatedSince`, `sort` and `limit`. Unknown values are dropped rather than rejected, so a saved filter from an older build degrades to "no filter" instead of to an error.
+
+Clauses combine with AND, except `stateCategories` and `stateIds`: together they are the one "Status" filter, and a state matches if its category **or** its id is selected. The filter bar offers whole categories and individual states in a single menu, and "To do, plus In Review" must not come back empty. Adapters only have to honour `sort: 'updated'` and `'created'` on the server; `'priority'` and `'due'` may be applied to the returned page.
 
 ---
 
