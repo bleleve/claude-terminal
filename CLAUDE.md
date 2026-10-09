@@ -22,7 +22,7 @@ npm run build:win        # Windows NSIS installer
 npm run build:mac        # macOS DMG
 npm run build:linux      # Linux AppImage
 npm run publish          # Build and publish Windows installer to update server
-npm test                 # Run Jest tests (jsdom, 221 test files)
+npm test                 # Run Jest tests (jsdom, 222 test files)
 npm run test:watch       # Jest in watch mode
 npm run check:docs       # Fail if CLAUDE.md or the README translations have drifted
 npm run lint             # ESLint over main, renderer, shared, MCP servers and scripts
@@ -647,7 +647,7 @@ Worker); neither is bundled into the desktop app.
 ## Testing
 
 ```bash
-npm test                    # Run all 221 unit test files (jsdom environment)
+npm test                    # Run all 222 unit test files (jsdom environment)
 npm run test:watch          # Watch mode
 npm run check:docs          # Verify this file and the READMEs still match the tree
 npm run lint                # ESLint (see below)
@@ -656,7 +656,7 @@ npm run test:e2e            # Playwright smoke test against the real Electron ap
 
 ### Unit tests (Jest)
 
-- **Framework:** Jest with jsdom, 221 test files
+- **Framework:** Jest with jsdom, 222 test files
 - **Setup:** `tests/setup.js` mocks `window.electron_nodeModules`, `window.electron_api`, `requestAnimationFrame`
 - **Pattern:** `**/tests/**/*.test.js`
 - **Directories:**
@@ -674,7 +674,7 @@ npm run test:e2e            # Playwright smoke test against the real Electron ap
   - `smoke/` - every module parses and loads
   - `state/` - State plus each state module, including the latched save block `timeTracking.state.js` applies to an unreadable `timetracking.json`
   - `ui/` - the Tickets screen against the real service and the Linear fixture (stale answers dropped, search debounced, status sent as every team's state ids, view remembered without the search text) and its pure view module, the Settings → Tickets connection cards (the key leaves the input whatever the answer, network names are escaped), chat account switch, chat limit error, the switch offer's per-account usage and the accounts it greys out (`accountUsage.blockingLimit`), replayed tool output, task widget, tasks drawer, ClaudeRemotePanel, navigation mode, kanban live refresh, toast, the Files viewer's rendered/source/diff modes and its reload button, and the flattened far side of the transcript store (what may be held as markup, that a rebuilt entry keeps its dataset and its delegated handlers, and that a listener bound to the element does not survive, which is the whole reason the rule is an allowlist), the drag-reorder invariant that keeps a tab drag from forcing a layout per pointer move, and the project row's hover card, whose terminal count was a French literal in every language
-  - `utils/` - attachments, color, commit messages, drop paths, file icons, file lock, format, frontmatter, git (including the argv shape of every command built from a path or a tag name), http cache, session search, shell, syntax highlight, tool registry
+  - `utils/` - attachments, the CI pill's choice of run (the current branch's only), color, commit messages, drop paths, file icons, file lock, format, frontmatter, git (including the argv shape of every command built from a path or a tag name), http cache, session search, shell, syntax highlight, tool registry
 
 ### Lint (`eslint.config.js`)
 

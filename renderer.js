@@ -9,6 +9,7 @@ const api = window.electron_api;
 const { path, fs, process: nodeProcess, __dirname } = window.electron_nodeModules;
 const { fileExists, fsp, ensureDirs } = require('./src/renderer/utils/fs-async');
 const { matchesSessionQuery } = require('./src/renderer/utils/sessionSearch');
+const { relevantRun: pickCiRun } = require('./src/renderer/utils/ciRun');
 const { createTerminalTicketsButton } = require('./src/renderer/ui/components/terminal/ticketsButton');
 const { applyNavigationMode, isSidebarNavigation, isProjectsPopoverOpen } = require('./src/renderer/ui/navigationMode');
 
@@ -7340,6 +7341,9 @@ const ciIndicator = {
   currentRemoteUrl: null,
   fastPollInterval: null,
   hideTimeout: null,
+  // Bumped when the project changes: a check still waiting on git or GitHub
+  // for the previous project must not draw its run over the new one.
+  checkSeq: 0,
   _fetchingLogs: false
 };
 
@@ -7416,6 +7420,8 @@ function stopFastCIPoll() {
 async function checkCIStatus() {
   const filterIdx = projectsState.get().selectedProjectFilter;
   if (filterIdx === null || filterIdx === undefined) return;
+  const check = ++ciIndicator.checkSeq;
+  const stale = () => check !== ciIndicator.checkSeq || projectsState.get().selectedProjectFilter !== filterIdx;
 
   const projects = projectsState.get().projects;
   const project = projects[filterIdx];
@@ -7429,6 +7435,7 @@ async function checkCIStatus() {
       api.git.remotes({ projectPath: project.path }),
       api.git.currentBranch({ projectPath: project.path })
     ]);
+    if (stale()) return;
 
     const origin = remotesResult?.success
       ? (remotesResult.remotes || []).find(r => r.name === 'origin')
@@ -7443,14 +7450,13 @@ async function checkCIStatus() {
     ciIndicator.currentRemoteUrl = remoteUrl;
 
     const result = await api.github.workflowRuns(remoteUrl);
+    if (stale()) return;
     if (!result.success || !result.authenticated || !result.runs || result.runs.length === 0) {
       if (ciIndicator.currentRun) hideCIIndicator();
       return;
     }
 
-    const inProgressRun = result.runs.find(r => r.status === 'in_progress' || r.status === 'queued');
-    const branchRun = result.runs.find(r => r.branch === currentBranch);
-    const relevantRun = inProgressRun || branchRun;
+    const relevantRun = pickCiRun(result.runs, currentBranch);
 
     if (!relevantRun) {
       if (ciIndicator.currentRun) hideCIIndicator();
@@ -7461,6 +7467,7 @@ async function checkCIStatus() {
     let jobs = ciIndicator.currentJobs;
     if (relevantRun.status === 'in_progress' || relevantRun.status === 'queued') {
       const jobsResult = await api.github.workflowJobs(remoteUrl, relevantRun.id);
+      if (stale()) return;
       if (jobsResult.success && jobsResult.jobs) {
         jobs = jobsResult.jobs;
       }
@@ -7470,6 +7477,7 @@ async function checkCIStatus() {
       // Fetch jobs once on completion so "Fix it" has job data
       if (relevantRun.status === 'completed' && relevantRun.conclusion === 'failure' && ciIndicator.currentJobs.length === 0) {
         const jobsResult = await api.github.workflowJobs(remoteUrl, relevantRun.id);
+        if (stale()) return;
         if (jobsResult.success && jobsResult.jobs) jobs = jobsResult.jobs;
       }
     }
@@ -7556,6 +7564,7 @@ if (ciIndicator.pill) {
   projectsState.subscribe((state) => {
     if (state.selectedProjectFilter !== lastCIProjectFilter) {
       lastCIProjectFilter = state.selectedProjectFilter;
+      ciIndicator.checkSeq++;
       hideCIIndicator();
       checkCIStatus();
     }
