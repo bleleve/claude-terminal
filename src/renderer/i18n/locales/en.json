@@ -101,6 +101,7 @@
     "sectionPath": "Path",
     "pathMissingTitle": "Path not found on this machine",
     "locatePath": "Locate folder...",
+    "tooltipTerminals": "{working}/{total} terminals",
     "pathUpdated": "Path updated for \"{name}\"",
     "openProject": "Open a project",
     "noOpenProjects": "No project open",

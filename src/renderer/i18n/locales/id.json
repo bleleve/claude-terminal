@@ -101,6 +101,7 @@
     "sectionPath": "Path",
     "pathMissingTitle": "Path tidak ditemukan di perangkat ini",
     "locatePath": "Cari folder...",
+    "tooltipTerminals": "{working}/{total} terminal",
     "pathUpdated": "Path diperbarui untuk \"{name}\"",
     "openProject": "Buka proyek",
     "noOpenProjects": "Tidak ada proyek terbuka",

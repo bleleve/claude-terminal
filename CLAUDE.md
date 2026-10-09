@@ -22,7 +22,7 @@ npm run build:win        # Windows NSIS installer
 npm run build:mac        # macOS DMG
 npm run build:linux      # Linux AppImage
 npm run publish          # Build and publish Windows installer to update server
-npm test                 # Run Jest tests (jsdom, 220 test files)
+npm test                 # Run Jest tests (jsdom, 221 test files)
 npm run test:watch       # Jest in watch mode
 npm run check:docs       # Fail if CLAUDE.md or the README translations have drifted
 npm run lint             # ESLint over main, renderer, shared, MCP servers and scripts
@@ -59,7 +59,7 @@ Electron Renderer Process (Browser)
 ├── src/renderer/workflow-fields/    # 13 custom UI fields for workflow nodes
 ├── src/renderer/workflow-triggers/  # 12 trigger types (definition + configurator)
 ├── src/renderer/viewers/            # PDF viewer + 3D (three.js) viewer
-├── src/renderer/i18n/               # EN/FR/ES/ID/zh-CN locales (3920 keys each)
+├── src/renderer/i18n/               # EN/FR/ES/ID/zh-CN locales (3921 keys each)
 └── src/renderer/utils/              # DOM, color, format, paths, icons, syntax highlighting
 
 Project Types (Plugin System)
@@ -376,7 +376,7 @@ The dashboard has three sub-views, switched by `_dashViews` and rendered from `D
 ### Internationalization (`src/renderer/i18n/locales/`)
 
 - **Languages:** French (default), English (fallback), Spanish, Indonesian, Simplified Chinese (`fr.json`, `en.json`, `es.json`, `id.json`, `zh-CN.json`)
-- **Keys:** 3920 per locale, all five in exact sync (enforced by `tests/i18n/i18n-coherence.test.js`)
+- **Keys:** 3921 per locale, all five in exact sync (enforced by `tests/i18n/i18n-coherence.test.js`)
 - **Loading:** only `en.json` is bundled eagerly, as the guaranteed-loaded fallback for `t()`; the others are fetched by `initI18n()`
 - **Detection:** auto-detect from `navigator.language`, `DEFAULT_LANGUAGE` is `fr`
 - **Usage:** `t('projects.openFolder')`, `t('key', { count: 5 })`, `data-i18n="..."` for static HTML
@@ -647,7 +647,7 @@ Worker); neither is bundled into the desktop app.
 ## Testing
 
 ```bash
-npm test                    # Run all 220 unit test files (jsdom environment)
+npm test                    # Run all 221 unit test files (jsdom environment)
 npm run test:watch          # Watch mode
 npm run check:docs          # Verify this file and the READMEs still match the tree
 npm run lint                # ESLint (see below)
@@ -656,7 +656,7 @@ npm run test:e2e            # Playwright smoke test against the real Electron ap
 
 ### Unit tests (Jest)
 
-- **Framework:** Jest with jsdom, 220 test files
+- **Framework:** Jest with jsdom, 221 test files
 - **Setup:** `tests/setup.js` mocks `window.electron_nodeModules`, `window.electron_api`, `requestAnimationFrame`
 - **Pattern:** `**/tests/**/*.test.js`
 - **Directories:**
@@ -673,7 +673,7 @@ npm run test:e2e            # Playwright smoke test against the real Electron ap
   - `shared/` - context usage, cron, issue trackers (the sanitisers between adapter output and the DOM), model options, permission modes, simple-task
   - `smoke/` - every module parses and loads
   - `state/` - State plus each state module, including the latched save block `timeTracking.state.js` applies to an unreadable `timetracking.json`
-  - `ui/` - the Tickets screen against the real service and the Linear fixture (stale answers dropped, search debounced, status sent as every team's state ids, view remembered without the search text) and its pure view module, the Settings → Tickets connection cards (the key leaves the input whatever the answer, network names are escaped), chat account switch, chat limit error, the switch offer's per-account usage and the accounts it greys out (`accountUsage.blockingLimit`), replayed tool output, task widget, tasks drawer, ClaudeRemotePanel, navigation mode, kanban live refresh, toast, the Files viewer's rendered/source/diff modes and its reload button, and the flattened far side of the transcript store (what may be held as markup, that a rebuilt entry keeps its dataset and its delegated handlers, and that a listener bound to the element does not survive, which is the whole reason the rule is an allowlist), the drag-reorder invariant that keeps a tab drag from forcing a layout per pointer move
+  - `ui/` - the Tickets screen against the real service and the Linear fixture (stale answers dropped, search debounced, status sent as every team's state ids, view remembered without the search text) and its pure view module, the Settings → Tickets connection cards (the key leaves the input whatever the answer, network names are escaped), chat account switch, chat limit error, the switch offer's per-account usage and the accounts it greys out (`accountUsage.blockingLimit`), replayed tool output, task widget, tasks drawer, ClaudeRemotePanel, navigation mode, kanban live refresh, toast, the Files viewer's rendered/source/diff modes and its reload button, and the flattened far side of the transcript store (what may be held as markup, that a rebuilt entry keeps its dataset and its delegated handlers, and that a listener bound to the element does not survive, which is the whole reason the rule is an allowlist), the drag-reorder invariant that keeps a tab drag from forcing a layout per pointer move, and the project row's hover card, whose terminal count was a French literal in every language
   - `utils/` - attachments, color, commit messages, drop paths, file icons, file lock, format, frontmatter, git (including the argv shape of every command built from a path or a tag name), http cache, session search, shell, syntax highlight, tool registry
 
 ### Lint (`eslint.config.js`)

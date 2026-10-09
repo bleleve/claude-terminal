@@ -101,6 +101,7 @@
     "sectionPath": "Chemin",
     "pathMissingTitle": "Chemin introuvable sur cette machine",
     "locatePath": "Localiser le dossier...",
+    "tooltipTerminals": "{working}/{total} terminaux",
     "pathUpdated": "Chemin mis à jour pour \"{name}\"",
     "openProject": "Ouvrir un projet",
     "noOpenProjects": "Aucun projet ouvert",
