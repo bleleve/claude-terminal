@@ -9,6 +9,7 @@ const { generateCommitMessage, generateMultiCommitMessages, generateSessionRecap
 const operations = require('../utils/cancellableOperation');
 const { generatePrDescription } = require('../utils/prDescriptionGenerator');
 const GitHubAuthService = require('../services/GitHubAuthService');
+const SessionGitService = require('../services/SessionGitService');
 const { sendFeaturePing } = require('../services/TelemetryService');
 
 // Input validators
@@ -100,6 +101,15 @@ function registerGitHandlers() {
   });
 
   // Get current branch
+  // Everything the chat's Git tab shows, in one read-only call
+  ipcMain.handle('git-session-summary', async (event, { projectPath }) => {
+    try {
+      return await SessionGitService.summary(projectPath);
+    } catch (err) {
+      return { isRepo: false, error: err.message };
+    }
+  });
+
   ipcMain.handle('git-current-branch', async (event, { projectPath }) => {
     try {
       return await getCurrentBranch(projectPath);

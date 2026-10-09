@@ -481,6 +481,52 @@ async function getPullRequests(owner, repo, perPage = 5, page = 1, state = 'all'
 }
 
 /**
+ * The pull requests whose head is `headOwner:branch`, newest first. The head
+ * owner matters: a branch pushed to a fork and proposed upstream lives under
+ * the fork's owner, not the repository's.
+ * @returns {Promise<{authenticated: boolean, pullRequests: Array, error?: string}>}
+ */
+async function getPullRequestsForBranch(owner, repo, headOwner, branch) {
+  const token = await getToken();
+  if (!token) return { authenticated: false, pullRequests: [] };
+
+  try {
+    const head = encodeURIComponent(`${headOwner}:${branch}`);
+    const response = await httpsRequest({
+      hostname: config.apiHostname,
+      path: `/repos/${owner}/${repo}/pulls?head=${head}&state=all&per_page=5&sort=updated&direction=desc`,
+      method: 'GET',
+      headers: {
+        'Accept': 'application/vnd.github.v3+json',
+        'Authorization': `Bearer ${token}`,
+        'User-Agent': 'Claude-Terminal'
+      },
+      etagKey: `pulls-head:${owner}/${repo}/${headOwner}:${branch}`
+    });
+
+    if (response.status === 200) {
+      const pullRequests = (response.data || []).map(pr => ({
+        number: pr.number,
+        title: pr.title,
+        state: pr.merged_at ? 'merged' : pr.state,
+        draft: pr.draft || false,
+        url: pr.html_url,
+        headSha: pr.head?.sha || null,
+        headRef: pr.head?.ref || null,
+        baseRef: pr.base?.ref || null,
+        updatedAt: pr.updated_at
+      }));
+      return { authenticated: true, pullRequests };
+    }
+    if (response.status === 404) return { authenticated: true, pullRequests: [], notFound: true };
+    return { authenticated: true, pullRequests: [], error: `API error: ${response.status}` };
+  } catch (e) {
+    console.error('Error fetching pull requests for a branch:', e);
+    return { authenticated: true, pullRequests: [], error: e.message };
+  }
+}
+
+/**
  * Create a pull request
  * @param {string} owner - Repository owner
  * @param {string} repo - Repository name
@@ -1066,6 +1112,7 @@ module.exports = {
   getWorkflowJobs,
   getJobLogs,
   getPullRequests,
+  getPullRequestsForBranch,
   createPullRequest,
   parseGitHubRemote,
   getCheckRuns,
