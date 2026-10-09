@@ -22,7 +22,7 @@ npm run build:win        # Windows NSIS installer
 npm run build:mac        # macOS DMG
 npm run build:linux      # Linux AppImage
 npm run publish          # Build and publish Windows installer to update server
-npm test                 # Run Jest tests (jsdom, 205 test files)
+npm test                 # Run Jest tests (jsdom, 208 test files)
 npm run test:watch       # Jest in watch mode
 npm run check:docs       # Fail if CLAUDE.md or the README translations have drifted
 npm run lint             # ESLint over main, renderer, shared, MCP servers and scripts
@@ -43,6 +43,7 @@ Electron Main Process (Node.js)
 ├── src/main/services/               # 36 services
 ├── src/main/windows/                # 5 window managers
 ├── src/main/utils/                  # 23 utilities
+├── src/main/issue-trackers/         # Ticket provider adapters (*.tracker.js) + contract
 └── src/main/workflow-nodes/         # 31 workflow node types (*.node.js)
 
 Electron Renderer Process (Browser)
@@ -65,7 +66,7 @@ Project Types (Plugin System)
 └── src/project-types/               # general, api, fivem, minecraft, python, webapp, discord
 
 Shared code
-└── src/shared/                      # 18 modules shared between main, renderer and the MCP server
+└── src/shared/                      # 19 modules shared between main, renderer and the MCP server
 
 Styles
 └── styles/                          # 30 modular CSS files (~57,000 lines total)
@@ -204,6 +205,12 @@ Remote UI (PWA for mobile)
 Each node exports a schema + `execute(inputs, context)` and is auto-registered by `_registry.js`. `_projects.js` is a shared helper, not a node.
 
 > There is **no** `src/main/workflow-triggers/`. Trigger definitions live entirely on the renderer side, in `src/renderer/workflow-triggers/` - the main process only needs the trigger *type* string, which `WorkflowScheduler` dispatches on.
+
+### Issue Trackers (`src/main/issue-trackers/`)
+
+Provider-neutral ticket layer behind the Tickets screen and the per-session Tickets tab. A provider (Linear first, Jira or GitHub Issues later) is **one adapter file**, `<id>.tracker.js`, auto-registered by `_registry.js`; `_contract.js` states and checks what it must export. Whatever an adapter returns goes through the sanitisers in `src/shared/issue-trackers.js` (normalised issue, state categories, priority scale, query shape) before anything else sees it, because it is untrusted text on its way to `style` and `href` attributes.
+
+Adapters are repository code, never loaded at runtime, for the reason `design/project-type-extensions.md` gives. Every adapter must pass `tests/issue-trackers/contract.test.js` with its own network fixture; `tests/issue-trackers/fake.tracker.js` is a complete adapter kept deliberately unlike Linear so the core cannot quietly assume Linear. The contract, the decisions and the delivery plan are in **`design/issue-trackers.md`**.
 
 ## Renderer Process (`src/renderer/`)
 
@@ -629,7 +636,7 @@ Worker); neither is bundled into the desktop app.
 ## Testing
 
 ```bash
-npm test                    # Run all 205 unit test files (jsdom environment)
+npm test                    # Run all 208 unit test files (jsdom environment)
 npm run test:watch          # Watch mode
 npm run check:docs          # Verify this file and the READMEs still match the tree
 npm run lint                # ESLint (see below)
@@ -638,7 +645,7 @@ npm run test:e2e            # Playwright smoke test against the real Electron ap
 
 ### Unit tests (Jest)
 
-- **Framework:** Jest with jsdom, 205 test files
+- **Framework:** Jest with jsdom, 208 test files
 - **Setup:** `tests/setup.js` mocks `window.electron_nodeModules`, `window.electron_api`, `requestAnimationFrame`
 - **Pattern:** `**/tests/**/*.test.js`
 - **Directories:**
@@ -647,11 +654,12 @@ npm run test:e2e            # Playwright smoke test against the real Electron ap
   - `features/` - shortcuts, control tower grid, files dock, setup wizard, tab focus, ui_navigate, and the account binding + project attribution every `terminal.create` call has to send
   - `i18n/` - i18n, coherence across the 5 locales, unused/missing key usage
   - `integration/` - state persistence
+  - `issue-trackers/` - adapter discovery and the contract suite every ticket provider adapter must pass, run against a fake tracker deliberately unlike Linear
   - `ipc/` - accounts usage, claude, hooks, project, usage, workflow save, and the external-editor launch (the macOS bundle fallback, and the failure that has to come back as `success: false` rather than as a console line)
   - `remote-ui/` - hierarchy
   - `security/` - security tests, including the renderer fs allowlist enforced in the main process (`rendererSecurity.permitted`)
   - `services/` - ChatService, AccountManager, ArtifactService, OrphanReaper, DatabaseService, DashboardService, DiffRenderer, HooksService, KnowledgeService, MarkdownRenderer, ModelCatalogService, RemoteServer, RemoteControlService, UsageService, VoiceService, WorkflowRunner, the workflow engine suite, the lazy `xtermLoader`, the lazy project-type registry, the `~/.claude.json` merge in `McpService.saveMcps`, the plugin-manifest guard in `PluginService.installPlugin`, the silent-install arguments in `UpdaterService.quitAndInstall`, the mermaid failure containment in `postProcess` (`suppressErrorRendering` plus the temp-element cleanup, neither of which shows until a diagram fails), the corruption guards shared by `MarketplaceService`, `WorkspaceService` and `KnowledgeService`, and the em dash ban in `BuiltinSystemPrompts` (present on every path, and obeyed by the prompt text itself)
-  - `shared/` - context usage, cron, model options, permission modes, simple-task
+  - `shared/` - context usage, cron, issue trackers (the sanitisers between adapter output and the DOM), model options, permission modes, simple-task
   - `smoke/` - every module parses and loads
   - `state/` - State plus each state module, including the latched save block `timeTracking.state.js` applies to an unreadable `timetracking.json`
   - `ui/` - chat account switch, chat limit error, the switch offer's per-account usage and the accounts it greys out (`accountUsage.blockingLimit`), replayed tool output, task widget, tasks drawer, ClaudeRemotePanel, navigation mode, kanban live refresh, toast, the Files viewer's rendered/source/diff modes and its reload button, and the flattened far side of the transcript store (what may be held as markup, that a rebuilt entry keeps its dataset and its delegated handlers, and that a listener bound to the element does not survive, which is the whole reason the rule is an allowlist), the drag-reorder invariant that keeps a tab drag from forcing a layout per pointer move
