@@ -663,6 +663,17 @@ contextBridge.exposeInMainWorld('electron_api', {
     getStats: (config) => ipcRenderer.invoke('time:get-stats', config),
   },
 
+  // ==================== ISSUE TRACKERS ====================
+  // Ticket providers (Linear, ...). A key crosses the bridge once, into
+  // `connect`; nothing on this side ever receives one back, only a masked form.
+  issueTrackers: {
+    providers: () => ipcRenderer.invoke('issue-trackers:providers'),
+    connections: () => ipcRenderer.invoke('issue-trackers:connections'),
+    connect: (provider, secret) => ipcRenderer.invoke('issue-trackers:connect', provider, secret),
+    disconnect: (connectionId) => ipcRenderer.invoke('issue-trackers:disconnect', connectionId),
+    test: (connectionId) => ipcRenderer.invoke('issue-trackers:test', connectionId),
+  },
+
   // ==================== VOICE ====================
   // The renderer captures the microphone and sends raw PCM16 @ 16 kHz. The Groq
   // key stays in main and in the OS credential store: nothing here ever returns

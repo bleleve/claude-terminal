@@ -1,6 +1,6 @@
 # Issue trackers: a provider-neutral ticket layer
 
-**Status:** core contract shipped. Linear is the first adapter; the UI lands in the PRs listed under *Delivery*.
+**Status:** core contract and the Linear adapter shipped; a workspace is connected in Settings → Tickets. The screens land in the PRs listed under *Delivery*.
 **Scope:** `src/shared/issue-trackers.js`, `src/main/issue-trackers/`, and later the Tickets screen and the per-session Tickets and Git tabs.
 **Audience:** anyone writing an adapter for a new provider, and anyone about to change the contract.
 

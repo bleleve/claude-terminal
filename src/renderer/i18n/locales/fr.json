@@ -869,6 +869,30 @@
     "unitMinuteShort": "min",
     "daysAgo": "il y a {count}j"
   },
+  "tickets": {
+    "settings": {
+      "title": "Suivi de tickets",
+      "intro": "Connectez un outil de tickets pour parcourir ses tickets ici et les lier à vos sessions. La clé est conservée dans le trousseau de votre système et n'est envoyée qu'à cet outil.",
+      "keyPlaceholder": "Clé API personnelle {provider}",
+      "connect": "Connecter",
+      "connectAnother": "Connecter un autre workspace",
+      "checking": "Vérification de la clé…",
+      "connected": "Connecté à {workspace}.",
+      "connectedAs": "{user} · clé {key}",
+      "test": "Tester",
+      "testOk": "La clé fonctionne.",
+      "disconnect": "Déconnecter",
+      "helpLink": "Créer une clé API personnelle dans {provider}",
+      "unavailable": "N'est plus pris en charge par cette version",
+      "noProviders": "Aucun outil de tickets n'est disponible dans cette version.",
+      "loadFailed": "Impossible de lire les connexions : {message}",
+      "errorAuth": "La clé a été refusée. Vérifiez qu’elle est complète et toujours active.",
+      "errorRateLimited": "Trop de requêtes pour le moment. Réessayez dans une minute.",
+      "errorNetwork": "Impossible de joindre {provider}. Vérifiez votre connexion.",
+      "errorNotFound": "Cette connexion n'existe plus.",
+      "errorProvider": "{provider} a renvoyé une erreur : {message}"
+    }
+  },
   "settings": {
     "title": "Paramètres",
     "saved": "Paramètres enregistrés",
@@ -907,6 +931,7 @@
     "tabGeneral": "Général",
     "tabClaude": "Claude",
     "tabGitHub": "GitHub",
+    "tabTickets": "Tickets",
     "tabThemes": "Thèmes",
     "tabShortcuts": "Raccourcis",
     "tabLibrary": "Bibliothèque",

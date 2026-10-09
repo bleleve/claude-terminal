@@ -771,6 +771,30 @@
     "unitMinuteShort": "min",
     "daysAgo": "hace {count}d"
   },
+  "tickets": {
+    "settings": {
+      "title": "Gestores de tickets",
+      "intro": "Conecta un gestor de tickets para ver sus tickets aquí y vincularlos a tus sesiones. La clave se guarda en el almacén de credenciales del sistema y solo se envía a ese gestor.",
+      "keyPlaceholder": "Clave API personal de {provider}",
+      "connect": "Conectar",
+      "connectAnother": "Conectar otro workspace",
+      "checking": "Comprobando la clave…",
+      "connected": "Conectado a {workspace}.",
+      "connectedAs": "{user} · clave {key}",
+      "test": "Probar",
+      "testOk": "La clave funciona.",
+      "disconnect": "Desconectar",
+      "helpLink": "Crear una clave API personal en {provider}",
+      "unavailable": "Ya no es compatible con esta versión",
+      "noProviders": "No hay ningún gestor de tickets disponible en esta versión.",
+      "loadFailed": "No se pudieron leer las conexiones: {message}",
+      "errorAuth": "La clave fue rechazada. Comprueba que esté completa y siga activa.",
+      "errorRateLimited": "Demasiadas solicitudes por ahora. Inténtalo de nuevo en un minuto.",
+      "errorNetwork": "No se pudo contactar con {provider}. Comprueba tu conexión.",
+      "errorNotFound": "Esta conexión ya no existe.",
+      "errorProvider": "{provider} devolvió un error: {message}"
+    }
+  },
   "settings": {
     "title": "Ajustes",
     "saved": "Ajustes guardados",
@@ -809,6 +833,7 @@
     "tabGeneral": "General",
     "tabClaude": "Claude",
     "tabGitHub": "GitHub",
+    "tabTickets": "Tickets",
     "tabThemes": "Temas",
     "tabShortcuts": "Atajos",
     "tabLibrary": "Biblioteca",

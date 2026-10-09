@@ -22,7 +22,7 @@ npm run build:win        # Windows NSIS installer
 npm run build:mac        # macOS DMG
 npm run build:linux      # Linux AppImage
 npm run publish          # Build and publish Windows installer to update server
-npm test                 # Run Jest tests (jsdom, 208 test files)
+npm test                 # Run Jest tests (jsdom, 211 test files)
 npm run test:watch       # Jest in watch mode
 npm run check:docs       # Fail if CLAUDE.md or the README translations have drifted
 npm run lint             # ESLint over main, renderer, shared, MCP servers and scripts
@@ -39,8 +39,8 @@ Electron Main Process (Node.js)
 ├── main.js                          # Bootstrap, lifecycle, single-instance lock, global shortcuts
 ├── src/main/preload.js              # IPC bridge (window.electron_api)
 ├── src/main/preload-quickpicker.js  # Preload for Quick Picker window
-├── src/main/ipc/                    # 36 IPC files, 329 handlers total
-├── src/main/services/               # 36 services
+├── src/main/ipc/                    # 37 IPC files, 334 handlers total
+├── src/main/services/               # 37 services
 ├── src/main/windows/                # 5 window managers
 ├── src/main/utils/                  # 23 utilities
 ├── src/main/issue-trackers/         # Ticket provider adapters (*.tracker.js) + contract
@@ -52,14 +52,14 @@ Electron Renderer Process (Browser)
 ├── src/renderer/core/               # DI container, BaseService/Component/Panel, ApiProvider
 ├── src/renderer/state/              # 15 observable state modules
 ├── src/renderer/services/           # 29 services + modular markdown renderer + mention sources
-├── src/renderer/ui/components/      # 21 UI components
+├── src/renderer/ui/components/      # 22 UI components
 ├── src/renderer/ui/panels/          # 25 UI panels
 ├── src/renderer/features/           # Keyboard shortcuts, quick picker, drag-drop
 ├── src/renderer/events/             # Claude event bus (hook + scraping providers)
 ├── src/renderer/workflow-fields/    # 13 custom UI fields for workflow nodes
 ├── src/renderer/workflow-triggers/  # 12 trigger types (definition + configurator)
 ├── src/renderer/viewers/            # PDF viewer + 3D (three.js) viewer
-├── src/renderer/i18n/               # EN/FR/ES/ID/zh-CN locales (3730 keys each)
+├── src/renderer/i18n/               # EN/FR/ES/ID/zh-CN locales (3751 keys each)
 └── src/renderer/utils/              # DOM, color, format, paths, icons, syntax highlighting
 
 Project Types (Plugin System)
@@ -106,6 +106,7 @@ Remote UI (PWA for mobile)
 | `marketplace.ipc.js` | 7 | Skills search/featured/readme/install/uninstall from `skills.sh` |
 | `claude.ipc.js` | 8 | Session listing, conversation history (tail-first read), full tool output, move session, Control Tower agent supervision |
 | `voice.ipc.js` | 6 | Groq transcription, API key in the OS credential store, model selection |
+| `issue-trackers.ipc.js` | 5 | Ticket tracker providers and connections: connect with a personal API key, test, disconnect. Keys go in, only masked forms come out |
 | `remote-control.ipc.js` | 6 | Claude Remote Control (claude.ai bridge): status, enable/disable per session |
 | `errorLog.ipc.js` | 6 | Error log entries, stats, patterns, export, clear |
 | `usage.ipc.js` | 5 | Claude usage data (OAuth API primary, PTY `/usage` fallback), monitor |
@@ -125,7 +126,7 @@ Remote UI (PWA for mobile)
 | `cloud-shared.js` | - | Helpers shared by the three cloud IPC files |
 | `index.js` | - | Orchestrator - registers all handlers |
 
-**Total: 329 IPC handlers across 36 files.**
+**Total: 334 IPC handlers across 37 files.**
 
 ### Services (`src/main/services/`)
 
@@ -135,6 +136,7 @@ Remote UI (PWA for mobile)
 | `ArtifactService.js` | Main-process facade over `src/shared/artifact-store.js` (shared verbatim with the MCP server process). Adds the two things only main can do: broadcast `artifacts-changed` to every window, and poll for out-of-process writes from the MCP tools |
 | `ModelCatalogService.js` | Builds the chat picker's two-tier model catalog: `primary` from whatever the CLI advertises (`initializationResult().models`) minus its `default` alias, `legacy` from the hand-curated list minus anything primary already covers, plus the CLI rows a newer version of their family supersedes (`splitSuperseded`): the published catalog the CLI can serve instead of its compiled list appends every older model after the current lineup, with no field to tell them apart. Follows CLI upgrades on its own, which is the point - hard-coded lists went stale the day Fable 5.1 shipped. The disk cache is keyed on the SDK binary's version as well as its age, because the model list is compiled into that binary: after an update a young cache still describes the previous CLI. A refresh that changes the catalog is pushed to every window (`onChange`) |
 | `VoiceService.js` | Speech-to-text. The renderer captures the mic and hands over raw PCM; anything needing a secret or the network happens here. Groq is the only backend for now (a local Whisper burns CPU exactly when the user is gaming and is worse in French). The API key lives in the OS credential store, never in settings.json, and is never sent to the renderer |
+| `IssueTrackerService.js` | Ticket tracker connections. A connection is an adapter from `src/main/issue-trackers/` plus a personal API key; the key goes to the OS credential store (one keychain account per connection) and `issue-trackers.json` keeps the workspace and user, never the key. A key is checked with the provider (`whoAmI`) before anything is stored, reconnecting a workspace replaces its key rather than adding a twin, and an unreadable store is refused, not reset |
 | `ErrorLogService.js` | Centralized error collection, classification and pattern detection. Captures IPC/service errors, uncaught exceptions/rejections, and every `console.error`/`console.warn` from main. `console.error` maps to `warning`, not `critical`: main has ~208 console.error sites and most are caught-and-degraded paths, so `critical` stays reserved for uncaught failures |
 | `TerminalOutputCapture.js` | Writes a rolling tail of each project's terminal output to `~/.claude-terminal/terminals/output/<projectId>.log`. That path was already read by the MCP `terminal_read_output` tool and the `terminal` workflow node, but nothing wrote it - this is the missing writer. Buffered and flushed on a timer, capped and trimmed from the head |
 | `DiscordRpcService.js` | Discord Rich Presence, VSCode-style. Zero-dependency implementation of the Discord IPC protocol over the local client socket (named pipe on Windows, unix socket elsewhere). Only the public application Client ID is needed; nothing leaves the device |
@@ -208,9 +210,11 @@ Each node exports a schema + `execute(inputs, context)` and is auto-registered b
 
 ### Issue Trackers (`src/main/issue-trackers/`)
 
-Provider-neutral ticket layer behind the Tickets screen and the per-session Tickets tab. A provider (Linear first, Jira or GitHub Issues later) is **one adapter file**, `<id>.tracker.js`, auto-registered by `_registry.js`; `_contract.js` states and checks what it must export. Whatever an adapter returns goes through the sanitisers in `src/shared/issue-trackers.js` (normalised issue, state categories, priority scale, query shape) before anything else sees it, because it is untrusted text on its way to `style` and `href` attributes.
+Provider-neutral ticket layer behind the Tickets screen and the per-session Tickets tab. A provider is **one adapter file**, `<id>.tracker.js`, auto-registered by `_registry.js`; `_contract.js` states and checks what it must export. Whatever an adapter returns goes through the sanitisers in `src/shared/issue-trackers.js` (normalised issue, state categories, priority scale, query shape) before anything else sees it, because it is untrusted text on its way to `style` and `href` attributes.
 
 Adapters are repository code, never loaded at runtime, for the reason `design/project-type-extensions.md` gives. Every adapter must pass `tests/issue-trackers/contract.test.js` with its own network fixture; `tests/issue-trackers/fake.tracker.js` is a complete adapter kept deliberately unlike Linear so the core cannot quietly assume Linear. The contract, the decisions and the delivery plan are in **`design/issue-trackers.md`**.
+
+`linear.tracker.js` is the one adapter shipped: Linear's GraphQL API with a personal key, sent bare in `Authorization` as Linear expects. Its `issues(sort:)` argument is marked internal, so only `createdAt`/`updatedAt` are ordered by the server and the `priority`/`due` sorts apply to the returned page. Its fixture (`tests/issue-trackers/fixtures/linear.fixture.js`) is a fake endpoint over an invented workspace that *evaluates* the `IssueFilter` it receives and errors on a clause it does not know, so the filter tests check which issues come back rather than the shape of the filter. Connections are managed by `IssueTrackerService` and set up in Settings → Tickets (`ticketsSettings`).
 
 ## Renderer Process (`src/renderer/`)
 
@@ -291,7 +295,7 @@ Base class `State.js`: observable, `subscribe()`, batched notifications via `req
 
 ### UI Components (`src/renderer/ui/components/`)
 
-`ProjectList`, `ProjectBar`, `TerminalManager`, `ChatView`, `FileExplorer`, `FileViewer`, `Modal`, `CustomizePicker`, `QuickActions`, `ContextMenu`, `Tab`, `Toast`, `ClaudeMdSuggestionModal`, `AccountMenu`, `AccountSwitchModal`, `TranscriptPruner`, `WhatsNew`, `usageChip`, `accountUsage`.
+`ProjectList`, `ProjectBar`, `TerminalManager`, `ChatView`, `FileExplorer`, `FileViewer`, `Modal`, `CustomizePicker`, `QuickActions`, `ContextMenu`, `Tab`, `Toast`, `ClaudeMdSuggestionModal`, `AccountMenu`, `AccountSwitchModal`, `TranscriptPruner`, `WhatsNew`, `usageChip`, `accountUsage`, `ticketsSettings`.
 
 > `ChatView.js` is 8,641 lines, `renderer.js` 7,654 and `TerminalManager.js` 4,539 - still the three largest files in the repo, ~20,800 lines between them, and still past the point where they should be split. Splitting is underway and has its own conventions, below. Prefer adding new chat behaviour as a sibling module over growing `ChatView.js` further.
 
@@ -368,7 +372,7 @@ The dashboard has three sub-views, switched by `_dashViews` and rendered from `D
 ### Internationalization (`src/renderer/i18n/locales/`)
 
 - **Languages:** French (default), English (fallback), Spanish, Indonesian, Simplified Chinese (`fr.json`, `en.json`, `es.json`, `id.json`, `zh-CN.json`)
-- **Keys:** 3730 per locale, all five in exact sync (enforced by `tests/i18n/i18n-coherence.test.js`)
+- **Keys:** 3751 per locale, all five in exact sync (enforced by `tests/i18n/i18n-coherence.test.js`)
 - **Loading:** only `en.json` is bundled eagerly, as the guaranteed-loaded fallback for `t()`; the others are fetched by `initI18n()`
 - **Detection:** auto-detect from `navigator.language`, `DEFAULT_LANGUAGE` is `fr`
 - **Usage:** `t('projects.openFolder')`, `t('key', { count: 5 })`, `data-i18n="..."` for static HTML
@@ -506,7 +510,7 @@ system**: no light mode, no `prefers-color-scheme`, no `data-theme`. `--accent` 
 
 Exposes API namespaces on `window.electron_api`:
 
-`terminal` | `git` (69 methods) | `github` | `chat` | `claude` | `accounts` | `mcp` | `mcpRegistry` | `mcpTerminal` | `mcpTab` | `marketplace` | `plugins` | `dialog` | `explorer` | `window` | `app` | `notification` | `usage` | `project` | `hooks` | `updates` | `setupWizard` | `lifecycle` | `quickPicker` | `tray` | `fivem` | `webapp` | `api` | `python` | `minecraft` | `discord` | `discordRpc` | `remote` | `remoteControl` | `workspace` | `workflow` | `parallel` | `database` | `time` | `telemetry` | `cloud` | `knowledge` | `artifacts` | `chrome` | `errorLog` | `voice` | `preview` | `controlTower` | `projectTypes`
+`terminal` | `git` (69 methods) | `github` | `chat` | `claude` | `accounts` | `mcp` | `mcpRegistry` | `mcpTerminal` | `mcpTab` | `marketplace` | `plugins` | `dialog` | `explorer` | `window` | `app` | `notification` | `usage` | `project` | `hooks` | `updates` | `setupWizard` | `lifecycle` | `quickPicker` | `tray` | `fivem` | `webapp` | `api` | `python` | `minecraft` | `discord` | `discordRpc` | `remote` | `remoteControl` | `workspace` | `workflow` | `parallel` | `database` | `time` | `telemetry` | `cloud` | `knowledge` | `artifacts` | `chrome` | `errorLog` | `voice` | `issueTrackers` | `preview` | `controlTower` | `projectTypes`
 
 Also exposes `window.electron_nodeModules`: `path`, `fs` (sync + promises, guarded by a system-path blocklist in `preload.js`), `os.homedir()`, a small allowlist of `process.env` vars, and `__dirname`.
 
@@ -526,6 +530,7 @@ Also exposes `window.electron_nodeModules`: `path`, `fs` (sync + promises, guard
 │   ├── index.json                     # Global knowledge entry metadata
 │   └── entries/<slug>.md              # One markdown file per entry
 ├── session-pins.json                  # Pinned sessions
+├── issue-trackers.json                # Ticket tracker connections (workspace, user; never the key)
 ├── parallel-runs.json                 # Parallel task run history
 ├── accounts/                          # Snapshots of the CLI credential store, one per named account
 ├── artifacts/
@@ -550,7 +555,7 @@ Also exposes `window.electron_nodeModules`: `path`, `fs` (sync + promises, guard
 ├── projects/{encoded-path}/           # Session data per project (.jsonl + index)
 └── plugins/                           # Installed plugins + marketplaces
 
-OS credential store (via keytar)       # GitHub token, Groq API key
+OS credential store (via keytar)       # GitHub token, Groq API key, ticket tracker API keys
                                        # (Windows Credential Manager / macOS Keychain / Linux libsecret)
 ```
 
@@ -636,7 +641,7 @@ Worker); neither is bundled into the desktop app.
 ## Testing
 
 ```bash
-npm test                    # Run all 208 unit test files (jsdom environment)
+npm test                    # Run all 211 unit test files (jsdom environment)
 npm run test:watch          # Watch mode
 npm run check:docs          # Verify this file and the READMEs still match the tree
 npm run lint                # ESLint (see below)
@@ -645,7 +650,7 @@ npm run test:e2e            # Playwright smoke test against the real Electron ap
 
 ### Unit tests (Jest)
 
-- **Framework:** Jest with jsdom, 208 test files
+- **Framework:** Jest with jsdom, 211 test files
 - **Setup:** `tests/setup.js` mocks `window.electron_nodeModules`, `window.electron_api`, `requestAnimationFrame`
 - **Pattern:** `**/tests/**/*.test.js`
 - **Directories:**
@@ -654,15 +659,15 @@ npm run test:e2e            # Playwright smoke test against the real Electron ap
   - `features/` - shortcuts, control tower grid, files dock, setup wizard, tab focus, ui_navigate, and the account binding + project attribution every `terminal.create` call has to send
   - `i18n/` - i18n, coherence across the 5 locales, unused/missing key usage
   - `integration/` - state persistence
-  - `issue-trackers/` - adapter discovery and the contract suite every ticket provider adapter must pass, run against a fake tracker deliberately unlike Linear
+  - `issue-trackers/` - adapter discovery and the contract suite every ticket provider adapter must pass, run against a fake tracker deliberately unlike Linear; the Linear adapter's filter translation (end to end, against a fixture that evaluates the filter), error mapping and MCP tool-call detection
   - `ipc/` - accounts usage, claude, hooks, project, usage, workflow save, and the external-editor launch (the macOS bundle fallback, and the failure that has to come back as `success: false` rather than as a console line)
   - `remote-ui/` - hierarchy
   - `security/` - security tests, including the renderer fs allowlist enforced in the main process (`rendererSecurity.permitted`)
-  - `services/` - ChatService, AccountManager, ArtifactService, OrphanReaper, DatabaseService, DashboardService, DiffRenderer, HooksService, KnowledgeService, MarkdownRenderer, ModelCatalogService, RemoteServer, RemoteControlService, UsageService, VoiceService, WorkflowRunner, the workflow engine suite, the lazy `xtermLoader`, the lazy project-type registry, the `~/.claude.json` merge in `McpService.saveMcps`, the plugin-manifest guard in `PluginService.installPlugin`, the silent-install arguments in `UpdaterService.quitAndInstall`, the mermaid failure containment in `postProcess` (`suppressErrorRendering` plus the temp-element cleanup, neither of which shows until a diagram fails), the corruption guards shared by `MarketplaceService`, `WorkspaceService` and `KnowledgeService`, and the em dash ban in `BuiltinSystemPrompts` (present on every path, and obeyed by the prompt text itself)
+  - `services/` - ChatService, AccountManager, IssueTrackerService (where a ticket tracker key may go: the credential store, never the file or the renderer), ArtifactService, OrphanReaper, DatabaseService, DashboardService, DiffRenderer, HooksService, KnowledgeService, MarkdownRenderer, ModelCatalogService, RemoteServer, RemoteControlService, UsageService, VoiceService, WorkflowRunner, the workflow engine suite, the lazy `xtermLoader`, the lazy project-type registry, the `~/.claude.json` merge in `McpService.saveMcps`, the plugin-manifest guard in `PluginService.installPlugin`, the silent-install arguments in `UpdaterService.quitAndInstall`, the mermaid failure containment in `postProcess` (`suppressErrorRendering` plus the temp-element cleanup, neither of which shows until a diagram fails), the corruption guards shared by `MarketplaceService`, `WorkspaceService` and `KnowledgeService`, and the em dash ban in `BuiltinSystemPrompts` (present on every path, and obeyed by the prompt text itself)
   - `shared/` - context usage, cron, issue trackers (the sanitisers between adapter output and the DOM), model options, permission modes, simple-task
   - `smoke/` - every module parses and loads
   - `state/` - State plus each state module, including the latched save block `timeTracking.state.js` applies to an unreadable `timetracking.json`
-  - `ui/` - chat account switch, chat limit error, the switch offer's per-account usage and the accounts it greys out (`accountUsage.blockingLimit`), replayed tool output, task widget, tasks drawer, ClaudeRemotePanel, navigation mode, kanban live refresh, toast, the Files viewer's rendered/source/diff modes and its reload button, and the flattened far side of the transcript store (what may be held as markup, that a rebuilt entry keeps its dataset and its delegated handlers, and that a listener bound to the element does not survive, which is the whole reason the rule is an allowlist), the drag-reorder invariant that keeps a tab drag from forcing a layout per pointer move
+  - `ui/` - the Settings → Tickets connection cards (the key leaves the input whatever the answer, network names are escaped), chat account switch, chat limit error, the switch offer's per-account usage and the accounts it greys out (`accountUsage.blockingLimit`), replayed tool output, task widget, tasks drawer, ClaudeRemotePanel, navigation mode, kanban live refresh, toast, the Files viewer's rendered/source/diff modes and its reload button, and the flattened far side of the transcript store (what may be held as markup, that a rebuilt entry keeps its dataset and its delegated handlers, and that a listener bound to the element does not survive, which is the whole reason the rule is an allowlist), the drag-reorder invariant that keeps a tab drag from forcing a layout per pointer move
   - `utils/` - attachments, color, commit messages, drop paths, file icons, file lock, format, frontmatter, git (including the argv shape of every command built from a path or a tag name), http cache, session search, shell, syntax highlight, tool registry
 
 ### Lint (`eslint.config.js`)

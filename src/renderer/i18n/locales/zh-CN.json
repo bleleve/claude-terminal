@@ -774,6 +774,30 @@
     "unitMinuteShort": "分",
     "daysAgo": "{count}d 前"
   },
+  "tickets": {
+    "settings": {
+      "title": "工单追踪器",
+      "intro": "连接一个工单追踪器，即可在此浏览其工单并将其关联到会话。密钥保存在系统凭据存储中，只会发送给该追踪器。",
+      "keyPlaceholder": "{provider} 个人 API 密钥",
+      "connect": "连接",
+      "connectAnother": "连接其他工作区",
+      "checking": "正在验证密钥…",
+      "connected": "已连接到 {workspace}。",
+      "connectedAs": "{user} · 密钥 {key}",
+      "test": "测试",
+      "testOk": "密钥可用。",
+      "disconnect": "断开连接",
+      "helpLink": "在 {provider} 中创建个人 API 密钥",
+      "unavailable": "此版本已不再支持",
+      "noProviders": "此版本中没有可用的工单追踪器。",
+      "loadFailed": "无法读取追踪器连接：{message}",
+      "errorAuth": "密钥被拒绝。请检查密钥是否完整且仍然有效。",
+      "errorRateLimited": "请求过多，请一分钟后重试。",
+      "errorNetwork": "无法连接到 {provider}，请检查网络连接。",
+      "errorNotFound": "此连接已不存在。",
+      "errorProvider": "{provider} 返回错误：{message}"
+    }
+  },
   "settings": {
     "title": "设置",
     "saved": "设置已保存",
@@ -812,6 +836,7 @@
     "tabGeneral": "常规",
     "tabClaude": "Claude",
     "tabGitHub": "GitHub",
+    "tabTickets": "工单",
     "tabThemes": "主题",
     "tabShortcuts": "快捷方式",
     "tabLibrary": "资源库",
