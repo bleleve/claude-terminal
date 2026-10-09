@@ -256,3 +256,39 @@ describe('reading tickets', () => {
     await expect(service.metadata(conn.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 });
+
+describe('writing tickets', () => {
+  let conn;
+  beforeEach(async () => {
+    conn = await service.connect('linear', fixture.secret);
+    fetch.mockClear();
+  });
+
+  test('updateIssue changes the state and returns the sanitised issue', async () => {
+    const issue = await service.updateIssue(conn.id, 'ENG-142', { stateId: 's-eng-done' });
+    expect(issue).toMatchObject({ ref: 'linear:ENG-142', state: { id: 's-eng-done', category: 'done' } });
+  });
+
+  test('null unassigns, a priority must be on the scale', async () => {
+    expect((await service.updateIssue(conn.id, 'ENG-142', { assigneeId: null })).assignee).toBeNull();
+    await expect(service.updateIssue(conn.id, 'ENG-142', { priority: 7 })).rejects.toMatchObject({ code: 'PROVIDER' });
+    expect((await service.updateIssue(conn.id, 'ENG-142', { priority: 4 })).priority).toBe(4);
+  });
+
+  test('a field the adapter does not declare writable is refused before any request', async () => {
+    const readOnly = { ...linear, capabilities: { ...linear.capabilities, write: ['comment'] } };
+    const ro = createIssueTrackerService({ storePath, secrets, registry: { ...registry, get: () => readOnly }, fetch });
+    await expect(ro.updateIssue(conn.id, 'ENG-142', { stateId: 's-eng-done' })).rejects.toThrow(/does not allow changing the state/);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test('an empty patch is refused', async () => {
+    await expect(service.updateIssue(conn.id, 'ENG-142', { title: 'nope' })).rejects.toThrow('Nothing to update');
+  });
+
+  test('addComment posts trimmed markdown and refuses an empty one', async () => {
+    const comment = await service.addComment(conn.id, 'ENG-142', '  **Done** in #57\n');
+    expect(comment).toMatchObject({ body: '**Done** in #57', author: { name: 'Ada Lovelace' } });
+    await expect(service.addComment(conn.id, 'ENG-142', '   ')).rejects.toThrow('The comment is empty');
+  });
+});

@@ -1,7 +1,11 @@
 /**
- * Tickets screen: every ticket of the connected workspace, filtered, grouped,
- * and opened in a side pane. Read-only for now; the board and the writes come
- * with the next step.
+ * Tickets screen: every ticket of the connected workspace, as a grouped list
+ * or a board, opened in a side pane where state, assignee and priority can be
+ * changed. Dragging a card across the board changes its state.
+ *
+ * Writes are optimistic: the change shows at once, is undone if the tracker
+ * refuses it, and a refresh already on its way when it started is dropped so
+ * it cannot paint the old state back.
  *
  * Lazy-loaded (see `_LAZY_PANELS` in renderer.js). The pure half - view state
  * to query, issues to groups, all the HTML - is `issues/issueView.js`. This
@@ -58,8 +62,17 @@ function freshState() {
     collapsed: new Set(),
     lastLoadedAt: null,
     menu: null,
+    // Tickets the user just moved, kept on screen by a background refresh even
+    // when they no longer match the filters (a card dropped on Done while the
+    // view shows open tickets only). Cleared by any explicit change of view.
+    moved: new Map(),
+    writing: 0,
+    drag: null,
+    board: null,
   };
 }
+
+const canWrite = (field) => !!state.provider?.capabilities?.write?.includes(field);
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -129,7 +142,10 @@ async function loadIssues({ silent = false } = {}) {
   if (!state.connection || !state.metadata) return;
   const mine = ++seq;
   state.loading = true;
-  if (!silent) renderList();
+  if (!silent) {
+    state.moved.clear();
+    renderList();
+  }
   const res = await bridge().listIssues(state.connection.id, view.buildQuery(state.view, state.metadata), null);
   if (mine !== seq) return;
   state.loading = false;
@@ -137,12 +153,66 @@ async function loadIssues({ silent = false } = {}) {
     state.error = res;
   } else {
     state.error = null;
-    state.issues = res.issues;
+    const fresh = new Set(res.issues.map((i) => i.ref));
+    state.issues = res.issues.concat([...state.moved.values()].filter((i) => !fresh.has(i.ref)));
     state.next = res.next;
     state.lastLoadedAt = Date.now();
   }
   renderHeader();
   renderList();
+}
+
+// ── Writes ───────────────────────────────────────────────────────────────────
+
+/**
+ * Change a ticket and show it at once. `preview` is what the change looks
+ * like locally; the tracker's answer replaces it, a refusal puts the old
+ * ticket back.
+ */
+async function writeIssue(key, patch, preview) {
+  const conn = state.connection;
+  const index = state.issues.findIndex((i) => i.key === key);
+  const before = index >= 0 ? state.issues[index] : null;
+  const detailBefore = state.detail?.key === key ? state.detail : null;
+  if (before) state.issues[index] = { ...before, ...preview };
+  if (detailBefore) state.detail = { ...detailBefore, ...preview };
+  renderList();
+  renderDetail();
+
+  state.writing++;
+  seq++; // a refresh already on its way would paint the old state back
+  const res = await bridge().updateIssue(conn.id, key, patch);
+  state.writing--;
+  if (state.connection !== conn) return;
+
+  const at = state.issues.findIndex((i) => i.key === key);
+  if (res?.ok) {
+    if (at >= 0) state.issues[at] = res.issue;
+    state.moved.set(res.issue.ref, res.issue);
+    if (state.detail?.key === key) {
+      const { description, comments, children } = state.detail;
+      state.detail = { ...res.issue, description, comments, children };
+    }
+  } else {
+    if (at >= 0 && before) state.issues[at] = before;
+    if (detailBefore && state.detail?.key === key) state.detail = detailBefore;
+    deps.showToast({ type: 'error', title: t('tickets.errors.updateFailed', { key }), message: errorText(res) });
+  }
+  renderList();
+  renderDetail();
+}
+
+function stateById(id) {
+  return (state.metadata?.states || []).find((st) => st.id === id) || null;
+}
+
+function moveIssue(key, column) {
+  const issue = state.issues.find((i) => i.key === key);
+  if (!issue) return;
+  const stateId = view.dropTargetState(issue, column, state.metadata);
+  const target = stateId && stateById(stateId);
+  if (!target) return;
+  writeIssue(key, { stateId }, { state: { id: target.id, name: target.name, color: target.color, category: target.category } });
 }
 
 async function loadMore() {
@@ -227,6 +297,20 @@ function resetFilters() {
 /** The items of a filter menu, as { value, label, icon?, indent?, header? }. */
 function menuItems(id) {
   const meta = state.metadata || {};
+  if (id === 'edit:state' && state.detail) {
+    return view.statesForIssue(state.detail, meta).map((st) => ({
+      value: st.id, label: st.name, icon: view.stateDot({ color: st.color, category: st.category, name: st.name }),
+    }));
+  }
+  if (id === 'edit:assignee') {
+    return [
+      { value: 'none', label: t('tickets.groupBy.noAssignee') },
+      ...(meta.people || []).map((p) => ({ value: p.id, label: p.name, icon: view.avatarHtml(p, 'issue-avatar-sm') })),
+    ];
+  }
+  if (id === 'edit:priority') {
+    return [1, 2, 3, 4, 0].map((p) => ({ value: p, label: view.priorityLabel(p), icon: view.priorityIcon(p) }));
+  }
   if (id === 'status') {
     return view.statusOptions(meta).flatMap((group) => [
       { value: `cat:${group.category}`, label: view.categoryLabel(group.category), header: true },
@@ -263,6 +347,9 @@ function menuItems(id) {
 
 function menuSelection(id) {
   const v = state.view;
+  if (id === 'edit:state') return state.detail ? [state.detail.state.id] : [];
+  if (id === 'edit:assignee') return state.detail ? [state.detail.assignee?.id || 'none'] : [];
+  if (id === 'edit:priority') return state.detail ? [state.detail.priority] : [];
   if (id === 'status') return v.status;
   if (id === 'assignee') return v.assigneeIds;
   if (id === 'priority') return v.priorities;
@@ -274,6 +361,10 @@ function menuSelection(id) {
 }
 
 function applyMenuChoice(id, value) {
+  if (id.startsWith('edit:')) {
+    applyEdit(id.slice(5), value);
+    return;
+  }
   const v = state.view;
   if (id === 'status') v.status = toggle(v.status, value);
   else if (id === 'assignee') v.assigneeIds = toggle(v.assigneeIds, value);
@@ -291,7 +382,25 @@ function applyMenuChoice(id, value) {
   viewChanged({ reload: id !== 'groupBy' });
 }
 
-const SINGLE_CHOICE = new Set(['groupBy', 'sort']);
+const SINGLE_CHOICE = new Set(['groupBy', 'sort', 'edit:state', 'edit:assignee', 'edit:priority']);
+
+/** A pick in one of the detail pane's edit menus. */
+function applyEdit(field, value) {
+  const issue = state.detail;
+  if (!issue) return;
+  if (field === 'state') {
+    const target = stateById(value);
+    if (!target || target.id === issue.state.id) return;
+    writeIssue(issue.key, { stateId: target.id }, { state: { id: target.id, name: target.name, color: target.color, category: target.category } });
+  } else if (field === 'assignee') {
+    const person = value === 'none' ? null : (state.metadata?.people || []).find((p) => p.id === value) || null;
+    if ((issue.assignee?.id || null) === (person?.id || null)) return;
+    writeIssue(issue.key, { assigneeId: person ? person.id : null }, { assignee: person });
+  } else if (field === 'priority') {
+    if (issue.priority === value) return;
+    writeIssue(issue.key, { priority: value }, { priority: value });
+  }
+}
 
 function sortLabel(sort) {
   switch (sort) {
@@ -420,7 +529,11 @@ function renderToolbar() {
 
   let search = el.querySelector('.issues-search');
   const searchValue = search ? search.value : v.text;
+  const layouts = [['list', t('tickets.panel.layoutList')], ['board', t('tickets.panel.layoutBoard')]]
+    .map(([value, label]) => `<button type="button" class="issues-layout-btn${v.layout === value ? ' active' : ''}" data-layout="${value}" aria-pressed="${v.layout === value}">${escapeHtml(label)}</button>`)
+    .join('');
   el.innerHTML = `
+    <div class="issues-layout" role="group">${layouts}</div>
     <div class="issues-quick" role="group">${quick}</div>
     <input type="search" class="issues-search" placeholder="${escapeHtml(t('tickets.panel.searchPlaceholder'))}" spellcheck="false" aria-label="${escapeHtml(t('tickets.panel.searchPlaceholder'))}">
     <div class="issues-filter-buttons">
@@ -432,7 +545,7 @@ function renderToolbar() {
       ${view.isDefaultView(v) ? '' : `<button type="button" class="issues-reset">${escapeHtml(t('tickets.panel.resetFilters'))}</button>`}
     </div>
     <div class="issues-display-buttons">
-      ${filterButton('groupBy', t('tickets.filters.groupByValue', { value: groupLabel }), 0)}
+      ${v.layout === 'list' ? filterButton('groupBy', t('tickets.filters.groupByValue', { value: groupLabel }), 0) : ''}
       ${filterButton('sort', t('tickets.filters.sortValue', { value: sortLabel(v.sort) }), 0)}
     </div>`;
   search = el.querySelector('.issues-search');
@@ -483,9 +596,22 @@ function renderList() {
     return;
   }
 
-  const groups = view.groupIssues(state.issues, state.view.groupBy, state.metadata);
-  const focusedKey = el.contains(document.activeElement) ? document.activeElement.closest('.issue-row')?.dataset.key : null;
+  const focusedKey = el.contains(document.activeElement) ? document.activeElement.closest('.issue-row, .issue-card')?.dataset.key : null;
   el.classList.toggle('loading', state.loading);
+  el.classList.toggle('board', state.view.layout === 'board');
+
+  if (state.view.layout === 'board') {
+    state.board = view.boardColumns(state.issues, state.metadata, state.view);
+    el.innerHTML = view.boardHtml(state.board, { selectedRef: state.selectedRef, draggable: canWrite('state') })
+      + (state.next
+        ? `<div class="issues-more"><button type="button" class="btn-sm btn-secondary issues-load-more"${state.loadingMore ? ' disabled' : ''}>${escapeHtml(state.loadingMore ? t('tickets.panel.loading') : t('tickets.panel.loadMore'))}</button></div>`
+        : '');
+    if (focusedKey) [...el.querySelectorAll('.issue-card')].find((c) => c.dataset.key === focusedKey)?.focus();
+    return;
+  }
+
+  const groups = view.groupIssues(state.issues, state.view.groupBy, state.metadata);
+  state.board = null;
   el.innerHTML = view.groupsHtml(groups, { selectedRef: state.selectedRef, collapsed: state.collapsed })
     + (state.next
       ? `<div class="issues-more"><button type="button" class="btn-sm btn-secondary issues-load-more"${state.loadingMore ? ' disabled' : ''}>${escapeHtml(state.loadingMore ? t('tickets.panel.loading') : t('tickets.panel.loadMore'))}</button></div>`
@@ -515,6 +641,11 @@ function renderDetail() {
     renderMarkdown: (md) => MarkdownRenderer.render(md),
     providerName: state.provider?.name || state.connection?.providerName || '',
     metadata: state.metadata,
+    editableFields: {
+      state: canWrite('state'),
+      assignee: canWrite('assignee'),
+      priority: canWrite('priority') && !!state.provider?.capabilities?.priority,
+    },
   });
   MarkdownRenderer.postProcess(el);
 }
@@ -564,6 +695,20 @@ async function onClick(event) {
   }
   closeMenu();
 
+  const layout = target.closest('.issues-layout-btn');
+  if (layout) {
+    if (state.view.layout === layout.dataset.layout) return;
+    state.view.layout = layout.dataset.layout;
+    viewChanged({ reload: false });
+    return;
+  }
+
+  const edit = target.closest('.issue-prop-edit');
+  if (edit) {
+    openMenu(`edit:${edit.dataset.edit}`, edit);
+    return;
+  }
+
   const quick = target.closest('.issues-quick-btn');
   if (quick) {
     state.view.mine = quick.dataset.mine || null;
@@ -597,8 +742,70 @@ async function onClick(event) {
     return;
   }
 
-  const row = target.closest('.issue-row');
+  const row = target.closest('.issue-row, .issue-card');
   if (row) selectIssue(row.dataset.key);
+}
+
+// ── Board drag and drop ──────────────────────────────────────────────────────
+//
+// dragover fires on every pointer move. It reads which column is under the
+// pointer from the event target (no layout read at all) and only touches a
+// class when that column changes, so a drag never forces a layout per move.
+
+function columnAt(event) {
+  const el = event.target?.closest?.('.issues-board-column');
+  if (!el || !state.board) return { el: null, column: null };
+  return { el, column: state.board.columns.find((c) => c.key === el.dataset.column) || null };
+}
+
+function clearDropMarks() {
+  root?.querySelectorAll('.issues-board-column.drop-target, .issues-board-column.drop-refused')
+    .forEach((el) => el.classList.remove('drop-target', 'drop-refused'));
+}
+
+function onDragStart(event) {
+  const card = event.target?.closest?.('.issue-card[draggable="true"]');
+  if (!card) return;
+  state.drag = { key: card.dataset.key, columnKey: null, allowed: false };
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', card.dataset.key);
+  }
+  card.classList.add('dragging');
+}
+
+function onDragOver(event) {
+  if (!state.drag) return;
+  const { el, column } = columnAt(event);
+  const columnKey = column ? column.key : null;
+  if (columnKey !== state.drag.columnKey) {
+    clearDropMarks();
+    const issue = state.issues.find((i) => i.key === state.drag.key);
+    state.drag.columnKey = columnKey;
+    state.drag.allowed = !!(column && issue && view.dropTargetState(issue, column, state.metadata));
+    if (el && column && issue && column.issues.every((i) => i.key !== issue.key)) {
+      el.classList.add(state.drag.allowed ? 'drop-target' : 'drop-refused');
+    }
+  }
+  if (state.drag.allowed) {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  }
+}
+
+function onDrop(event) {
+  if (!state.drag) return;
+  event.preventDefault();
+  const { key, allowed } = state.drag;
+  const { column } = columnAt(event);
+  endDrag();
+  if (allowed && column) moveIssue(key, column);
+}
+
+function endDrag() {
+  clearDropMarks();
+  root?.querySelector('.issue-card.dragging')?.classList.remove('dragging');
+  state.drag = null;
 }
 
 function openConnectionMenu(anchor) {
@@ -650,7 +857,7 @@ function renderToolbarResetOnly() {
 }
 
 function onKeydown(event) {
-  if (event.key === 'Enter' && event.target.matches('.issue-row')) {
+  if (event.key === 'Enter' && event.target.matches('.issue-row, .issue-card')) {
     event.preventDefault();
     selectIssue(event.target.dataset.key);
   }
@@ -682,7 +889,7 @@ function startPolling() {
   timers.poll = setInterval(() => {
     // Only while someone can see it: the tab is shown and the window focused.
     if (!root || !root.isConnected || root.offsetParent === null || !document.hasFocus()) return;
-    if (state.loading || state.menu) return;
+    if (state.loading || state.menu || state.drag || state.writing) return;
     loadIssues({ silent: true });
   }, POLL_MS);
 }
@@ -699,6 +906,10 @@ async function loadPanel(container) {
   on(root, 'click', onClick);
   on(root, 'input', onInput);
   on(root, 'keydown', onKeydown);
+  on(root, 'dragstart', onDragStart);
+  on(root, 'dragover', onDragOver);
+  on(root, 'drop', onDrop);
+  on(root, 'dragend', endDrag);
   on(document, 'mousedown', onDocumentMousedown);
   on(document, 'keydown', onDocumentKeydown);
   startPolling();

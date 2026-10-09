@@ -870,6 +870,10 @@
     "daysAgo": "il y a {count}j"
   },
   "tickets": {
+    "board": {
+      "empty": "Aucun ticket",
+      "dropHere": "Déposez un ticket ici"
+    },
     "panel": {
       "title": "Tickets",
       "refresh": "Actualiser",
@@ -882,7 +886,9 @@
       "searchPlaceholder": "Rechercher (titre, ENG-142)",
       "noConnection": "Aucun outil de tickets n'est connecté",
       "noConnectionHint": "Connectez Linear avec une clé API personnelle pour voir vos tickets ici.",
-      "connect": "Connecter un outil"
+      "connect": "Connecter un outil",
+      "layoutList": "Liste",
+      "layoutBoard": "Tableau"
     },
     "quick": {
       "all": "Tous",
@@ -953,7 +959,8 @@
       "copyBranch": "Copier la branche",
       "copyKey": "Copier l'identifiant",
       "copied": "Copié dans le presse-papiers",
-      "loadFailed": "Impossible de charger ce ticket. {message}"
+      "loadFailed": "Impossible de charger ce ticket. {message}",
+      "edit": "Modifier"
     },
     "errors": {
       "auth": "La clé {provider} a été refusée. Reconnectez-la dans les réglages.",
@@ -961,7 +968,8 @@
       "network": "Impossible de joindre {provider}.",
       "notFound": "Introuvable dans {provider}.",
       "provider": "{provider} a renvoyé une erreur : {message}",
-      "openSettings": "Ouvrir les réglages"
+      "openSettings": "Ouvrir les réglages",
+      "updateFailed": "Impossible de modifier {key}"
     },
     "settings": {
       "title": "Suivi de tickets",

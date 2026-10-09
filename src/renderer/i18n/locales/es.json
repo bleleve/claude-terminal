@@ -772,6 +772,10 @@
     "daysAgo": "hace {count}d"
   },
   "tickets": {
+    "board": {
+      "empty": "Ningún ticket",
+      "dropHere": "Suelta un ticket aquí"
+    },
     "panel": {
       "title": "Tickets",
       "refresh": "Actualizar",
@@ -784,7 +788,9 @@
       "searchPlaceholder": "Buscar (título, ENG-142)",
       "noConnection": "No hay ningún gestor de tickets conectado",
       "noConnectionHint": "Conecta Linear con una clave API personal para ver tus tickets aquí.",
-      "connect": "Conectar un gestor"
+      "connect": "Conectar un gestor",
+      "layoutList": "Lista",
+      "layoutBoard": "Tablero"
     },
     "quick": {
       "all": "Todos",
@@ -855,7 +861,8 @@
       "copyBranch": "Copiar la rama",
       "copyKey": "Copiar el identificador",
       "copied": "Copiado al portapapeles",
-      "loadFailed": "No se pudo cargar este ticket. {message}"
+      "loadFailed": "No se pudo cargar este ticket. {message}",
+      "edit": "Cambiar"
     },
     "errors": {
       "auth": "La clave de {provider} fue rechazada. Vuelve a conectarla en los ajustes.",
@@ -863,7 +870,8 @@
       "network": "No se pudo contactar con {provider}.",
       "notFound": "No encontrado en {provider}.",
       "provider": "{provider} devolvió un error: {message}",
-      "openSettings": "Abrir los ajustes"
+      "openSettings": "Abrir los ajustes",
+      "updateFailed": "No se pudo modificar {key}"
     },
     "settings": {
       "title": "Gestores de tickets",

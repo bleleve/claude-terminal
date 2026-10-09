@@ -48,6 +48,7 @@ function bridgeFor(service) {
     metadata: wrap((id) => service.metadata(id), 'metadata'),
     listIssues: jest.fn(wrap((id, q, c) => service.listIssues(id, q, c))),
     getIssue: wrap((id, key) => service.getIssue(id, key), 'issue'),
+    updateIssue: jest.fn(wrap((id, key, patch) => service.updateIssue(id, key, patch), 'issue')),
   };
 }
 
@@ -261,4 +262,115 @@ test('leaving the tab stops the refresh; coming back draws at once', async () =>
   const back = panel.loadPanel(root);
   expect(rowKeys()).toHaveLength(13); // drawn from memory before the refresh lands
   await back;
+});
+
+describe('board and writes', () => {
+  /** A drag as Chromium sends it, with a dataTransfer jsdom does not have. */
+  function drag(card, column) {
+    const dataTransfer = { setData() {}, getData() { return ''; }, effectAllowed: '', dropEffect: '' };
+    const fire = (el, type) => {
+      const ev = new Event(type, { bubbles: true, cancelable: true });
+      ev.dataTransfer = dataTransfer;
+      el.dispatchEvent(ev);
+      return ev;
+    };
+    fire(card, 'dragstart');
+    const over = fire(column, 'dragover');
+    fire(column, 'drop');
+    fire(card, 'dragend');
+    return over;
+  }
+  const column = (key) => [...root.querySelectorAll('.issues-board-column')].find((c) => c.dataset.column === key);
+  const cardIn = (colKey, key) => column(colKey).querySelector(`.issue-card[data-key="${key}"]`);
+
+  async function boardSetup() {
+    await setup();
+    root.querySelector('.issues-layout-btn[data-layout="board"]').click();
+    await flush();
+  }
+
+  test('the board shows one column per category when several teams are listed', async () => {
+    await boardSetup();
+    expect([...root.querySelectorAll('.issues-board-column')].map((c) => c.dataset.column))
+      .toEqual(['cat:backlog', 'cat:todo', 'cat:started', 'cat:done', 'cat:canceled']);
+    expect(root.querySelector('[data-menu="groupBy"]')).toBeNull();
+    expect(mockSettings.ticketsView).toBeUndefined(); // saved after the debounce
+    await flush(1000);
+    expect(mockSettings.ticketsView.layout).toBe('board');
+  });
+
+  test('dropping a card moves it at once and writes the state of its own team', async () => {
+    await boardSetup();
+    const over = drag(cardIn('cat:todo', 'ENG-151'), column('cat:done'));
+    expect(over.defaultPrevented).toBe(true); // the drop is allowed
+    expect(cardIn('cat:done', 'ENG-151')).not.toBeNull(); // optimistic
+    await flush();
+    expect(api.issueTrackers.updateIssue).toHaveBeenCalledWith(expect.stringMatching(/^linear-/), 'ENG-151', { stateId: 's-eng-done' });
+    expect(cardIn('cat:done', 'ENG-151')).not.toBeNull();
+  });
+
+  test('a refused write puts the card back and says why', async () => {
+    await boardSetup();
+    api.issueTrackers.updateIssue.mockResolvedValueOnce({ ok: false, code: 'PROVIDER', error: 'Forbidden' });
+    drag(cardIn('cat:todo', 'ENG-151'), column('cat:done'));
+    await flush();
+    expect(cardIn('cat:todo', 'ENG-151')).not.toBeNull();
+    expect(deps.showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', title: t('tickets.errors.updateFailed', { key: 'ENG-151' }) }));
+  });
+
+  test('a moved card stays on the board through a background refresh, even outside the filters', async () => {
+    await boardSetup();
+    drag(cardIn('cat:todo', 'ENG-151'), column('cat:done'));
+    await flush();
+    Object.defineProperty(root, 'offsetParent', { configurable: true, get: () => document.body });
+    jest.spyOn(document, 'hasFocus').mockReturnValue(true);
+    await flush(61_000);
+    expect(api.issueTrackers.listIssues.mock.calls.at(-1)[1].stateCategories).toEqual(['backlog', 'todo', 'started']);
+    expect(cardIn('cat:done', 'ENG-151')).not.toBeNull();
+    document.hasFocus.mockRestore();
+  });
+
+  test('dropping on the column it is already in writes nothing', async () => {
+    await boardSetup();
+    const over = drag(cardIn('cat:todo', 'ENG-151'), column('cat:todo'));
+    await flush();
+    expect(over.defaultPrevented).toBe(false);
+    expect(api.issueTrackers.updateIssue).not.toHaveBeenCalled();
+  });
+
+  test('the detail pane changes state, assignee and priority', async () => {
+    await setup();
+    root.querySelector('.issue-row[data-key="ENG-142"]').click();
+    await flush();
+    const pick = async (field, value) => {
+      root.querySelector(`.issue-prop-edit[data-edit="${field}"]`).click();
+      [...root.querySelectorAll('.issues-menu-item')].find((b) => b.dataset.value === String(value)).click();
+      await flush();
+    };
+    await pick('state', 's-eng-review');
+    await pick('assignee', 'u-grace');
+    await pick('priority', 2);
+    expect(api.issueTrackers.updateIssue.mock.calls.map((c) => c[2])).toEqual([
+      { stateId: 's-eng-review' }, { assigneeId: 'u-grace' }, { priority: 2 },
+    ]);
+    const props = root.querySelector('.issue-detail-props').textContent;
+    expect(props).toContain('In Review');
+    expect(props).toContain('Grace Hopper');
+    expect(root.querySelector('.issue-detail-description').textContent).toContain('Why'); // kept from the detail
+  });
+
+  test('a tracker that cannot write gets no drag and no edit buttons', async () => {
+    const readOnly = { ...linear, capabilities: { ...linear.capabilities, write: [] } };
+    await setup();
+    panel._reset();
+    api.issueTrackers.providers = async () => ({ ok: true, providers: describeTrackers([readOnly]) });
+    panel.init(deps);
+    await panel.loadPanel(root);
+    root.querySelector('.issues-layout-btn[data-layout="board"]').click();
+    await flush();
+    expect(root.querySelector('.issue-card[draggable="true"]')).toBeNull();
+    root.querySelector('.issue-card[data-key="ENG-142"]').click();
+    await flush();
+    expect(root.querySelector('.issue-prop-edit')).toBeNull();
+  });
 });

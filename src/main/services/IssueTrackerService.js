@@ -20,7 +20,10 @@ const { dataDir } = require('../utils/paths');
 const registry = require('../issue-trackers/_registry');
 const { trackerError } = require('../issue-trackers/_contract');
 const {
+  PRIORITY_LEVELS,
+  LIMITS,
   sanitizePerson,
+  sanitizeComment,
   sanitizeIssue,
   sanitizeIssueDetail,
   sanitizeMetadata,
@@ -296,6 +299,56 @@ function createIssueTrackerService({
       report(connectionId, `issue ${key}`, problems);
       if (!issue) throw trackerError('PROVIDER', `${entry.provider} returned an unusable issue for ${key}`);
       return issue;
+    },
+
+    /**
+     * Change a ticket's state, assignee or priority. Only what the adapter
+     * declares writable gets through, and it is refused before any request:
+     * a read-only tracker must not be asked to write.
+     */
+    async updateIssue(connectionId, key, patch) {
+      const { entry, client } = await resolve(connectionId);
+      const write = providerOf(entry.provider).capabilities.write;
+      const input = patch && typeof patch === 'object' ? patch : {};
+      const clean = {};
+      const refuse = (field) => trackerError('PROVIDER', `${entry.provider} does not allow changing ${field}`);
+      if ('stateId' in input) {
+        if (!write.includes('state')) throw refuse('the state');
+        if (typeof input.stateId !== 'string' || !input.stateId) throw trackerError('PROVIDER', 'A state id is required');
+        clean.stateId = input.stateId;
+      }
+      if ('assigneeId' in input) {
+        if (!write.includes('assignee')) throw refuse('the assignee');
+        if (input.assigneeId !== null && (typeof input.assigneeId !== 'string' || !input.assigneeId)) {
+          throw trackerError('PROVIDER', 'An assignee id, or null to unassign, is required');
+        }
+        clean.assigneeId = input.assigneeId;
+      }
+      if ('priority' in input) {
+        if (!write.includes('priority')) throw refuse('the priority');
+        if (!PRIORITY_LEVELS.includes(input.priority)) throw trackerError('PROVIDER', `Priority must be one of ${PRIORITY_LEVELS.join(', ')}`);
+        clean.priority = input.priority;
+      }
+      if (!Object.keys(clean).length) throw trackerError('PROVIDER', 'Nothing to update');
+      const { issue, problems } = sanitizeIssue(await client.updateIssue(String(key || ''), clean), entry.provider);
+      report(connectionId, `update ${key}`, problems);
+      if (!issue) throw trackerError('PROVIDER', `${entry.provider} returned an unusable issue for ${key}`);
+      return issue;
+    },
+
+    /** Post a markdown comment on a ticket. */
+    async addComment(connectionId, key, body) {
+      const { entry, client } = await resolve(connectionId);
+      if (!providerOf(entry.provider).capabilities.write.includes('comment')) {
+        throw trackerError('PROVIDER', `${entry.provider} does not allow comments`);
+      }
+      const text = typeof body === 'string' ? body.trim() : '';
+      if (!text) throw trackerError('PROVIDER', 'The comment is empty');
+      if (text.length > LIMITS.commentBody) throw trackerError('PROVIDER', 'The comment is too long');
+      const { comment, problems } = sanitizeComment(await client.addComment(String(key || ''), text));
+      report(connectionId, `comment on ${key}`, problems);
+      if (!comment) throw trackerError('PROVIDER', `${entry.provider} returned an unusable comment`);
+      return comment;
     },
   };
 }
