@@ -1920,7 +1920,9 @@
       "recapBranch": "Branch",
       "recapCommits": "Commit",
       "recapPr": "Pull request",
-      "recapFiles": "{count} file diubah"
+      "recapFiles": "{count} file diubah",
+      "detectedInTerminal": "{keys} terdeteksi di “{tab}”",
+      "review": "Lihat"
     },
     "git": {
       "loading": "Membaca repositori…",
