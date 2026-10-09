@@ -32,14 +32,20 @@ const { describeTrackers } = require('../../src/main/issue-trackers/_registry');
 const linear = require('../../src/main/issue-trackers/linear.tracker');
 const fixture = require('../issue-trackers/fixtures/linear.fixture');
 
+/** Bridge calls still waiting for the service, see flush(). */
+let inflight = 0;
+
 /** window.electron_api.issueTrackers, the way issue-trackers.ipc.js answers. */
 function bridgeFor(service) {
   const wrap = (fn, key) => async (...args) => {
+    inflight++;
     try {
       const value = await fn(...args);
       return key ? { ok: true, [key]: value } : { ok: true, ...value };
     } catch (err) {
       return { ok: false, error: err.message, code: err.code || 'PROVIDER' };
+    } finally {
+      inflight--;
     }
   };
   return {
@@ -79,11 +85,18 @@ async function setup({ connect = true } = {}) {
 /**
  * Advance the fake clock, then let real I/O finish: the service reads its
  * store from disk, and those callbacks only run on a real turn of the event
- * loop, which setImmediate (left unfaked) gives them.
+ * loop, which setImmediate (left unfaked) gives them. How many turns that takes
+ * depends on the disk, so a fixed count passed here and failed on a slower CI
+ * runner: wait instead until no bridge call is pending, then a few more turns
+ * for what the answers render. hrtime bounds it, since the fake clock owns Date.
  */
 const flush = async (ms = 0) => {
   await jest.advanceTimersByTimeAsync(ms);
-  for (let i = 0; i < 25; i++) await new Promise((resolve) => realImmediate(resolve));
+  const deadline = process.hrtime.bigint() + 10_000_000_000n;
+  for (let quiet = 0; quiet < 10 && process.hrtime.bigint() < deadline;) {
+    await new Promise((resolve) => realImmediate(resolve));
+    quiet = inflight === 0 ? quiet + 1 : 0;
+  }
 };
 const rowKeys = () => [...root.querySelectorAll('.issues-list > .issue-group .issue-row')].map((r) => r.dataset.key);
 const lastQuery = () => api.issueTrackers.listIssues.mock.calls.at(-1)[1];
@@ -96,7 +109,8 @@ beforeEach(() => {
   panel._reset();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await flush(); // a write still on its way would land in the next test's panel
   panel._reset();
   jest.useRealTimers();
   fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
