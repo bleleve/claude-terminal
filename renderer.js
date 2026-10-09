@@ -9,7 +9,7 @@ const api = window.electron_api;
 const { path, fs, process: nodeProcess, __dirname } = window.electron_nodeModules;
 const { fileExists, fsp, ensureDirs } = require('./src/renderer/utils/fs-async');
 const { matchesSessionQuery } = require('./src/renderer/utils/sessionSearch');
-const { applyNavigationMode, isSidebarNavigation } = require('./src/renderer/ui/navigationMode');
+const { applyNavigationMode, isSidebarNavigation, isProjectsPopoverOpen } = require('./src/renderer/ui/navigationMode');
 
 document.body.classList.add(`platform-${nodeProcess.platform}`);
 
@@ -3237,11 +3237,6 @@ document.addEventListener('navigation-mode-change', (e) => setNavigationMode(e.d
 // Settings only writes the flag; mounting the column is the renderer's, since
 // it is the Files screen's tree that gets moved.
 document.addEventListener('files-dock-change', () => syncFilesDock());
-
-function isProjectsPopoverOpen() {
-  const popover = document.getElementById('projects-popover');
-  return !!popover && popover.style.display !== 'none';
-}
 
 function openProjectsPopover(anchor) {
   const popover = document.getElementById('projects-popover');
