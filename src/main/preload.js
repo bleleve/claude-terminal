@@ -71,6 +71,7 @@ contextBridge.exposeInMainWorld('electron_api', {
     statusDetailed: (params) => ipcRenderer.invoke('git-status-detailed', params),
     branches: (params) => ipcRenderer.invoke('git-branches', params),
     currentBranch: (params) => ipcRenderer.invoke('git-current-branch', params),
+    sessionSummary: (params) => ipcRenderer.invoke('git-session-summary', params),
     mergeInProgress: (params) => ipcRenderer.invoke('git-merge-in-progress', params),
     mergeConflicts: (params) => ipcRenderer.invoke('git-merge-conflicts', params),
     pull: (params) => ipcRenderer.invoke('git-pull', params),
