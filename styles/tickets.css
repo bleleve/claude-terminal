@@ -913,3 +913,14 @@
   border-color: var(--border-color);
   background: var(--bg-hover);
 }
+
+/* Sessions linked to a ticket */
+.issue-sessions {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid rgba(var(--accent-rgb), 0.45);
+  border-radius: 10px;
+  color: var(--accent-hover);
+  font-size: var(--font-xs);
+  white-space: nowrap;
+}

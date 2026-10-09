@@ -793,7 +793,8 @@
       "noConnectionHint": "使用个人 API 密钥连接 Linear，即可在此查看工单。",
       "connect": "连接追踪器",
       "layoutList": "列表",
-      "layoutBoard": "看板"
+      "layoutBoard": "看板",
+      "sessions": "{count} 个会话"
     },
     "quick": {
       "all": "全部",
@@ -1874,6 +1875,22 @@
     }
   },
   "chat": {
+    "tickets": {
+      "title": "本次会话的工单",
+      "link": "关联工单",
+      "searchPlaceholder": "搜索工单（标题、ENG-142）",
+      "noResults": "未找到工单",
+      "empty": "本次会话尚未关联工单。可以手动关联，或在消息中用 @tickets 提及。",
+      "unlink": "取消关联",
+      "loadFailed": "无法加载",
+      "sourceManual": "手动关联",
+      "sourceMention": "在消息中提及",
+      "sourceStart": "从此工单开始的会话",
+      "sourceTool": "Claude 操作过",
+      "sourcePrompt": "在消息中引用",
+      "sourceBranch": "分支名称",
+      "sourcePr": "拉取请求标题"
+    },
     "git": {
       "loading": "正在读取仓库…",
       "notRepo": "此文件夹不是 Git 仓库。",
@@ -1987,6 +2004,8 @@
     "tabConversation": "对话",
     "tabChanges": "变化",
     "tabGit": "Git",
+    "tabTickets": "工单",
+    "mentionTickets": "工单",
     "filesChanged": "文件已更改",
     "fileChanged": "文件已更改",
     "noChangesYet": "尚未修改任何文件。",

@@ -41,6 +41,7 @@ const { attachExportMenu } = require('./chat/exportConversation');
 const { createTranscriptSearch } = require('./chat/transcriptSearch');
 const { createAttachmentTray } = require('./chat/attachmentTray');
 const { createGitTab } = require('./chat/gitTab');
+const { createTicketsTab } = require('./chat/ticketsTab');
 const { formatTokenCount, contextSummaryText, contextSummaryHtml, contextUsageRows } = require('./chat/contextUsage');
 
 /** Paperclip, for the chip an attached file leaves in the composer. */
@@ -243,6 +244,10 @@ class ChatView extends BaseComponent {
         <button class="chat-tab" data-tab="git" hidden>
           <span class="chat-tab-label">${escapeHtml(t('chat.tabGit') || 'Git')}</span>
         </button>
+        <button class="chat-tab" data-tab="tickets" hidden>
+          <span class="chat-tab-label">${escapeHtml(t('chat.tabTickets') || 'Tickets')}</span>
+          <span class="chat-tab-badge" data-badge="tickets" hidden>0</span>
+        </button>
         <button class="chat-tab" data-tab="artifacts">
           <span class="chat-tab-label">${escapeHtml(t('chat.tabDocuments') || 'Documents')}</span>
           <span class="chat-tab-badge" data-badge="artifacts" hidden>0</span>
@@ -287,6 +292,7 @@ class ChatView extends BaseComponent {
       </div>
       <div class="chat-changes-panel" hidden></div>
       <div class="session-git-panel" hidden></div>
+      <div class="session-tickets-panel" hidden></div>
       <!-- Documents is itself a two-column screen: the list of what this
            conversation produced on the left, the preview of the selected one on
            the right. Both live inside the tab, so leaving the tab takes the
@@ -419,6 +425,26 @@ class ChatView extends BaseComponent {
     showToast: (opts) => require('./Toast').showToast(opts),
   });
   if (!project.isCloud) gitTab.probe();
+
+  // The tickets this session works on (chat/ticketsTab.js). Shown once a
+  // tracker is connected. Keyed by the CLI session id; a new tab has none yet,
+  // so it starts provisional and moves when the CLI names the session.
+  const ticketsPanelEl = chatView.querySelector('.session-tickets-panel');
+  const ticketsTabBtn = chatView.querySelector('.chat-tab[data-tab="tickets"]');
+  const ticketsTab = createTicketsTab({
+    api,
+    panelEl: ticketsPanelEl,
+    tabBtn: ticketsTabBtn,
+    badgeEl: ticketsTabBtn.querySelector('.chat-tab-badge'),
+    initialKey: resumeSessionId || `tab:${terminalId ?? crypto.randomUUID().slice(0, 8)}`,
+    getProjectId: () => project?.id || null,
+    onAvailable: () => {
+      ticketsTabBtn.hidden = false;
+      tabbarEl.hidden = false;
+    },
+    showToast: (opts) => require('./Toast').showToast(opts),
+  });
+  ticketsTab.probe();
   const artifactsBadgeEl = chatView.querySelector('.chat-tab-badge[data-badge="artifacts"]');
   const inputEl = chatView.querySelector('.chat-input');
   const sendBtn = chatView.querySelector('.chat-send-btn');
@@ -2454,6 +2480,7 @@ class ChatView extends BaseComponent {
     else if (type === 'context' && data?.name) label = `@context:${data.name}`;
     else if (type === 'tab' && data?.name) label = `@tab:${data.name}`;
     else if (type === 'conversation' && data?.firstPrompt) label = `@conversation:${data.firstPrompt.slice(0, 40)}${data.firstPrompt.length > 40 ? '…' : ''}`;
+    else if (typeof data?.chipLabel === 'string') label = data.chipLabel;
     else label = `@${type}`;
     let icon = getMentionIcon(type);
     // Use project emoji if available
@@ -2850,6 +2877,20 @@ class ChatView extends BaseComponent {
             content = `[Error resolving workspace: ${e.message}]`;
           }
           break;
+        }
+        default: {
+          // A MentionSourceRegistry source may compute its chip's content.
+          try {
+            const source = require('../../services/MentionSourceRegistry').get(mention.type);
+            if (source?.resolve) {
+              content = await source.resolve(mention.data, {
+                project,
+                linkTicket: (ticket, how) => ticketsTab.linkTicket(ticket, how),
+              });
+            }
+          } catch (e) {
+            content = `[Error resolving ${mention.label}: ${e.message}]`;
+          }
         }
       }
 
@@ -4528,9 +4569,12 @@ class ChatView extends BaseComponent {
     messagesEl.hidden = tab !== 'conversation';
     changesPanelEl.hidden = tab !== 'changes';
     gitPanelEl.hidden = tab !== 'git';
+    ticketsPanelEl.hidden = tab !== 'tickets';
     artifactsPanelEl.hidden = tab !== 'artifacts';
     if (tab === 'git') gitTab.show();
     else gitTab.hide();
+    if (tab === 'tickets') ticketsTab.show();
+    else ticketsTab.hide();
     if (tab === 'changes') renderChangesPanel();
     if (tab === 'artifacts') renderArtifactsPanel();
   }
@@ -7264,6 +7308,8 @@ class ChatView extends BaseComponent {
     // Capture real SDK session UUID (needed for fork/resume)
     if (msg.session_id && msg.session_id !== sdkSessionId) {
       sdkSessionId = msg.session_id;
+      // The session's ticket links follow it to its real id.
+      ticketsTab.onSessionId(msg.session_id);
       // The CLI's id is what a restored tab resumes on, so it has to name this
       // tab's task history too — that is the link the next run reads.
       taskOwnerKey = tasksStore.claimSession(taskOwnerKey || msg.session_id, msg.session_id);
@@ -8723,6 +8769,7 @@ class ChatView extends BaseComponent {
       artifactRegistry.flush();
       transcriptPruner?.destroy();
       gitTab.destroy();
+      ticketsTab.destroy();
       scrollResizeObserver?.disconnect();
       scrollChildrenObserver.disconnect();
       contextSuggestions.reset();

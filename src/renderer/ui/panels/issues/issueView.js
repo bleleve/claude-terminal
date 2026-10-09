@@ -360,7 +360,14 @@ function labelsHtml(labels, max = 2) {
   return `<span class="issue-labels">${shown}${more}</span>`;
 }
 
-function rowHtml(issue, { selected = false, now } = {}) {
+/** "2 sessions": how many Claude sessions this ticket is linked to. */
+function sessionsHtml(count) {
+  if (!count) return '';
+  const label = t('tickets.panel.sessions', { count });
+  return `<span class="issue-sessions" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+}
+
+function rowHtml(issue, { selected = false, now, sessions = 0 } = {}) {
   const facet = issue.facets.cycle || issue.facets.sprint || issue.facets.milestone || '';
   return `
     <div class="issue-row${selected ? ' selected' : ''}" role="row" tabindex="0" data-ref="${escapeHtml(issue.ref)}" data-key="${escapeHtml(issue.key)}">
@@ -369,6 +376,7 @@ function rowHtml(issue, { selected = false, now } = {}) {
       ${stateDot(issue.state)}
       <span class="issue-title">${escapeHtml(issue.title)}</span>
       ${labelsHtml(issue.labels)}
+      ${sessionsHtml(sessions)}
       ${facet ? `<span class="issue-facet">${escapeHtml(facet)}</span>` : ''}
       ${issue.dueDate ? `<span class="issue-due" title="${escapeHtml(t('tickets.detail.due'))}">${escapeHtml(issue.dueDate)}</span>` : ''}
       ${avatarHtml(issue.assignee)}
@@ -383,7 +391,7 @@ function groupHeaderIcon(group) {
   return '';
 }
 
-function groupsHtml(groups, { selectedRef = null, collapsed = new Set(), now } = {}) {
+function groupsHtml(groups, { selectedRef = null, collapsed = new Set(), now, sessionCounts = {} } = {}) {
   return groups.map((group) => {
     const isCollapsed = collapsed.has(group.key);
     const header = group.label
@@ -394,12 +402,12 @@ function groupsHtml(groups, { selectedRef = null, collapsed = new Set(), now } =
           <span class="issue-group-count">${group.issues.length}</span>
         </button>`
       : '';
-    const rows = isCollapsed ? '' : group.issues.map((issue) => rowHtml(issue, { selected: issue.ref === selectedRef, now })).join('');
+    const rows = isCollapsed ? '' : group.issues.map((issue) => rowHtml(issue, { selected: issue.ref === selectedRef, now, sessions: sessionCounts[issue.ref] || 0 })).join('');
     return `<section class="issue-group" data-group="${escapeHtml(group.key)}">${header}<div class="issue-group-rows" role="rowgroup">${rows}</div></section>`;
   }).join('');
 }
 
-function cardHtml(issue, { selected = false, draggable = false } = {}) {
+function cardHtml(issue, { selected = false, draggable = false, sessions = 0 } = {}) {
   const facet = issue.facets.cycle || issue.facets.sprint || issue.facets.milestone || '';
   return `
     <div class="issue-card${selected ? ' selected' : ''}" tabindex="0" data-ref="${escapeHtml(issue.ref)}" data-key="${escapeHtml(issue.key)}"${draggable ? ' draggable="true"' : ''}>
@@ -411,13 +419,14 @@ function cardHtml(issue, { selected = false, draggable = false } = {}) {
       <div class="issue-card-meta">
         ${priorityIcon(issue.priority)}
         ${labelsHtml(issue.labels, 2)}
+        ${sessionsHtml(sessions)}
         ${facet ? `<span class="issue-facet">${escapeHtml(facet)}</span>` : ''}
         ${issue.dueDate ? `<span class="issue-due">${escapeHtml(issue.dueDate)}</span>` : ''}
       </div>
     </div>`;
 }
 
-function boardHtml(board, { selectedRef = null, draggable = false } = {}) {
+function boardHtml(board, { selectedRef = null, draggable = false, sessionCounts = {} } = {}) {
   return `<div class="issues-board" data-mode="${board.mode}">${board.columns.map((col) => `
     <section class="issues-board-column" data-column="${escapeHtml(col.key)}" data-category="${escapeHtml(col.category)}">
       <header class="issues-board-column-head">
@@ -427,7 +436,7 @@ function boardHtml(board, { selectedRef = null, draggable = false } = {}) {
       </header>
       <div class="issues-board-cards">
         ${col.issues.length
-    ? col.issues.map((issue) => cardHtml(issue, { selected: issue.ref === selectedRef, draggable })).join('')
+    ? col.issues.map((issue) => cardHtml(issue, { selected: issue.ref === selectedRef, draggable, sessions: sessionCounts[issue.ref] || 0 })).join('')
     : `<div class="issues-board-empty">${escapeHtml(draggable ? t('tickets.board.dropHere') : t('tickets.board.empty'))}</div>`}
       </div>
     </section>`).join('')}</div>`;
