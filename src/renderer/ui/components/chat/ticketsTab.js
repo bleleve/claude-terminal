@@ -50,6 +50,7 @@ function sourceLabel(source) {
  * @param {string} deps.initialKey `tab:<id>` for a new tab, the CLI session id for a resumed one
  * @param {() => string|null} deps.getProjectId
  * @param {(opts: object) => void} deps.showToast
+ * @param {() => string} [deps.buildRecap] the session's recap, offered as a comment draft
  */
 function createTicketsTab(deps) {
   const { api, panelEl } = deps;
@@ -68,6 +69,7 @@ function createTicketsTab(deps) {
   let searchTimer = null;
   let menu = null; // { ref } of the open state menu
   const announced = new Set(); // suggestions already handed to ChatView for a card
+  let recap = null; // { ref, text } while a recap comment is being written
   let suggestionListener = null;
 
   const linked = () => links.filter((l) => l.status === 'linked');
@@ -195,10 +197,43 @@ function createTicketsTab(deps) {
         ${issue?.url ? `<button type="button" class="session-tickets-icon" data-action="open" data-ref="${escapeHtml(l.ref)}" title="${escapeHtml(t('tickets.detail.openIn', { provider: provider?.name || '' }))}" aria-label="${escapeHtml(t('tickets.detail.openIn', { provider: provider?.name || '' }))}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
         </button>` : ''}
+        ${issue && provider?.capabilities?.write?.includes('comment') && deps.buildRecap ? `<button type="button" class="session-tickets-icon" data-action="recap" data-ref="${escapeHtml(l.ref)}" title="${escapeHtml(t('chat.tickets.recap'))}" aria-label="${escapeHtml(t('chat.tickets.recap'))}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </button>` : ''}
         <button type="button" class="session-tickets-icon" data-action="unlink" data-ref="${escapeHtml(l.ref)}" title="${escapeHtml(t('chat.tickets.unlink'))}" aria-label="${escapeHtml(t('chat.tickets.unlink'))}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>
-      </li>`;
+      </li>${recap?.ref === l.ref ? recapEditorHtml(provider) : ''}`;
+  }
+
+  /** The comment being written, under its ticket. Nothing is posted until Publish. */
+  function recapEditorHtml(provider) {
+    return `<li class="session-tickets-recap">
+      <textarea class="session-tickets-recap-input" rows="7" spellcheck="true" aria-label="${escapeHtml(t('chat.tickets.recap'))}">${escapeHtml(recap.text)}</textarea>
+      <div class="session-tickets-recap-actions">
+        <button type="button" class="btn-sm session-tickets-confirm" data-action="recap-publish">${escapeHtml(t('chat.tickets.recapPublish', { provider: provider?.name || '' }))}</button>
+        <button type="button" class="btn-sm btn-secondary" data-action="recap-cancel">${escapeHtml(t('chat.tickets.recapCancel'))}</button>
+        <span class="session-tickets-muted">${escapeHtml(t('chat.tickets.recapNote'))}</span>
+      </div>
+    </li>`;
+  }
+
+  async function publishRecap(button) {
+    const ref = recap?.ref;
+    const text = (recap?.text || '').trim();
+    const conn = connectionFor(links.find((l) => l.ref === ref) || {});
+    if (!ref || !text || !conn) return;
+    button.disabled = true;
+    const res = await api.issueTrackers.addComment(conn.id, keyOf(ref), text);
+    if (destroyed) return;
+    if (res?.ok) {
+      recap = null;
+      deps.showToast({ type: 'success', title: t('chat.tickets.recapPublished', { key: keyOf(ref) }) });
+      if (visible) render();
+    } else {
+      button.disabled = false;
+      deps.showToast({ type: 'error', title: t('chat.tickets.recapFailed'), message: res?.error || '' });
+    }
   }
 
   function suggestionsHtml() {
@@ -355,6 +390,18 @@ function createTicketsTab(deps) {
       case 'confirm':
         answer([ref], true);
         break;
+      case 'recap':
+        recap = recap?.ref === ref ? null : { ref, text: deps.buildRecap() };
+        render();
+        panelEl.querySelector('.session-tickets-recap-input')?.focus();
+        break;
+      case 'recap-publish':
+        publishRecap(el);
+        break;
+      case 'recap-cancel':
+        recap = null;
+        render();
+        break;
       case 'dismiss-suggestion':
         answer([ref], false);
         break;
@@ -363,6 +410,10 @@ function createTicketsTab(deps) {
   }
 
   function onInput(event) {
+    if (event.target.matches('.session-tickets-recap-input') && recap) {
+      recap.text = event.target.value;
+      return;
+    }
     if (!event.target.matches('.session-tickets-search-input')) return;
     searchText = event.target.value;
     clearTimeout(searchTimer);

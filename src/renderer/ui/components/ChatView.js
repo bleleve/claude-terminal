@@ -98,7 +98,7 @@ class ChatView extends BaseComponent {
 
   createChatView(wrapperEl, project, options = {}) {
     const api = this._api;
-  const { terminalId = null, resumeSessionId = null, forkSession = false, resumeSessionAt = null, resumeDropsTurn = null, skipPermissions = false, onTabRename = null, onStatusChange = null, onModelChange = null, onSwitchTerminal = null, onSwitchProject = null, onForkSession = null, initialPrompt = null, initialModel = null, initialEffort = null, initialImages = null, onSessionStart = null, systemPrompt = null, builtinSystemPrompt = null } = options;
+  const { terminalId = null, resumeSessionId = null, forkSession = false, resumeSessionAt = null, resumeDropsTurn = null, skipPermissions = false, onTabRename = null, onStatusChange = null, onModelChange = null, onSwitchTerminal = null, onSwitchProject = null, onForkSession = null, initialPrompt = null, initialModel = null, initialEffort = null, initialImages = null, onSessionStart = null, systemPrompt = null, builtinSystemPrompt = null, draftPrompt = null, initialTickets = null } = options;
   let sessionId = null;
   let destroyed = false;
 
@@ -446,8 +446,12 @@ class ChatView extends BaseComponent {
       tabbarEl.hidden = false;
     },
     showToast: (opts) => require('./Toast').showToast(opts),
+    buildRecap: () => buildTicketRecap(),
   });
   ticketsTab.probe();
+  for (const ticket of Array.isArray(initialTickets) ? initialTickets : []) {
+    ticketsTab.linkTicket(ticket, 'start');
+  }
 
   // Detected tickets are asked about in the conversation (chat/ticketSuggestionCard.js),
   // at the end of a turn rather than in the middle of Claude's answer.
@@ -471,6 +475,29 @@ class ChatView extends BaseComponent {
       if (!isStreaming) showSuggestionCards();
     }, 600);
   });
+
+  /**
+   * What this session did, as a markdown comment draft for a linked ticket:
+   * branch, the branch's commits, the pull request, the files Claude edited.
+   * Only a draft: the user edits it and publishes it themselves.
+   */
+  function buildTicketRecap() {
+    const s = gitTab.getSummary();
+    const lines = [t('chat.tickets.recapHeading', { project: project?.name || '' })];
+    if (s?.isRepo && s.branch) lines.push(`- ${t('chat.tickets.recapBranch')}: \`${s.branch}\``);
+    if (s?.isRepo && !s.onBase && s.commits?.length) {
+      lines.push(`- ${t('chat.tickets.recapCommits')}:`);
+      for (const c of s.commits.slice(0, 10)) lines.push(`  - \`${c.short}\` ${c.subject}`);
+    }
+    const pr = s?.pr?.pullRequest;
+    if (pr) lines.push(`- ${t('chat.tickets.recapPr')}: [#${pr.number} ${pr.title}](${pr.url})`);
+    const files = [...sessionFileTally.keys()].map((f) => f.split(/[\\/]/).pop());
+    if (files.length) {
+      const shown = files.slice(0, 8).map((f) => `\`${f}\``).join(', ');
+      lines.push(`- ${t('chat.tickets.recapFiles', { count: files.length })}: ${shown}${files.length > 8 ? ', …' : ''}`);
+    }
+    return lines.join('\n');
+  }
 
   let observedBranch = null;
   let observedPrTitle = null;
@@ -8789,6 +8816,9 @@ class ChatView extends BaseComponent {
       }
       setInputText(initialPrompt);
       handleSend();
+    } else if (draftPrompt) {
+      // Prefilled, not sent: the user reads it and adds their own instructions.
+      setInputText(draftPrompt);
     }
   }, 100);
 

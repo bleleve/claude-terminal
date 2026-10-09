@@ -775,6 +775,17 @@
     "daysAgo": "{count}d ago"
   },
   "tickets": {
+    "start": {
+      "project": "Project",
+      "createBranch": "Check out the branch",
+      "moveTo": "Move to “{state}”",
+      "note": "The ticket goes into the composer; nothing is sent until you send it.",
+      "start": "Start",
+      "cancel": "Cancel",
+      "draftIntro": "Work on ticket {key}. Here it is:",
+      "branchFailed": "The branch was not checked out",
+      "noProject": "Add a project first: a session runs in a project."
+    },
     "board": {
       "empty": "No ticket",
       "dropHere": "Drop a ticket here"
@@ -866,7 +877,8 @@
       "copyKey": "Copy key",
       "copied": "Copied to the clipboard",
       "loadFailed": "Could not load this ticket. {message}",
-      "edit": "Change"
+      "edit": "Change",
+      "startSession": "Start a session"
     },
     "errors": {
       "auth": "The {provider} key was rejected. Connect it again in the settings.",
@@ -1897,7 +1909,18 @@
       "cardLinked": "{keys} linked to this session",
       "cardIgnored": "Suggestions ignored for this session",
       "suggestions": "Suggestions",
-      "confirm": "Link"
+      "confirm": "Link",
+      "recap": "Post a recap",
+      "recapPublish": "Publish to {provider}",
+      "recapCancel": "Cancel",
+      "recapNote": "Edit it as you like before publishing.",
+      "recapPublished": "Recap posted on {key}",
+      "recapFailed": "Could not post the recap",
+      "recapHeading": "**Claude Terminal session** on {project}",
+      "recapBranch": "Branch",
+      "recapCommits": "Commits",
+      "recapPr": "Pull request",
+      "recapFiles": "{count} file(s) edited"
     },
     "git": {
       "loading": "Reading the repository…",

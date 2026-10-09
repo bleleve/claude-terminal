@@ -148,7 +148,16 @@ const _LAZY_PANELS = {
   IssuesPanel: {
     root: 'tickets-panel-root',
     load: () => import('./src/renderer/ui/panels/IssuesPanel'),
-    init: (P) => P.init({ api, showToast, openSettings: (subTab) => _switchToSettingsTab(subTab) })
+    init: (P) => P.init({
+      api,
+      showToast,
+      openSettings: (subTab) => _switchToSettingsTab(subTab),
+      getProjects: () => {
+        const s = projectsState.get();
+        return { projects: s.projects || [], openedProjectId: s.openedProjectId || null };
+      },
+      startSession: (project, opts) => startChatFromTicket(project, opts),
+    })
   },
   DatabasePanel: {
     root: 'database-content',
@@ -1916,6 +1925,27 @@ async function deleteProjectUI(projectId) {
 function createTerminalForProject(project) {
   TerminalManager.createTerminal(project, {
     skipPermissions: settingsState.get().skipPermissions
+  });
+}
+
+/**
+ * A chat started from the Tickets screen: on the chosen project, shown as if
+ * picked in the sidebar, with the ticket linked and its content in the
+ * composer, unsent.
+ */
+function startChatFromTicket(project, { draftPrompt, initialTickets }) {
+  const projectIndex = projectsState.get().projects.findIndex((p) => p.id === project.id);
+  document.querySelector('[data-tab="claude"]')?.click();
+  if (projectIndex !== -1) {
+    setSelectedProjectFilter(projectIndex);
+    ProjectList.render();
+    TerminalManager.filterByProject(projectIndex);
+  }
+  return TerminalManager.createTerminal(project, {
+    mode: 'chat',
+    skipPermissions: settingsState.get().skipPermissions,
+    draftPrompt,
+    initialTickets,
   });
 }
 

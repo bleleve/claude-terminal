@@ -81,6 +81,7 @@ beforeEach(async () => {
       listIssues: wrap((id, q, c) => trackers.listIssues(id, q, c)),
       getIssue: wrap((id, key) => trackers.getIssue(id, key), 'issue'),
       updateIssue: wrap((id, key, patch) => trackers.updateIssue(id, key, patch), 'issue'),
+      addComment: wrap((id, key, body) => trackers.addComment(id, key, body), 'comment'),
     },
     issueLinks: {
       get: wrap((k) => links.get(k), 'links'),
@@ -249,6 +250,39 @@ describe('suggestions', () => {
     await tab.dismiss(['linear:ENG-139']);
     const byRef = Object.fromEntries(tab.getLinks().map((l) => [l.ref, l.status]));
     expect(byRef).toEqual({ 'linear:ENG-142': 'linked', 'linear:ENG-139': 'dismissed' });
+    tab.destroy();
+  });
+});
+
+describe('recap comment', () => {
+  test('a draft from the session is edited, then published only on Publish', async () => {
+    const tab = makeTab({ buildRecap: () => '**Claude Terminal session** on acme-app\n- Branch: `ada/eng-142`' });
+    await tab.probe();
+    await tab.linkTicket({ ref: 'linear:ENG-142', connectionId: conn.id, title: 'x' }, 'manual');
+    tab.show();
+    await waitFor(() => panel().querySelector('[data-action="recap"]'));
+    panel().querySelector('[data-action="recap"]').click();
+    const input = panel().querySelector('.session-tickets-recap-input');
+    expect(input.value).toContain('Branch: `ada/eng-142`');
+    expect(api.issueTrackers.addComment).not.toHaveBeenCalled();
+
+    input.value = `${input.value}\nDone, waiting for review.`;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    panel().querySelector('[data-action="recap-publish"]').click();
+    await waitFor(() => !panel().querySelector('.session-tickets-recap'));
+    expect(api.issueTrackers.addComment).toHaveBeenCalledWith(conn.id, 'ENG-142', expect.stringContaining('Done, waiting for review.'));
+    const issue = await api.issueTrackers.getIssue(conn.id, 'ENG-142');
+    expect(issue.issue.comments.at(-1).body).toContain('Done, waiting for review.');
+    tab.destroy();
+  });
+
+  test('without buildRecap there is no recap button', async () => {
+    const tab = makeTab();
+    await tab.probe();
+    await tab.linkTicket({ ref: 'linear:ENG-142', connectionId: conn.id, title: 'x' }, 'manual');
+    tab.show();
+    await waitFor(() => panel().querySelector('.session-tickets-state'));
+    expect(panel().querySelector('[data-action="recap"]')).toBeNull();
     tab.destroy();
   });
 });

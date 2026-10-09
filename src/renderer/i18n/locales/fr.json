@@ -870,6 +870,17 @@
     "daysAgo": "il y a {count}j"
   },
   "tickets": {
+    "start": {
+      "project": "Projet",
+      "createBranch": "Basculer sur la branche",
+      "moveTo": "Passer à « {state} »",
+      "note": "Le ticket est placé dans la zone de saisie ; rien n'est envoyé avant que vous l'envoyiez.",
+      "start": "Démarrer",
+      "cancel": "Annuler",
+      "draftIntro": "Travaille sur le ticket {key}. Le voici :",
+      "branchFailed": "La branche n'a pas pu être activée",
+      "noProject": "Ajoutez d'abord un projet : une session tourne dans un projet."
+    },
     "board": {
       "empty": "Aucun ticket",
       "dropHere": "Déposez un ticket ici"
@@ -961,7 +972,8 @@
       "copyKey": "Copier l'identifiant",
       "copied": "Copié dans le presse-papiers",
       "loadFailed": "Impossible de charger ce ticket. {message}",
-      "edit": "Modifier"
+      "edit": "Modifier",
+      "startSession": "Démarrer une session"
     },
     "errors": {
       "auth": "La clé {provider} a été refusée. Reconnectez-la dans les réglages.",
@@ -1897,7 +1909,18 @@
       "cardLinked": "{keys} lié(s) à cette session",
       "cardIgnored": "Suggestions ignorées pour cette session",
       "suggestions": "Suggestions",
-      "confirm": "Lier"
+      "confirm": "Lier",
+      "recap": "Publier un récap",
+      "recapPublish": "Publier dans {provider}",
+      "recapCancel": "Annuler",
+      "recapNote": "Modifiez-le à votre guise avant de publier.",
+      "recapPublished": "Récap publié sur {key}",
+      "recapFailed": "Impossible de publier le récap",
+      "recapHeading": "**Session Claude Terminal** sur {project}",
+      "recapBranch": "Branche",
+      "recapCommits": "Commits",
+      "recapPr": "Pull request",
+      "recapFiles": "{count} fichier(s) modifié(s)"
     },
     "git": {
       "loading": "Lecture du dépôt…",

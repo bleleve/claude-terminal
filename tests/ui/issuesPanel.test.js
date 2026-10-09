@@ -374,3 +374,82 @@ describe('board and writes', () => {
     expect(root.querySelector('.issue-prop-edit')).toBeNull();
   });
 });
+
+describe('starting a session from a ticket', () => {
+  const PROJECTS = [
+    { id: 'p-other', name: 'other', path: '/repo/other' },
+    { id: 'p-acme', name: 'acme-app', path: '/repo/acme' },
+  ];
+
+  async function startSetup({ git = {} } = {}) {
+    await setup();
+    panel._reset();
+    api.git = {
+      createBranch: jest.fn(async () => ({ success: true })),
+      checkout: jest.fn(async () => ({ success: true })),
+      ...git,
+    };
+    deps.getProjects = () => ({ projects: PROJECTS, openedProjectId: 'p-acme' });
+    deps.startSession = jest.fn();
+    panel.init(deps);
+    await panel.loadPanel(root);
+    root.querySelector('.issue-row[data-key="ENG-151"]').click(); // Todo, so it can move to started
+    await flush();
+    root.querySelector('[data-action="start-session"]').click();
+  }
+
+  test('the start button only exists when the app can open a session', async () => {
+    await setup();
+    root.querySelector('.issue-row[data-key="ENG-151"]').click();
+    await flush();
+    expect(root.querySelector('[data-action="start-session"]')).toBeNull();
+  });
+
+  test('the options: the opened project first, the branch, the move to started', async () => {
+    await startSetup();
+    const dialog = root.querySelector('.issues-start');
+    expect([...dialog.querySelectorAll('option')].map((o) => o.value)).toEqual(['p-acme', 'p-other']);
+    expect(dialog.querySelector('code').textContent).toBe('ada/eng-151-persist-ticket-filters-per-screen');
+    expect(dialog.textContent).toContain(t('tickets.start.moveTo', { state: 'In Progress' }));
+  });
+
+  test('starting checks out the branch, moves the ticket and opens a linked chat with an unsent draft', async () => {
+    await startSetup();
+    root.querySelector('[data-action="start-confirm"]').click();
+    await flush();
+    expect(api.git.createBranch).toHaveBeenCalledWith({ projectPath: '/repo/acme', branch: 'ada/eng-151-persist-ticket-filters-per-screen' });
+    expect(api.issueTrackers.updateIssue).toHaveBeenCalledWith(expect.any(String), 'ENG-151', { stateId: 's-eng-progress' });
+    const [project, opts] = deps.startSession.mock.calls[0];
+    expect(project.id).toBe('p-acme');
+    expect(opts.initialTickets).toEqual([{ ref: 'linear:ENG-151', connectionId: expect.stringMatching(/^linear-/), title: 'Persist ticket filters per screen' }]);
+    expect(opts.draftPrompt).toContain(t('tickets.start.draftIntro', { key: 'ENG-151' }));
+    expect(opts.draftPrompt).toContain('# ENG-151: Persist ticket filters per screen');
+    expect(root.querySelector('.issues-start')).toBeNull();
+  });
+
+  test('an existing branch is checked out instead of created', async () => {
+    await startSetup({ git: { createBranch: jest.fn(async () => ({ success: false, error: "fatal: a branch named 'x' already exists" })) } });
+    root.querySelector('[data-action="start-confirm"]').click();
+    await flush();
+    expect(api.git.checkout).toHaveBeenCalledWith({ projectPath: '/repo/acme', branch: 'ada/eng-151-persist-ticket-filters-per-screen' });
+    expect(deps.startSession).toHaveBeenCalled();
+  });
+
+  test('a branch that cannot be checked out is said, and the session still starts', async () => {
+    await startSetup({ git: { createBranch: jest.fn(async () => ({ success: false, error: 'local changes would be overwritten' })) } });
+    root.querySelector('.issues-start-move').checked = false;
+    root.querySelector('[data-action="start-confirm"]').click();
+    await flush();
+    expect(deps.showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning', title: t('tickets.start.branchFailed') }));
+    expect(api.issueTrackers.updateIssue).not.toHaveBeenCalled();
+    expect(deps.startSession).toHaveBeenCalled();
+  });
+
+  test('Escape closes the options without starting anything', async () => {
+    await startSetup();
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(root.querySelector('.issues-start')).toBeNull();
+    expect(root.querySelector('.issues-detail').hidden).toBe(false);
+    expect(deps.startSession).not.toHaveBeenCalled();
+  });
+});

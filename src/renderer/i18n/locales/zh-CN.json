@@ -775,6 +775,17 @@
     "daysAgo": "{count}d 前"
   },
   "tickets": {
+    "start": {
+      "project": "项目",
+      "createBranch": "切换到分支",
+      "moveTo": "移至“{state}”",
+      "note": "工单内容会放入输入框；在你发送之前不会发送任何内容。",
+      "start": "开始",
+      "cancel": "取消",
+      "draftIntro": "处理工单 {key}。内容如下：",
+      "branchFailed": "无法切换到该分支",
+      "noProject": "请先添加项目：会话需要在项目中运行。"
+    },
     "board": {
       "empty": "没有工单",
       "dropHere": "将工单拖放到此处"
@@ -866,7 +877,8 @@
       "copyKey": "复制编号",
       "copied": "已复制到剪贴板",
       "loadFailed": "无法加载此工单。{message}",
-      "edit": "修改"
+      "edit": "修改",
+      "startSession": "开始会话"
     },
     "errors": {
       "auth": "{provider} 密钥被拒绝，请在设置中重新连接。",
@@ -1897,7 +1909,18 @@
       "cardLinked": "{keys} 已关联到本次会话",
       "cardIgnored": "已忽略本次会话的建议",
       "suggestions": "建议",
-      "confirm": "关联"
+      "confirm": "关联",
+      "recap": "发布总结",
+      "recapPublish": "发布到 {provider}",
+      "recapCancel": "取消",
+      "recapNote": "发布前可以随意修改。",
+      "recapPublished": "总结已发布到 {key}",
+      "recapFailed": "无法发布总结",
+      "recapHeading": "**Claude Terminal 会话**，项目 {project}",
+      "recapBranch": "分支",
+      "recapCommits": "提交",
+      "recapPr": "拉取请求",
+      "recapFiles": "已编辑 {count} 个文件"
     },
     "git": {
       "loading": "正在读取仓库…",

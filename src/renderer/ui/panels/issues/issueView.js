@@ -456,7 +456,7 @@ function editable(field, html, editableFields) {
   return `<button type="button" class="issue-prop-edit" data-edit="${field}" aria-haspopup="menu" title="${escapeHtml(t('tickets.detail.edit'))}">${html}</button>`;
 }
 
-function detailHtml(issue, { renderMarkdown, providerName, metadata, editableFields = null }) {
+function detailHtml(issue, { renderMarkdown, providerName, metadata, editableFields = null, canStart = false }) {
   const facets = Object.entries(issue.facets)
     .map(([id, value]) => propHtml(facetLabel((metadata?.facets || []).find((f) => f.id === id) || { id, label: id }), escapeHtml(value)))
     .join('');
@@ -486,6 +486,7 @@ function detailHtml(issue, { renderMarkdown, providerName, metadata, editableFie
     </div>
     <h3 class="issue-detail-title">${escapeHtml(issue.title)}</h3>
     <div class="issue-detail-actions">
+      ${canStart ? `<button type="button" class="btn-sm issues-primary issue-action" data-action="start-session" aria-haspopup="dialog">${escapeHtml(t('tickets.detail.startSession'))}</button>` : ''}
       ${issue.url ? `<button type="button" class="btn-sm btn-secondary issue-action" data-action="open">${escapeHtml(t('tickets.detail.openIn', { provider: providerName }))}</button>` : ''}
       ${issue.branchName ? `<button type="button" class="btn-sm btn-secondary issue-action" data-action="copy-branch" title="${escapeHtml(issue.branchName)}">${escapeHtml(t('tickets.detail.copyBranch'))}</button>` : ''}
       <button type="button" class="btn-sm btn-secondary issue-action" data-action="copy-key">${escapeHtml(t('tickets.detail.copyKey'))}</button>

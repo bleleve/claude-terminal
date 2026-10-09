@@ -1,6 +1,6 @@
 # Issue trackers: a provider-neutral ticket layer
 
-**Status:** everything up to automatic detection with its confirmation card shipped (steps 1 to 7 under *Delivery*); a workspace is connected in Settings → Tickets.
+**Status:** steps 1 to 7 under *Delivery* shipped, and step 8 for chat sessions (start a session from a ticket, post a recap); terminal sessions are the last part. A workspace is connected in Settings → Tickets.
 **Scope:** `src/shared/issue-trackers.js`, `src/main/issue-trackers/`, and later the Tickets screen and the per-session Tickets and Git tabs.
 **Audience:** anyone writing an adapter for a new provider, and anyone about to change the contract.
 
