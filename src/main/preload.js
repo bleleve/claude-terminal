@@ -688,6 +688,7 @@ contextBridge.exposeInMainWorld('electron_api', {
     rekey: (from, to) => ipcRenderer.invoke('issue-links:rekey', from, to),
     copy: (from, to) => ipcRenderer.invoke('issue-links:copy', from, to),
     counts: () => ipcRenderer.invoke('issue-links:counts'),
+    observeText: (sessionKey, text, source, evidence) => ipcRenderer.invoke('issue-links:observe-text', sessionKey, text, source, evidence),
     onChanged: createListener('issue-links-changed'),
   },
 

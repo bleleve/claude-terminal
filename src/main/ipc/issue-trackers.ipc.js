@@ -13,6 +13,7 @@
 const { ipcMain } = require('electron');
 const issueTrackers = require('../services/IssueTrackerService');
 const issueLinks = require('../services/IssueLinkService');
+const issueDetection = require('../services/IssueDetectionService');
 
 function fail(err) {
   return { ok: false, error: err.message, code: err.code || 'PROVIDER', retryAfterMs: err.retryAfterMs };
@@ -115,6 +116,13 @@ function registerIssueTrackerHandlers() {
   ipcMain.handle('issue-links:rekey', linkHandler(async (from, to) => ({ moved: await issueLinks.rekey(from, to) })));
   ipcMain.handle('issue-links:copy', linkHandler(async (from, to) => ({ copied: await issueLinks.copy(from, to) })));
   ipcMain.handle('issue-links:counts', linkHandler(async () => ({ counts: await issueLinks.counts() })));
+  // Text the renderer knows and main does not: a chat prompt as typed, the branch, the PR title.
+  ipcMain.handle('issue-links:observe-text', linkHandler(async (key, text, source, evidence) => ({
+    suggested: await issueDetection.service().observeText(key, text, source, evidence),
+  })));
+
+  // Claude's tracker tool calls in chat sessions. Terminal sessions come through the hooks.
+  issueDetection.service().attachChat(require('../services/ChatService'));
 }
 
 module.exports = { registerIssueTrackerHandlers };

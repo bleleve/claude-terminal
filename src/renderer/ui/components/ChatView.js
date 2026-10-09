@@ -42,6 +42,7 @@ const { createTranscriptSearch } = require('./chat/transcriptSearch');
 const { createAttachmentTray } = require('./chat/attachmentTray');
 const { createGitTab } = require('./chat/gitTab');
 const { createTicketsTab } = require('./chat/ticketsTab');
+const { createSuggestionCard } = require('./chat/ticketSuggestionCard');
 const { formatTokenCount, contextSummaryText, contextSummaryHtml, contextUsageRows } = require('./chat/contextUsage');
 
 /** Paperclip, for the chip an attached file leaves in the composer. */
@@ -423,6 +424,8 @@ class ChatView extends BaseComponent {
     openGitScreen: () => document.querySelector('.nav-tab[data-tab="git"]')?.click(),
     openSettings: (tab) => document.dispatchEvent(new CustomEvent('ct-open-settings', { detail: { tab } })),
     showToast: (opts) => require('./Toast').showToast(opts),
+    // The branch name and the PR title may name tickets: detection suggests them.
+    onSummary: (summary) => observeGitForTickets(summary),
   });
   if (!project.isCloud) gitTab.probe();
 
@@ -445,6 +448,45 @@ class ChatView extends BaseComponent {
     showToast: (opts) => require('./Toast').showToast(opts),
   });
   ticketsTab.probe();
+
+  // Detected tickets are asked about in the conversation (chat/ticketSuggestionCard.js),
+  // at the end of a turn rather than in the middle of Claude's answer.
+  const pendingSuggestionCards = [];
+  function showSuggestionCards() {
+    if (!pendingSuggestionCards.length || destroyed) return;
+    const batch = pendingSuggestionCards.splice(0);
+    messagesEl.appendChild(createSuggestionCard(batch, {
+      onConfirm: (refs) => ticketsTab.confirm(refs),
+      onDismiss: (refs) => ticketsTab.dismiss(refs),
+    }));
+    scrollToBottom();
+  }
+  // Suggestions from one moment (the branch and the PR title, several tool
+  // calls) arrive one by one: gathered for a moment, they make one card.
+  let suggestionCardTimer = null;
+  ticketsTab.onSuggestions((list) => {
+    pendingSuggestionCards.push(...list);
+    clearTimeout(suggestionCardTimer);
+    suggestionCardTimer = setTimeout(() => {
+      if (!isStreaming) showSuggestionCards();
+    }, 600);
+  });
+
+  let observedBranch = null;
+  let observedPrTitle = null;
+  function observeGitForTickets(summary) {
+    if (!summary?.isRepo || !api.issueLinks?.observeText) return;
+    const key = ticketsTab.getKey();
+    if (summary.branch && summary.branch !== observedBranch) {
+      observedBranch = summary.branch;
+      api.issueLinks.observeText(key, summary.branch, 'branch', summary.branch).catch(() => {});
+    }
+    const pr = summary.pr?.pullRequest;
+    if (pr?.title && pr.title !== observedPrTitle) {
+      observedPrTitle = pr.title;
+      api.issueLinks.observeText(key, pr.title, 'pr', `#${pr.number}`).catch(() => {});
+    }
+  }
   const artifactsBadgeEl = chatView.querySelector('.chat-tab-badge[data-badge="artifacts"]');
   const inputEl = chatView.querySelector('.chat-input');
   const sendBtn = chatView.querySelector('.chat-send-btn');
@@ -3289,6 +3331,9 @@ class ChatView extends BaseComponent {
     // Resolve mentions to text content
     const resolvedMentions = mentions.length > 0 ? await resolveMentions(mentions) : [];
     if (destroyed) return;
+    // What the user typed may name a ticket. After the mentions, so a ticket
+    // cited with @tickets is already linked and not suggested again.
+    if (text && api.issueLinks?.observeText) api.issueLinks.observeText(ticketsTab.getKey(), text, 'prompt').catch(() => {});
 
     // Prepare images payload (without dataUrl to reduce IPC size)
     const imagesPayload = images.map(({ base64, mediaType }) => ({ base64, mediaType }));
@@ -6307,7 +6352,10 @@ class ChatView extends BaseComponent {
     // happily queues the next message, and the permission-mode picker beside
     // them stayed live the whole time. They are enabled now; a pick made
     // mid-turn is held and pushed to the SDK when the turn ends.
-    if (!streaming) flushPendingSelection();
+    if (!streaming) {
+      flushPendingSelection();
+      showSuggestionCards();
+    }
 
     if (streaming) {
       elapsedTimer.start();
@@ -8770,6 +8818,7 @@ class ChatView extends BaseComponent {
       transcriptPruner?.destroy();
       gitTab.destroy();
       ticketsTab.destroy();
+      clearTimeout(suggestionCardTimer);
       scrollResizeObserver?.disconnect();
       scrollChildrenObserver.disconnect();
       contextSuggestions.reset();

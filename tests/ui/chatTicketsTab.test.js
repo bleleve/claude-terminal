@@ -86,6 +86,8 @@ beforeEach(async () => {
       get: wrap((k) => links.get(k), 'links'),
       link: wrap((k, l, o) => links.link(k, l, o || {}), 'links'),
       dismiss: wrap((k, refs) => links.dismiss(k, refs), 'links'),
+      confirm: wrap((k, refs) => links.confirm(k, refs), 'links'),
+      suggest: (k, l) => links.suggest(k, l),
       rekey: wrap((a, b) => links.rekey(a, b), 'moved'),
       copy: wrap((a, b) => links.copy(a, b), 'copied'),
       onChanged: (fn) => {
@@ -211,6 +213,44 @@ test('a change broadcast for this session refreshes the tab', async () => {
   await api.issueLinks.link('tab:1', { ref: 'linear:ENG-1', connectionId: conn.id, title: 'later' });
   await flush();
   expect(rows()).toEqual(['linear:OPS-12']); // destroyed: no longer listening
+});
+
+describe('suggestions', () => {
+  test('each new suggestion is announced once, and listed in the tab until answered', async () => {
+    const tab = makeTab();
+    const announced = [];
+    tab.onSuggestions((list) => announced.push(list.map((l) => l.ref)));
+    await tab.probe();
+    tab.show();
+    await api.issueLinks.suggest('tab:1', { ref: 'linear:ENG-155', connectionId: conn.id, title: 'Shared prefixes', source: 'tool', evidence: 'save_issue (create)' });
+    await waitFor(() => announced.length === 1 && panel().querySelector('.session-tickets-row.suggested'));
+    expect(announced).toEqual([['linear:ENG-155']]);
+    expect(badge().textContent).toBe('0 +1');
+    expect(badge().classList.contains('has-suggestions')).toBe(true);
+
+    // Another change for the session does not announce the same suggestion twice.
+    await api.issueLinks.link('tab:1', { ref: 'linear:OPS-12', connectionId: conn.id, title: 'Rotate' });
+    await waitFor(() => rows().includes('linear:OPS-12'));
+    expect(announced).toHaveLength(1);
+
+    panel().querySelector('[data-action="confirm"]').click();
+    await waitFor(() => !panel().querySelector('.session-tickets-row.suggested'));
+    expect(rows().sort()).toEqual(['linear:ENG-155', 'linear:OPS-12']);
+    expect(badge().textContent).toBe('2');
+    tab.destroy();
+  });
+
+  test('the card\'s answers go through the tab', async () => {
+    const tab = makeTab();
+    await tab.probe();
+    await api.issueLinks.suggest('tab:1', { ref: 'linear:ENG-142', connectionId: conn.id, source: 'branch' });
+    await api.issueLinks.suggest('tab:1', { ref: 'linear:ENG-139', connectionId: conn.id, source: 'prompt' });
+    await tab.confirm(['linear:ENG-142']);
+    await tab.dismiss(['linear:ENG-139']);
+    const byRef = Object.fromEntries(tab.getLinks().map((l) => [l.ref, l.status]));
+    expect(byRef).toEqual({ 'linear:ENG-142': 'linked', 'linear:ENG-139': 'dismissed' });
+    tab.destroy();
+  });
 });
 
 describe('@tickets mention source', () => {

@@ -6007,3 +6007,59 @@ button.session-tickets-state:hover { background: var(--bg-hover); }
   text-align: center;
 }
 .session-tickets-menu { position: absolute; }
+
+/* Suggested tickets (detection, waiting for the user's answer) */
+.session-tickets-suggestions { margin-bottom: 14px; }
+.session-tickets-subheading {
+  margin: 0 0 6px;
+  color: var(--accent-hover);
+  font-size: var(--font-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.session-tickets-row.suggested { background: var(--accent-dim); }
+.btn-sm.session-tickets-confirm { flex: none; background: var(--accent); color: var(--bg-primary); }
+.btn-sm.session-tickets-confirm:hover { background: var(--accent-hover); }
+.chat-tab-badge.has-suggestions { box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent-hover); }
+
+/* ── Ticket suggestion card in the conversation (chat/ticketSuggestionCard.js) ── */
+.ticket-suggestion-card {
+  margin: 10px 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(var(--accent-rgb), 0.4);
+  border-radius: var(--radius);
+  background: var(--accent-dim);
+  font-size: var(--font-sm);
+}
+.ticket-suggestion-card.settled { padding: 8px 12px; border-color: var(--border-color); background: transparent; }
+.ticket-suggestion-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent-hover);
+  font-weight: 600;
+}
+.ticket-suggestion-card.settled .ticket-suggestion-head { color: var(--text-muted); font-weight: 400; }
+.ticket-suggestion-head svg { width: 15px; height: 15px; flex: none; }
+.ticket-suggestion-list { margin: 8px 0 0; padding: 0; list-style: none; }
+.ticket-suggestion-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.ticket-suggestion-item input { accent-color: var(--accent); }
+.ticket-suggestion-title {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ticket-suggestion-why { margin-left: auto; flex: none; color: var(--text-muted); font-size: var(--font-xs); }
+.ticket-suggestion-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.ticket-suggestion-actions .btn-sm { flex: none; }
+.btn-sm.ticket-suggestion-confirm { background: var(--accent); color: var(--bg-primary); }
+.btn-sm.ticket-suggestion-confirm:hover { background: var(--accent-hover); }
+.ticket-suggestion-note { margin-left: auto; color: var(--text-muted); font-size: var(--font-xs); }

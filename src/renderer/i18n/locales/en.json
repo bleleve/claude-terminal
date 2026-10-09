@@ -1889,7 +1889,15 @@
       "sourceTool": "touched by Claude",
       "sourcePrompt": "cited in a message",
       "sourceBranch": "branch name",
-      "sourcePr": "pull request title"
+      "sourcePr": "pull request title",
+      "cardTitle": "Tickets detected in this session",
+      "cardConfirm": "Link the selection",
+      "cardDismiss": "Ignore",
+      "cardNote": "Not sent to Claude",
+      "cardLinked": "{keys} linked to this session",
+      "cardIgnored": "Suggestions ignored for this session",
+      "suggestions": "Suggestions",
+      "confirm": "Link"
     },
     "git": {
       "loading": "Reading the repository…",

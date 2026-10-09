@@ -1886,7 +1886,15 @@
       "sourceTool": "tocado por Claude",
       "sourcePrompt": "citado en un mensaje",
       "sourceBranch": "nombre de la rama",
-      "sourcePr": "título de la pull request"
+      "sourcePr": "título de la pull request",
+      "cardTitle": "Tickets detectados en esta sesión",
+      "cardConfirm": "Vincular la selección",
+      "cardDismiss": "Ignorar",
+      "cardNote": "No se envía a Claude",
+      "cardLinked": "{keys} vinculado(s) a esta sesión",
+      "cardIgnored": "Sugerencias ignoradas para esta sesión",
+      "suggestions": "Sugerencias",
+      "confirm": "Vincular"
     },
     "git": {
       "loading": "Leyendo el repositorio…",

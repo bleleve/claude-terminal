@@ -167,6 +167,7 @@ function gitTabHtml(s, { sessionStartedAt = Date.now(), decoratePrTitle = null }
  * @param {(subTab: string) => void} deps.openSettings
  * @param {(opts: object) => void} deps.showToast
  * @param {(title: string) => string} [deps.decoratePrTitle]
+ * @param {(summary: object) => void} [deps.onSummary] every summary read (ticket detection reads the branch and PR title)
  */
 function createGitTab(deps) {
   const { api, panelEl } = deps;
@@ -193,6 +194,7 @@ function createGitTab(deps) {
     summary = res;
     loadedAt = Date.now();
     stale = false;
+    deps.onSummary?.(summary);
     if (summary?.isRepo && !available) {
       available = true;
       deps.onAvailable?.();

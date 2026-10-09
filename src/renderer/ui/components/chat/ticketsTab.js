@@ -8,8 +8,11 @@
  * (`onSessionId`); a fork copies its parent's links instead.
  *
  * Linking here is explicit: the "Link a ticket" search, or an `@ENG-142`
- * mention in a message. Automatic detection only ever suggests, through the
- * confirmation card in the conversation, never from this tab.
+ * mention in a message. Automatic detection only ever suggests: each new
+ * suggestion is announced once to ChatView (`onSuggestions`), which shows the
+ * confirmation card in the conversation, and stays listed here under
+ * Suggestions until the user answers, so a card scrolled away or a restart
+ * loses nothing.
  *
  * Statuses are fetched from the tracker when the tab is shown, at most every
  * 30 s, one request per linked ticket; a session links a handful, not dozens.
@@ -64,8 +67,11 @@ function createTicketsTab(deps) {
   let searchSeq = 0;
   let searchTimer = null;
   let menu = null; // { ref } of the open state menu
+  const announced = new Set(); // suggestions already handed to ChatView for a card
+  let suggestionListener = null;
 
   const linked = () => links.filter((l) => l.status === 'linked');
+  const suggested = () => links.filter((l) => l.status === 'suggested');
   const connectionFor = (link) => connections.find((c) => c.id === link.connectionId) || null;
   const providerFor = (conn) => providers.find((p) => p.id === conn?.provider) || null;
   const keyOf = (ref) => ref.slice(ref.indexOf(':') + 1);
@@ -73,8 +79,30 @@ function createTicketsTab(deps) {
   function updateBadge() {
     if (!deps.badgeEl) return;
     const n = linked().length;
-    deps.badgeEl.textContent = String(n);
-    deps.badgeEl.hidden = n === 0;
+    const pending = suggested().length;
+    deps.badgeEl.textContent = pending ? `${n} +${pending}` : String(n);
+    deps.badgeEl.hidden = n === 0 && pending === 0;
+    deps.badgeEl.classList.toggle('has-suggestions', pending > 0);
+  }
+
+  /** Hand each new suggestion to ChatView once, for the card in the conversation. */
+  function announce() {
+    const fresh = suggested().filter((l) => !announced.has(l.ref));
+    if (!fresh.length) return;
+    fresh.forEach((l) => announced.add(l.ref));
+    suggestionListener?.(fresh.map((l) => ({ ...l })));
+  }
+
+  async function answer(refs, yes) {
+    const res = yes ? await api.issueLinks.confirm(key, refs) : await api.issueLinks.dismiss(key, refs);
+    if (destroyed || !res?.ok) return res;
+    links = res.links;
+    updateBadge();
+    if (visible) {
+      render();
+      if (yes) fetchIssues();
+    }
+    return res;
   }
 
   async function refreshLinks() {
@@ -82,6 +110,7 @@ function createTicketsTab(deps) {
     if (destroyed) return;
     links = res?.ok ? res.links : [];
     updateBadge();
+    announce();
     if (visible) {
       render();
       fetchIssues();
@@ -172,6 +201,26 @@ function createTicketsTab(deps) {
       </li>`;
   }
 
+  function suggestionsHtml() {
+    const list = suggested();
+    if (!list.length) return '';
+    return `<section class="session-tickets-suggestions">
+      <h5 class="session-tickets-subheading">${escapeHtml(t('chat.tickets.suggestions'))} <span class="session-tickets-count">${list.length}</span></h5>
+      <ul class="session-tickets-list">${list.map((l) => `
+        <li class="session-tickets-row suggested" data-ref="${escapeHtml(l.ref)}">
+          <span class="issue-key">${escapeHtml(keyOf(l.ref))}</span>
+          <span class="session-tickets-title">
+            <span class="session-tickets-name">${escapeHtml(l.title || keyOf(l.ref))}</span>
+            <span class="session-tickets-source">${escapeHtml(sourceLabel(l.source))}${l.evidence ? ` · ${escapeHtml(l.evidence)}` : ''}</span>
+          </span>
+          <button type="button" class="btn-sm session-tickets-confirm" data-action="confirm" data-ref="${escapeHtml(l.ref)}">${escapeHtml(t('chat.tickets.confirm'))}</button>
+          <button type="button" class="session-tickets-icon" data-action="dismiss-suggestion" data-ref="${escapeHtml(l.ref)}" title="${escapeHtml(t('chat.tickets.cardDismiss'))}" aria-label="${escapeHtml(t('chat.tickets.cardDismiss'))}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </li>`).join('')}</ul>
+    </section>`;
+  }
+
   function renderSearchResults() {
     const el = panelEl.querySelector('.session-tickets-results');
     if (!el) return;
@@ -205,6 +254,7 @@ function createTicketsTab(deps) {
             <input type="search" class="session-tickets-search-input" placeholder="${escapeHtml(t('chat.tickets.searchPlaceholder'))}" aria-label="${escapeHtml(t('chat.tickets.searchPlaceholder'))}" spellcheck="false" value="${escapeHtml(searchText)}">
             <ul class="session-tickets-results"></ul>
           </div>` : ''}
+        ${suggestionsHtml()}
         ${rows.length
     ? `<ul class="session-tickets-list">${rows.map(rowHtml).join('')}</ul>`
     : `<p class="session-tickets-empty">${escapeHtml(t('chat.tickets.empty'))}</p>`}
@@ -302,6 +352,12 @@ function createTicketsTab(deps) {
         closeMenu();
         changeState(ref, el.dataset.state);
         break;
+      case 'confirm':
+        answer([ref], true);
+        break;
+      case 'dismiss-suggestion':
+        answer([ref], false);
+        break;
       default:
     }
   }
@@ -382,6 +438,15 @@ function createTicketsTab(deps) {
       updateBadge();
       if (visible) render();
     },
+
+    /** Called once per new suggestion batch; ChatView turns it into a card. */
+    onSuggestions(fn) {
+      suggestionListener = fn;
+    },
+
+    /** The card's answers. */
+    confirm: (refs) => answer(refs, true),
+    dismiss: (refs) => answer(refs, false),
 
     getKey: () => key,
     getLinks: () => links.slice(),
