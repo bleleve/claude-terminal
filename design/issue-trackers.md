@@ -1,6 +1,6 @@
 # Issue trackers: a provider-neutral ticket layer
 
-**Status:** core contract, Linear adapter, the Tickets screen with its board and writes, the per-session Git tab, and the per-session Tickets tab with its link store shipped; a workspace is connected in Settings → Tickets. The rest lands in the PRs listed under *Delivery*.
+**Status:** everything up to automatic detection with its confirmation card shipped (steps 1 to 7 under *Delivery*); a workspace is connected in Settings → Tickets.
 **Scope:** `src/shared/issue-trackers.js`, `src/main/issue-trackers/`, and later the Tickets screen and the per-session Tickets and Git tabs.
 **Audience:** anyone writing an adapter for a new provider, and anyone about to change the contract.
 
@@ -111,7 +111,7 @@ Clauses combine with AND, except `stateCategories` and `stateIds`: together they
 
 `refs.fromToolCall({ name, input, result })` reads Claude's calls to the provider's own MCP tools. It returns the tickets a call **targets** (`read` or `write`) or **creates** (`create`, key read from the result), and never the content of a list: a `list_issues` call returns dozens of tickets, and none of them is being worked on.
 
-Where detection looks, once the session views land:
+Where detection looks (`IssueDetectionService`):
 
 | Source | Signal |
 |--------|--------|
@@ -120,7 +120,9 @@ Where detection looks, once the session views land:
 | Branch | the session's branch name contains a key |
 | Pull request | the title of the PR for the session's branch contains a key |
 
-When two connections both know a prefix, the suggestion card asks which one is meant.
+Chat sessions are read from ChatService's event stream, terminal sessions from the `PostToolUse` and `UserPromptSubmit` hooks. A key is only suggested once the tracker confirms the ticket exists. Suggestions from one moment are gathered into one card, shown at the end of a turn, never in the middle of Claude's answer; a card left unanswered changes nothing, the suggestions stay listed in the session's Tickets tab.
+
+Two connections of the same provider that both have a ticket with the same key collide on one ref (`linear:ENG-142`); the first connection that confirms the ticket wins. Rare enough to leave for now.
 
 ---
 

@@ -1889,7 +1889,15 @@
       "sourceTool": "Claude 操作过",
       "sourcePrompt": "在消息中引用",
       "sourceBranch": "分支名称",
-      "sourcePr": "拉取请求标题"
+      "sourcePr": "拉取请求标题",
+      "cardTitle": "在本次会话中检测到的工单",
+      "cardConfirm": "关联所选项",
+      "cardDismiss": "忽略",
+      "cardNote": "不会发送给 Claude",
+      "cardLinked": "{keys} 已关联到本次会话",
+      "cardIgnored": "已忽略本次会话的建议",
+      "suggestions": "建议",
+      "confirm": "关联"
     },
     "git": {
       "loading": "正在读取仓库…",

@@ -1889,7 +1889,15 @@
       "sourceTool": "disentuh oleh Claude",
       "sourcePrompt": "dikutip dalam pesan",
       "sourceBranch": "nama branch",
-      "sourcePr": "judul pull request"
+      "sourcePr": "judul pull request",
+      "cardTitle": "Tiket terdeteksi di sesi ini",
+      "cardConfirm": "Tautkan pilihan",
+      "cardDismiss": "Abaikan",
+      "cardNote": "Tidak dikirim ke Claude",
+      "cardLinked": "{keys} ditautkan ke sesi ini",
+      "cardIgnored": "Saran diabaikan untuk sesi ini",
+      "suggestions": "Saran",
+      "confirm": "Tautkan"
     },
     "git": {
       "loading": "Membaca repositori…",
