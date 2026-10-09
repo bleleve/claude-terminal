@@ -82,6 +82,7 @@
     "sectionPath": "Ruta",
     "pathMissingTitle": "Ruta no encontrada en esta máquina",
     "locatePath": "Localizar carpeta...",
+    "tooltipTerminals": "{working}/{total} terminales",
     "pathUpdated": "Ruta actualizada para \"{name}\"",
     "dragToReorder": "Arrastrar para reordenar",
     "dropInvalidNesting": "No se puede mover una carpeta dentro de su propio contenido",

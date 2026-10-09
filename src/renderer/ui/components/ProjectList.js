@@ -662,7 +662,7 @@ class ProjectList extends BaseComponent {
       tooltipLines.push(`<div class="project-tooltip-time">${formatDuration(times.today)} ${t('common.today')} \u2022 ${formatDuration(times.total)} ${t('common.total')}</div>`);
     }
     if (terminalStats.total > 0) {
-      tooltipLines.push(`<div class="project-tooltip-terminals">${terminalStats.working}/${terminalStats.total} terminaux</div>`);
+      tooltipLines.push(`<div class="project-tooltip-terminals">${escapeHtml(t('projects.tooltipTerminals', { working: terminalStats.working, total: terminalStats.total }))}</div>`);
     }
     const tooltipHtml = `<div class="project-tooltip">${tooltipLines.join('')}</div>`;
 

@@ -101,6 +101,7 @@
     "sectionPath": "路径",
     "pathMissingTitle": "在本机上找不到路径",
     "locatePath": "定位文件夹...",
+    "tooltipTerminals": "{working}/{total} 个终端",
     "pathUpdated": "更新了“{name}”的路径",
     "openProject": "打开项目",
     "noOpenProjects": "没有打开的项目",
