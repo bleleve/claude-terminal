@@ -85,13 +85,18 @@ describe('gitTabHtml', () => {
   });
 
   test.each([
-    ['no pull request yet', { pr: { authenticated: true, pullRequest: null, createUrl: 'https://x' } }, 'create-pr', 'chat.git.prNone'],
-    ['no GitHub login', { pr: { authenticated: false, createUrl: 'https://x' } }, 'connect-github', 'chat.git.prLoginNeeded'],
-    ['on the base branch', { onBase: true, pr: null }, null, 'chat.git.prOnBase'],
-    ['not a GitHub repository', { pr: null }, null, 'chat.git.prNoGitHub'],
-  ])('%s', (_label, over, action, key) => {
+    ['no pull request yet', { pr: { authenticated: true, pullRequest: null, createUrl: 'https://x' } }, 'create-pr', 'chat.git.prNone', undefined],
+    ['no GitHub login', { pr: { authenticated: false, createUrl: 'https://x' } }, 'connect-github', 'chat.git.prLoginNeeded', undefined],
+    ['on the base branch', { onBase: true, pr: null }, null, 'chat.git.prOnBase', undefined],
+    ['not a GitHub repository', { pr: null }, null, 'chat.git.prNoGitHub', undefined],
+    // An organization's SAML SSO answers 403: not "no pull request", but "authorize first".
+    ['an organization behind SSO', { pr: { authenticated: true, pullRequest: null, createUrl: 'https://x', ssoRequired: { url: 'https://github.com/orgs/acme/sso?authorization_request=a1', org: 'acme', repo: 'acme/app' } } }, 'authorize-sso', 'chat.git.prSsoBlocked', { org: 'acme' }],
+    ['a repository GitHub does not show', { pr: { authenticated: true, pullRequest: null, createUrl: 'https://x', unreachable: 'acme/app' } }, null, 'chat.git.prUnreachable', { repo: 'acme/app' }],
+    ['a lookup that failed', { pr: { authenticated: true, pullRequest: null, createUrl: 'https://x', error: 'API error: 502', repo: 'acme/app' } }, null, 'chat.git.prLookupFailed', { error: 'API error: 502' }],
+  ])('%s', (_label, over, action, key, params) => {
     const el = render(summary(over));
-    expect(el.textContent).toContain(t(key));
+    expect(el.textContent).toContain(t(key, params));
+    if (key !== 'chat.git.prNone') expect(el.textContent).not.toContain(t('chat.git.prNone'));
     if (action) expect(el.querySelector(`[data-action="${action}"]`)).not.toBeNull();
   });
 });
@@ -205,6 +210,18 @@ describe('createGitTab', () => {
     panelEl.querySelector('[data-action="open-git"]').click();
     expect(api.dialog.openExternal.mock.calls.map((c) => c[0])).toEqual(['https://github.com/acme/app/pull/57', 'https://ci/test']);
     expect(deps.openGitScreen).toHaveBeenCalled();
+    tab.destroy();
+  });
+
+  test('the SSO button opens the page GitHub named, nothing else', async () => {
+    const url = 'https://github.com/orgs/acme/sso?authorization_request=a1';
+    api.git.sessionSummary.mockResolvedValue(summary({ pr: { authenticated: true, pullRequest: null, createUrl: 'https://x', ssoRequired: { url, org: 'acme', repo: 'acme/app' } } }));
+    const tab = createGitTab(deps);
+    await tab.probe();
+    tab.show();
+    expect(panelEl.querySelector('[data-action="create-pr"]')).toBeNull();
+    panelEl.querySelector('[data-action="authorize-sso"]').click();
+    expect(api.dialog.openExternal.mock.calls).toEqual([[url]]);
     tab.destroy();
   });
 

@@ -87,6 +87,17 @@ function prSectionHtml(s, decorateTitle) {
       <div class="session-git-actions"><button type="button" class="btn-sm btn-secondary" data-action="connect-github">${escapeHtml(t('chat.git.prConnect'))}</button></div>
     </section>`;
   }
+  if (!pr.pullRequest && pr.ssoRequired) {
+    const org = pr.ssoRequired.org || pr.ssoRequired.repo;
+    return `<section class="session-git-section">${head}
+      <p class="session-git-muted">${escapeHtml(t('chat.git.prSsoBlocked', { org }))}</p>
+      <div class="session-git-actions"><button type="button" class="btn-sm btn-secondary" data-action="authorize-sso">${escapeHtml(t('chat.git.prSsoAuthorize', { org }))}</button></div>
+    </section>`;
+  }
+  if (!pr.pullRequest && (pr.unreachable || pr.error)) {
+    const text = pr.unreachable ? t('chat.git.prUnreachable', { repo: pr.unreachable }) : t('chat.git.prLookupFailed', { error: pr.error });
+    return `<section class="session-git-section">${head}<p class="session-git-muted">${escapeHtml(text)}</p></section>`;
+  }
   if (!pr.pullRequest) {
     return `<section class="session-git-section">${head}
       <p class="session-git-muted">${escapeHtml(t('chat.git.prNone'))}</p>
@@ -237,6 +248,7 @@ function createGitTab(deps) {
       case 'open-git': deps.openGitScreen(); break;
       case 'connect-github': deps.openSettings('github'); break;
       case 'create-pr': if (summary.pr?.createUrl) api.dialog.openExternal(summary.pr.createUrl); break;
+      case 'authorize-sso': if (summary.pr?.ssoRequired?.url) api.dialog.openExternal(summary.pr.ssoRequired.url); break;
       case 'open-pr': if (pr?.url) api.dialog.openExternal(pr.url); break;
       case 'open-check': {
         const check = pr?.checks.failing[Number(el.dataset.index)];
