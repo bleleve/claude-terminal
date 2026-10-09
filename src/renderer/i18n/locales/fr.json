@@ -888,7 +888,8 @@
       "noConnectionHint": "Connectez Linear avec une clé API personnelle pour voir vos tickets ici.",
       "connect": "Connecter un outil",
       "layoutList": "Liste",
-      "layoutBoard": "Tableau"
+      "layoutBoard": "Tableau",
+      "sessions": "{count} session(s)"
     },
     "quick": {
       "all": "Tous",
@@ -1874,6 +1875,22 @@
     }
   },
   "chat": {
+    "tickets": {
+      "title": "Tickets de cette session",
+      "link": "Lier un ticket",
+      "searchPlaceholder": "Rechercher un ticket (titre, ENG-142)",
+      "noResults": "Aucun ticket trouvé",
+      "empty": "Aucun ticket lié à cette session. Liez-en un, ou mentionnez-le avec @tickets dans un message.",
+      "unlink": "Délier",
+      "loadFailed": "Chargement impossible",
+      "sourceManual": "lié à la main",
+      "sourceMention": "mentionné dans un message",
+      "sourceStart": "session démarrée depuis ce ticket",
+      "sourceTool": "touché par Claude",
+      "sourcePrompt": "cité dans un message",
+      "sourceBranch": "nom de branche",
+      "sourcePr": "titre de la pull request"
+    },
     "git": {
       "loading": "Lecture du dépôt…",
       "notRepo": "Ce dossier n'est pas un dépôt Git.",
@@ -1987,6 +2004,8 @@
     "tabConversation": "Conversation",
     "tabChanges": "Modifications",
     "tabGit": "Git",
+    "tabTickets": "Tickets",
+    "mentionTickets": "Tickets",
     "filesChanged": "fichiers modifiés",
     "fileChanged": "fichier modifié",
     "noChangesYet": "Aucun fichier modifié pour l'instant.",

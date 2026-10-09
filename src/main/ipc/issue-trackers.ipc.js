@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * Issue tracker IPC: providers, connections, reading and writing tickets.
+ * Issue tracker IPC: providers, connections, reading and writing tickets,
+ * and which tickets each Claude session is linked to.
  *
  * Keys go one way. The renderer hands a key over once, to `connect`; nothing
  * here ever sends one back, only a masked form. Errors keep their tracker
@@ -11,6 +12,7 @@
 
 const { ipcMain } = require('electron');
 const issueTrackers = require('../services/IssueTrackerService');
+const issueLinks = require('../services/IssueLinkService');
 
 function fail(err) {
   return { ok: false, error: err.message, code: err.code || 'PROVIDER', retryAfterMs: err.retryAfterMs };
@@ -97,6 +99,22 @@ function registerIssueTrackerHandlers() {
       return fail(err);
     }
   });
+
+  // ── Session ↔ ticket links ──
+  const linkHandler = (fn) => async (_event, ...args) => {
+    try {
+      return { ok: true, ...(await fn(...args)) };
+    } catch (err) {
+      return fail(err);
+    }
+  };
+  ipcMain.handle('issue-links:get', linkHandler(async (key) => ({ links: await issueLinks.get(key) })));
+  ipcMain.handle('issue-links:link', linkHandler(async (key, link, opts) => ({ links: await issueLinks.link(key, link, opts || {}) })));
+  ipcMain.handle('issue-links:confirm', linkHandler(async (key, refs) => ({ links: await issueLinks.confirm(key, refs) })));
+  ipcMain.handle('issue-links:dismiss', linkHandler(async (key, refs) => ({ links: await issueLinks.dismiss(key, refs) })));
+  ipcMain.handle('issue-links:rekey', linkHandler(async (from, to) => ({ moved: await issueLinks.rekey(from, to) })));
+  ipcMain.handle('issue-links:copy', linkHandler(async (from, to) => ({ copied: await issueLinks.copy(from, to) })));
+  ipcMain.handle('issue-links:counts', linkHandler(async () => ({ counts: await issueLinks.counts() })));
 }
 
 module.exports = { registerIssueTrackerHandlers };

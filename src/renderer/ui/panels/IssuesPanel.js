@@ -69,7 +69,17 @@ function freshState() {
     writing: 0,
     drag: null,
     board: null,
+    // ref → how many Claude sessions are linked to it (IssueLinkService).
+    sessionCounts: {},
   };
+}
+
+/** Session counts are local and cheap; read with every list load and on every link change. */
+async function loadSessionCounts() {
+  const res = await deps.api.issueLinks?.counts?.().catch(() => null);
+  if (!res?.ok || !state) return;
+  state.sessionCounts = res.counts;
+  renderList();
 }
 
 const canWrite = (field) => !!state.provider?.capabilities?.write?.includes(field);
@@ -160,6 +170,7 @@ async function loadIssues({ silent = false } = {}) {
   }
   renderHeader();
   renderList();
+  loadSessionCounts();
 }
 
 // ── Writes ───────────────────────────────────────────────────────────────────
@@ -427,7 +438,8 @@ function openMenu(id, anchor) {
   const panelBox = root.querySelector('.issues-panel').getBoundingClientRect();
   const box = anchor.getBoundingClientRect();
   menu.style.top = `${box.bottom - panelBox.top + 4}px`;
-  menu.style.left = `${Math.max(0, box.left - panelBox.left)}px`;
+  // Kept inside the panel: Sort and Group sit at its right edge.
+  menu.style.left = `${Math.max(0, Math.min(box.left - panelBox.left, panelBox.width - menu.offsetWidth - 8))}px`;
   state.menu = { id, single, anchor, filter: '' };
   anchor.setAttribute('aria-expanded', 'true');
   renderMenuItems();
@@ -602,7 +614,7 @@ function renderList() {
 
   if (state.view.layout === 'board') {
     state.board = view.boardColumns(state.issues, state.metadata, state.view);
-    el.innerHTML = view.boardHtml(state.board, { selectedRef: state.selectedRef, draggable: canWrite('state') })
+    el.innerHTML = view.boardHtml(state.board, { selectedRef: state.selectedRef, draggable: canWrite('state'), sessionCounts: state.sessionCounts })
       + (state.next
         ? `<div class="issues-more"><button type="button" class="btn-sm btn-secondary issues-load-more"${state.loadingMore ? ' disabled' : ''}>${escapeHtml(state.loadingMore ? t('tickets.panel.loading') : t('tickets.panel.loadMore'))}</button></div>`
         : '');
@@ -612,7 +624,7 @@ function renderList() {
 
   const groups = view.groupIssues(state.issues, state.view.groupBy, state.metadata);
   state.board = null;
-  el.innerHTML = view.groupsHtml(groups, { selectedRef: state.selectedRef, collapsed: state.collapsed })
+  el.innerHTML = view.groupsHtml(groups, { selectedRef: state.selectedRef, collapsed: state.collapsed, sessionCounts: state.sessionCounts })
     + (state.next
       ? `<div class="issues-more"><button type="button" class="btn-sm btn-secondary issues-load-more"${state.loadingMore ? ' disabled' : ''}>${escapeHtml(state.loadingMore ? t('tickets.panel.loading') : t('tickets.panel.loadMore'))}</button></div>`
       : '');
@@ -823,7 +835,8 @@ function openConnectionMenu(anchor) {
   const panelBox = root.querySelector('.issues-panel').getBoundingClientRect();
   const box = anchor.getBoundingClientRect();
   menu.style.top = `${box.bottom - panelBox.top + 4}px`;
-  menu.style.left = `${Math.max(0, box.left - panelBox.left)}px`;
+  // Kept inside the panel: Sort and Group sit at its right edge.
+  menu.style.left = `${Math.max(0, Math.min(box.left - panelBox.left, panelBox.width - menu.offsetWidth - 8))}px`;
   state.menu = { id: 'connection', single: true, anchor, filter: '' };
 }
 
@@ -912,6 +925,8 @@ async function loadPanel(container) {
   on(root, 'dragend', endDrag);
   on(document, 'mousedown', onDocumentMousedown);
   on(document, 'keydown', onDocumentKeydown);
+  const offLinks = deps.api.issueLinks?.onChanged?.(() => loadSessionCounts());
+  if (offLinks) listeners.push(offLinks);
   startPolling();
   await loadConnections();
 }

@@ -5859,3 +5859,151 @@ p.session-git-muted { margin: 0; }
   color: var(--text-primary);
 }
 .session-git-when { flex: none; font-size: var(--font-xs); }
+
+/* ── Session Tickets tab (chat/ticketsTab.js) ── */
+.session-tickets-panel {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px 60px;
+}
+.session-tickets-panel[hidden] { display: none; }
+
+.session-tickets { max-width: 880px; }
+
+.session-tickets-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.session-tickets-head .btn-sm { flex: none; }
+
+.session-tickets-heading {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.session-tickets-count { color: var(--text-muted); font-weight: 400; }
+
+.session-tickets-search {
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+}
+.session-tickets-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+}
+.session-tickets-search-input:focus { outline: none; border-color: var(--accent); }
+
+.session-tickets-results,
+.session-tickets-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.session-tickets-results { margin-top: 6px; }
+.session-tickets-results li.session-tickets-muted { padding: 6px 4px; }
+
+.session-tickets-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.session-tickets-result:hover,
+.session-tickets-result:focus-visible { background: var(--bg-hover); outline: none; }
+
+.session-tickets-list {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+}
+.session-tickets-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-color);
+  font-size: var(--font-sm);
+}
+.session-tickets-row:first-child { border-top: none; }
+
+.session-tickets-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.session-tickets-name {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-tickets-source { color: var(--text-muted); font-size: var(--font-xs); }
+
+.session-tickets-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--font-xs);
+  white-space: nowrap;
+}
+button.session-tickets-state { cursor: pointer; }
+button.session-tickets-state:hover { background: var(--bg-hover); }
+
+.session-tickets-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.session-tickets-icon:hover { background: var(--bg-hover); color: var(--text-primary); }
+.session-tickets-icon svg { width: 14px; height: 14px; }
+
+.session-tickets-muted { color: var(--text-muted); }
+.session-tickets-empty {
+  margin: 0;
+  padding: 28px 16px;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  text-align: center;
+}
+.session-tickets-menu { position: absolute; }
