@@ -9,6 +9,7 @@ const api = window.electron_api;
 const { path, fs, process: nodeProcess, __dirname } = window.electron_nodeModules;
 const { fileExists, fsp, ensureDirs } = require('./src/renderer/utils/fs-async');
 const { matchesSessionQuery } = require('./src/renderer/utils/sessionSearch');
+const { createTerminalTicketsButton } = require('./src/renderer/ui/components/terminal/ticketsButton');
 const { applyNavigationMode, isSidebarNavigation } = require('./src/renderer/ui/navigationMode');
 
 document.body.classList.add(`platform-${nodeProcess.platform}`);
@@ -617,6 +618,19 @@ const { loadSessionData, clearProjectSessions, saveTerminalSessions } = require(
 
   // ========== PANELS INIT (must run after state is loaded) ==========
   MemoryEditor.init({ showModal, closeModal, showToast });
+
+  // Tickets for Claude sessions in terminal mode; chat tabs have their own tab.
+  // Toasts go straight to the component: this one carries an action button.
+  const sessionBar = document.querySelector('.session-actions');
+  if (sessionBar) {
+    createTerminalTicketsButton({
+      api,
+      hostEl: sessionBar,
+      terminalsState,
+      activateTerminal: (id) => TerminalManager.setActiveTerminal(id),
+      showToast: (opts) => ToastComponent.showToast(opts),
+    });
+  }
 
   ShortcutsManager.init({
     settingsState, saveSettings,

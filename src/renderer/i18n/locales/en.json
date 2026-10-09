@@ -1920,7 +1920,9 @@
       "recapBranch": "Branch",
       "recapCommits": "Commits",
       "recapPr": "Pull request",
-      "recapFiles": "{count} file(s) edited"
+      "recapFiles": "{count} file(s) edited",
+      "detectedInTerminal": "{keys} detected in “{tab}”",
+      "review": "Review"
     },
     "git": {
       "loading": "Reading the repository…",

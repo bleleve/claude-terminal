@@ -1920,7 +1920,9 @@
       "recapBranch": "分支",
       "recapCommits": "提交",
       "recapPr": "拉取请求",
-      "recapFiles": "已编辑 {count} 个文件"
+      "recapFiles": "已编辑 {count} 个文件",
+      "detectedInTerminal": "在“{tab}”中检测到 {keys}",
+      "review": "查看"
     },
     "git": {
       "loading": "正在读取仓库…",

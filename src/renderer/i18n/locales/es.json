@@ -1917,7 +1917,9 @@
       "recapBranch": "Rama",
       "recapCommits": "Commits",
       "recapPr": "Pull request",
-      "recapFiles": "{count} archivo(s) editado(s)"
+      "recapFiles": "{count} archivo(s) editado(s)",
+      "detectedInTerminal": "{keys} detectado(s) en «{tab}»",
+      "review": "Ver"
     },
     "git": {
       "loading": "Leyendo el repositorio…",
