@@ -202,10 +202,13 @@ function buildIssueFilter(q) {
   if (q.mine === 'created') and.push({ creator: { isMe: { eq: true } } });
   if (q.mine === 'subscribed') and.push({ subscribers: { some: { isMe: { eq: true } } } });
 
+  // Categories and states are one filter, "Status": a state matches either.
+  const status = [];
   if (q.stateCategories.length) {
-    and.push({ state: { type: { in: q.stateCategories.flatMap((c) => TYPES_BY_CATEGORY[c]) } } });
+    status.push({ state: { type: { in: q.stateCategories.flatMap((c) => TYPES_BY_CATEGORY[c]) } } });
   }
-  if (q.stateIds.length) and.push({ state: { id: { in: q.stateIds } } });
+  if (q.stateIds.length) status.push({ state: { id: { in: q.stateIds } } });
+  if (status.length) and.push(status.length === 1 ? status[0] : { or: status });
 
   if (q.assigneeIds.length) {
     const ids = q.assigneeIds.filter((a) => a !== 'me' && a !== 'none');

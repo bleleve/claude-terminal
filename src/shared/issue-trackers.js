@@ -460,6 +460,11 @@ function stringList(value) {
  * older build or for another provider degrades to "no filter" instead of to an
  * error. An adapter receives only this shape.
  *
+ * Clauses combine with AND, with one exception: `stateCategories` and
+ * `stateIds` are a single "Status" filter, and a state matches either. The
+ * filter bar offers whole categories and individual states in one menu, and
+ * "To do, plus In Review" must not come back empty.
+ *
  * @returns {{ text: string, mine: string|null, stateCategories: string[], stateIds: string[],
  *   assigneeIds: string[], priorities: number[], labelIds: string[],
  *   facets: Object<string, string[]>, updatedSince: string|null, sort: string, limit: number }}

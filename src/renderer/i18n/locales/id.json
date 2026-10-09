@@ -775,6 +775,99 @@
     "daysAgo": "{count} hari lalu"
   },
   "tickets": {
+    "panel": {
+      "title": "Tiket",
+      "refresh": "Muat ulang",
+      "retry": "Coba lagi",
+      "updatedAt": "Diperbarui {time}",
+      "loading": "Memuat tiket…",
+      "loadMore": "Muat lebih banyak",
+      "empty": "Tidak ada tiket yang cocok dengan filter ini.",
+      "resetFilters": "Atur ulang filter",
+      "searchPlaceholder": "Cari (judul, ENG-142)",
+      "noConnection": "Belum ada pelacak tiket yang terhubung",
+      "noConnectionHint": "Hubungkan Linear dengan kunci API pribadi untuk melihat tiket Anda di sini.",
+      "connect": "Hubungkan pelacak"
+    },
+    "quick": {
+      "all": "Semua",
+      "assigned": "Tiket saya",
+      "created": "Dibuat oleh saya",
+      "subscribed": "Diikuti"
+    },
+    "filters": {
+      "status": "Status",
+      "assignee": "Penanggung jawab",
+      "priority": "Prioritas",
+      "labels": "Label",
+      "me": "Saya",
+      "search": "Saring…",
+      "noMatch": "Tidak ada yang cocok",
+      "groupByValue": "Kelompokkan: {value}",
+      "sortValue": "Urutkan: {value}"
+    },
+    "sort": {
+      "updated": "Diperbarui",
+      "created": "Dibuat",
+      "priority": "Prioritas",
+      "due": "Tenggat"
+    },
+    "groupBy": {
+      "status": "Status",
+      "assignee": "Penanggung jawab",
+      "priority": "Prioritas",
+      "container": "Wadah",
+      "none": "Tanpa pengelompokan",
+      "noAssignee": "Belum ditugaskan",
+      "noValue": "Tidak ada"
+    },
+    "category": {
+      "backlog": "Backlog",
+      "todo": "Akan dikerjakan",
+      "started": "Sedang dikerjakan",
+      "done": "Selesai",
+      "canceled": "Dibatalkan"
+    },
+    "priority": {
+      "urgent": "Mendesak",
+      "high": "Tinggi",
+      "medium": "Sedang",
+      "low": "Rendah",
+      "none": "Tanpa prioritas"
+    },
+    "facets": {
+      "team": "Tim",
+      "project": "Proyek",
+      "cycle": "Siklus",
+      "sprint": "Sprint",
+      "milestone": "Tonggak",
+      "epic": "Epic",
+      "repository": "Repositori"
+    },
+    "detail": {
+      "status": "Status",
+      "priority": "Prioritas",
+      "assignee": "Penanggung jawab",
+      "estimate": "Estimasi",
+      "due": "Tenggat",
+      "labels": "Label",
+      "subIssues": "Sub-tiket",
+      "comments": "Komentar",
+      "noDescription": "Tidak ada deskripsi.",
+      "openIn": "Buka di {provider}",
+      "copyBranch": "Salin nama branch",
+      "copyKey": "Salin kunci",
+      "copied": "Disalin ke papan klip",
+      "loadFailed": "Tidak dapat memuat tiket ini. {message}"
+    },
+    "errors": {
+      "auth": "Kunci {provider} ditolak. Hubungkan kembali di pengaturan.",
+      "rateLimited": "Terlalu banyak permintaan ke {provider}. Akan dicoba lagi sebentar lagi.",
+      "network": "Tidak dapat menghubungi {provider}.",
+      "notFound": "Tidak ditemukan di {provider}.",
+      "provider": "{provider} mengembalikan galat: {message}",
+      "openSettings": "Buka pengaturan"
+    },
     "settings": {
       "title": "Pelacak tiket",
       "intro": "Hubungkan pelacak untuk menelusuri tiketnya di sini dan menautkannya ke sesi Anda. Kunci disimpan di penyimpanan kredensial sistem dan hanya dikirim ke pelacak tersebut.",
@@ -1124,6 +1217,7 @@
     "tabMcp": "MCP",
     "tabDatabase": "Basis Data",
     "tabGit": "Git",
+    "tabTickets": "Tiket",
     "separatorCloud": "Cloud",
     "tabDashboard": "Dasbor",
     "tabTimeTracking": "Pelacakan Waktu",
@@ -1151,6 +1245,7 @@
     "sidebarDragHandle": "Seret untuk mengatur urutan",
     "tooltipClaude": "Chat dengan Claude Code",
     "tooltipGit": "Staging, commit, branch, dan diff",
+    "tooltipTickets": "Tiket dari pelacak Anda: daftar, filter, detail",
     "tooltipDatabase": "Jelajahi dan kueri basis data Anda",
     "tooltipMcp": "Kelola server tool MCP",
     "tooltipPlugins": "Jelajahi dan pasang plugin Claude Code",

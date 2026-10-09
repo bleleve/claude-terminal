@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Issue tracker IPC: providers and connections.
+ * Issue tracker IPC: providers, connections, and reading tickets.
  *
  * Keys go one way. The renderer hands a key over once, to `connect`; nothing
  * here ever sends one back, only a masked form. Errors keep their tracker
@@ -53,6 +53,30 @@ function registerIssueTrackerHandlers() {
   ipcMain.handle('issue-trackers:test', async (_event, connectionId) => {
     try {
       return { ok: true, connection: await issueTrackers.test(connectionId) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  ipcMain.handle('issue-trackers:metadata', async (_event, connectionId, opts = {}) => {
+    try {
+      return { ok: true, metadata: await issueTrackers.metadata(connectionId, { refresh: !!opts.refresh }) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  ipcMain.handle('issue-trackers:list-issues', async (_event, connectionId, query, cursor) => {
+    try {
+      return { ok: true, ...(await issueTrackers.listIssues(connectionId, query, cursor)) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  ipcMain.handle('issue-trackers:get-issue', async (_event, connectionId, key) => {
+    try {
+      return { ok: true, issue: await issueTrackers.getIssue(connectionId, key) };
     } catch (err) {
       return fail(err);
     }

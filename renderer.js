@@ -145,6 +145,11 @@ const RemotePanel = require('./src/renderer/ui/panels/RemotePanel');
 // require() is a side effect esbuild cannot shake out and the panel ships
 // eagerly whether or not anything reads the binding.
 const _LAZY_PANELS = {
+  IssuesPanel: {
+    root: 'tickets-panel-root',
+    load: () => import('./src/renderer/ui/panels/IssuesPanel'),
+    init: (P) => P.init({ api, showToast, openSettings: (subTab) => _switchToSettingsTab(subTab) })
+  },
   DatabasePanel: {
     root: 'database-content',
     load: () => import('./src/renderer/ui/panels/DatabasePanel'),
@@ -4039,6 +4044,14 @@ const _TAB_LIFECYCLE = {
     // Releases the artifacts-changed IPC listener registered on activate.
     deactivate: () => ArtifactsPanel.cleanup()
   },
+  tickets: {
+    activate: () => withLazyPanel('IssuesPanel', 'tickets', (P) => {
+      const root = document.getElementById('tickets-panel-root');
+      if (root) P.loadPanel(root);
+    }),
+    // Stops the 60 s refresh; what was loaded stays for the next visit.
+    deactivate: () => lazyPanelIfLoaded('IssuesPanel')?.cleanup()
+  },
   errorlog: {
     activate: () => {
       const root = document.getElementById('errorlog-panel-root');
@@ -4149,7 +4162,7 @@ document.querySelectorAll('.nav-tab[data-tab]').forEach(tab => {
 // index.html because the screen cannot be populated (see the note there). Both
 // the customize modal and the More dropdown are built from this list, so
 // leaving it in would offer a tab that no longer exists in the DOM.
-const _ALL_TABS_ORDER = ['claude', 'dashboard', 'files', 'git', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
+const _ALL_TABS_ORDER = ['claude', 'dashboard', 'files', 'git', 'tickets', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
 
 function applyPinnedTabs() {
   const pinned = settingsState.get().pinnedTabs || _ALL_TABS_ORDER;

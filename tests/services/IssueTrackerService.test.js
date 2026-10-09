@@ -193,3 +193,66 @@ test('maskKey shows the start and the end only', () => {
   expect(maskKey('short')).toBe('••••');
   expect(maskKey(null)).toBeNull();
 });
+
+describe('reading tickets', () => {
+  let conn;
+  beforeEach(async () => {
+    conn = await service.connect('linear', fixture.secret);
+    fetch.mockClear();
+  });
+
+  test('metadata is sanitised and cached until it is asked to refresh', async () => {
+    const first = await service.metadata(conn.id);
+    expect(first.keys).toEqual(['ENG', 'OPS', 'DES']);
+    const calls = fetch.mock.calls.length;
+    await service.metadata(conn.id);
+    expect(fetch.mock.calls.length).toBe(calls);
+    await service.metadata(conn.id, { refresh: true });
+    expect(fetch.mock.calls.length).toBe(calls * 2);
+  });
+
+  test('the metadata cache expires', async () => {
+    let now = 0;
+    const timed = createIssueTrackerService({ storePath, secrets, registry, fetch, clock: () => now });
+    await timed.metadata(conn.id);
+    const calls = fetch.mock.calls.length;
+    now = 11 * 60 * 1000;
+    await timed.metadata(conn.id);
+    expect(fetch.mock.calls.length).toBe(calls * 2);
+  });
+
+  test('listIssues normalises the query and returns sanitised issues with refs', async () => {
+    const page = await service.listIssues(conn.id, { text: 'eng-142', bogus: true, limit: 5000 }, null);
+    expect(page.issues.map((i) => i.ref)).toEqual(['linear:ENG-142']);
+    expect(page.next).toBeNull();
+    const sent = JSON.parse(fetch.mock.calls[0][1].body);
+    expect(sent.variables.first).toBe(100);
+  });
+
+  test('an issue the sanitiser cannot use is dropped and logged', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const broken = { ...linear, createClient: () => ({ listIssues: async () => ({ issues: [{ key: 'X-1' }, { key: 'X-2', title: 'ok', state: { name: 'Todo', category: 'todo' } }], next: 42 }) }) };
+    const odd = createIssueTrackerService({ storePath, secrets, registry: { ...registry, get: () => broken }, fetch });
+    const page = await odd.listIssues(conn.id, {}, null);
+    expect(page.issues.map((i) => i.key)).toEqual(['X-2']);
+    expect(page.next).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('issues: 3 problem(s), first: title: missing'));
+    warn.mockRestore();
+  });
+
+  test('getIssue returns the sanitised detail', async () => {
+    const issue = await service.getIssue(conn.id, 'ENG-142');
+    expect(issue).toMatchObject({ ref: 'linear:ENG-142', description: expect.stringContaining('## Why') });
+    expect(issue.comments).toHaveLength(2);
+  });
+
+  test('getIssue keeps the provider error code', async () => {
+    await expect(service.getIssue(conn.id, 'ENG-99999')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  test('disconnecting drops the cached metadata and client', async () => {
+    await service.metadata(conn.id);
+    await service.disconnect(conn.id);
+    await expect(service.metadata(conn.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+});

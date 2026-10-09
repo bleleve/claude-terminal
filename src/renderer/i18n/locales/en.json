@@ -775,6 +775,99 @@
     "daysAgo": "{count}d ago"
   },
   "tickets": {
+    "panel": {
+      "title": "Tickets",
+      "refresh": "Refresh",
+      "retry": "Retry",
+      "updatedAt": "Updated {time}",
+      "loading": "Loading tickets…",
+      "loadMore": "Load more",
+      "empty": "No ticket matches these filters.",
+      "resetFilters": "Reset filters",
+      "searchPlaceholder": "Search (title, ENG-142)",
+      "noConnection": "No ticket tracker is connected",
+      "noConnectionHint": "Connect Linear with a personal API key to see your tickets here.",
+      "connect": "Connect a tracker"
+    },
+    "quick": {
+      "all": "All",
+      "assigned": "My tickets",
+      "created": "Created by me",
+      "subscribed": "Subscribed"
+    },
+    "filters": {
+      "status": "Status",
+      "assignee": "Assignee",
+      "priority": "Priority",
+      "labels": "Labels",
+      "me": "Me",
+      "search": "Filter…",
+      "noMatch": "Nothing matches",
+      "groupByValue": "Group: {value}",
+      "sortValue": "Sort: {value}"
+    },
+    "sort": {
+      "updated": "Updated",
+      "created": "Created",
+      "priority": "Priority",
+      "due": "Due date"
+    },
+    "groupBy": {
+      "status": "Status",
+      "assignee": "Assignee",
+      "priority": "Priority",
+      "container": "Container",
+      "none": "No grouping",
+      "noAssignee": "Unassigned",
+      "noValue": "None"
+    },
+    "category": {
+      "backlog": "Backlog",
+      "todo": "To do",
+      "started": "In progress",
+      "done": "Done",
+      "canceled": "Canceled"
+    },
+    "priority": {
+      "urgent": "Urgent",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "none": "No priority"
+    },
+    "facets": {
+      "team": "Team",
+      "project": "Project",
+      "cycle": "Cycle",
+      "sprint": "Sprint",
+      "milestone": "Milestone",
+      "epic": "Epic",
+      "repository": "Repository"
+    },
+    "detail": {
+      "status": "Status",
+      "priority": "Priority",
+      "assignee": "Assignee",
+      "estimate": "Estimate",
+      "due": "Due date",
+      "labels": "Labels",
+      "subIssues": "Sub-issues",
+      "comments": "Comments",
+      "noDescription": "No description.",
+      "openIn": "Open in {provider}",
+      "copyBranch": "Copy branch name",
+      "copyKey": "Copy key",
+      "copied": "Copied to the clipboard",
+      "loadFailed": "Could not load this ticket. {message}"
+    },
+    "errors": {
+      "auth": "The {provider} key was rejected. Connect it again in the settings.",
+      "rateLimited": "Too many requests to {provider}. It will retry shortly.",
+      "network": "Could not reach {provider}.",
+      "notFound": "Not found in {provider}.",
+      "provider": "{provider} returned an error: {message}",
+      "openSettings": "Open the settings"
+    },
     "settings": {
       "title": "Ticket trackers",
       "intro": "Connect a tracker to browse its tickets here and link them to your sessions. The key is kept in your system's credential store and is only ever sent to that tracker.",
@@ -1124,6 +1217,7 @@
     "tabMcp": "MCP",
     "tabDatabase": "Database",
     "tabGit": "Git",
+    "tabTickets": "Tickets",
     "separatorCloud": "Cloud",
     "tabDashboard": "Dashboard",
     "tabTimeTracking": "Time Tracking",
@@ -1151,6 +1245,7 @@
     "sidebarDragHandle": "Drag to reorder",
     "tooltipClaude": "Chat with Claude Code",
     "tooltipGit": "Staging, commits, branches and diffs",
+    "tooltipTickets": "Tickets from your tracker: list, filters, detail",
     "tooltipDatabase": "Browse and query your databases",
     "tooltipMcp": "Manage MCP tool servers",
     "tooltipPlugins": "Browse and install Claude Code plugins",
