@@ -14,6 +14,8 @@
 const ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
   + '<path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v1.5a2.5 2.5 0 0 0 0 5V16a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-1.5a2.5 2.5 0 0 0 0-5z"/></svg>';
 
+const { PRIORITY_NAMES } = require('../../../shared/issue-trackers');
+
 const CACHE_MS = 30_000;
 const DESCRIPTION_CHARS = 6000;
 const COMMENTS = 5;
@@ -30,10 +32,11 @@ const bridge = () => (typeof window !== 'undefined' ? window.electron_api?.issue
 function issueAsText(issue) {
   const lines = [`# ${issue.key}: ${issue.title}`];
   const facts = [`Status: ${issue.state.name}`];
-  if (issue.priority != null) facts.push(`Priority: ${issue.priority}`);
+  if (issue.priority != null) facts.push(`Priority: ${PRIORITY_NAMES[issue.priority] ?? issue.priority}`);
   if (issue.assignee) facts.push(`Assignee: ${issue.assignee.name}`);
   if (issue.container) facts.push(`Team: ${issue.container.name}`);
-  for (const [id, value] of Object.entries(issue.facets || {})) facts.push(`${id}: ${value}`);
+  // Facets are keyed by id (`project`, `cycle`); capitalised to match the other labels.
+  for (const [id, value] of Object.entries(issue.facets || {})) facts.push(`${id.charAt(0).toUpperCase()}${id.slice(1)}: ${value}`);
   if (issue.labels?.length) facts.push(`Labels: ${issue.labels.map((l) => l.name).join(', ')}`);
   lines.push(facts.join(' | '));
   if (issue.url) lines.push(issue.url);
