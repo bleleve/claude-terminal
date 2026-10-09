@@ -26,6 +26,7 @@ const DEFAULT_VIEW = Object.freeze({
   facets: {},
   groupBy: 'status',
   sort: 'updated',
+  layout: 'list',
 });
 
 const PAGE_SIZE = 50;
@@ -45,6 +46,7 @@ function restoreView(saved) {
     facets: v.facets && typeof v.facets === 'object' && !Array.isArray(v.facets) ? { ...v.facets } : {},
     groupBy: typeof v.groupBy === 'string' ? v.groupBy : DEFAULT_VIEW.groupBy,
     sort: ['updated', 'created', 'priority', 'due'].includes(v.sort) ? v.sort : DEFAULT_VIEW.sort,
+    layout: v.layout === 'board' ? 'board' : 'list',
   };
 }
 
@@ -254,6 +256,61 @@ function groupIssues(issues, groupBy, metadata) {
     .map(({ order, ...group }) => group);
 }
 
+// ── Board ────────────────────────────────────────────────────────────────────
+
+/**
+ * The board's columns. One team on screen (the team facet narrowed to one, or
+ * every listed ticket in the same team): that team's real states, in its
+ * workflow order. Several teams: the five shared categories, since each team
+ * has its own states and only the categories line up.
+ *
+ * @returns {{ mode: 'states'|'categories', containerId: string|null,
+ *   columns: Array<{ key: string, label: string, category: string, color?: string|null, stateId?: string, issues: object[] }> }}
+ */
+function boardColumns(issues, metadata, viewState) {
+  const states = metadata?.states || [];
+  const picked = viewState?.facets?.team;
+  let containerId = Array.isArray(picked) && picked.length === 1 ? picked[0] : null;
+  if (!containerId) {
+    const ids = new Set(issues.map((i) => i.container?.id).filter(Boolean));
+    if (ids.size === 1) containerId = [...ids][0];
+  }
+  const teamStates = containerId ? states.filter((st) => st.containerId === containerId) : [];
+
+  if (teamStates.length) {
+    const columns = teamStates
+      .slice()
+      .sort((a, b) => STATE_CATEGORIES.indexOf(a.category) - STATE_CATEGORIES.indexOf(b.category) || a.position - b.position)
+      .map((st) => ({ key: `state:${st.id}`, label: st.name, category: st.category, color: st.color, stateId: st.id, issues: [] }));
+    for (const issue of issues) columns.find((c) => c.stateId === issue.state.id)?.issues.push(issue);
+    return { mode: 'states', containerId, columns };
+  }
+
+  const columns = STATE_CATEGORIES.map((category) => ({ key: `cat:${category}`, label: categoryLabel(category), category, issues: [] }));
+  for (const issue of issues) columns.find((c) => c.category === issue.state.category)?.issues.push(issue);
+  return { mode: 'categories', containerId: null, columns };
+}
+
+/**
+ * The state a ticket takes when dropped on a column: the column's own state,
+ * or in category mode the first state of the ticket's team in that category.
+ * Null when the drop changes nothing or the team has no such state.
+ */
+function dropTargetState(issue, column, metadata) {
+  if (column.stateId) return column.stateId === issue.state.id ? null : column.stateId;
+  if (issue.state.category === column.category) return null;
+  const candidates = (metadata?.states || [])
+    .filter((st) => st.category === column.category && (!issue.container || st.containerId === issue.container.id))
+    .sort((a, b) => a.position - b.position);
+  return candidates[0]?.id || null;
+}
+
+/** The states a ticket can be moved to by hand: those of its own team. */
+function statesForIssue(issue, metadata) {
+  const states = (metadata?.states || []).filter((st) => !issue.container || !st.containerId || st.containerId === issue.container.id);
+  return states.slice().sort((a, b) => STATE_CATEGORIES.indexOf(a.category) - STATE_CATEGORIES.indexOf(b.category) || a.position - b.position);
+}
+
 // ── HTML ─────────────────────────────────────────────────────────────────────
 
 function relativeTime(iso, now = Date.now()) {
@@ -353,6 +410,40 @@ function groupsHtml(groups, { selectedRef = null, collapsed = new Set(), now } =
   }).join('');
 }
 
+function cardHtml(issue, { selected = false, draggable = false } = {}) {
+  const facet = issue.facets.cycle || issue.facets.sprint || issue.facets.milestone || '';
+  return `
+    <div class="issue-card${selected ? ' selected' : ''}" tabindex="0" data-ref="${escapeHtml(issue.ref)}" data-key="${escapeHtml(issue.key)}"${draggable ? ' draggable="true"' : ''}>
+      <div class="issue-card-top">
+        <span class="issue-key">${escapeHtml(issue.key)}</span>
+        ${avatarHtml(issue.assignee, 'issue-avatar-sm')}
+      </div>
+      <div class="issue-card-title">${escapeHtml(issue.title)}</div>
+      <div class="issue-card-meta">
+        ${priorityIcon(issue.priority)}
+        ${labelsHtml(issue.labels, 2)}
+        ${facet ? `<span class="issue-facet">${escapeHtml(facet)}</span>` : ''}
+        ${issue.dueDate ? `<span class="issue-due">${escapeHtml(issue.dueDate)}</span>` : ''}
+      </div>
+    </div>`;
+}
+
+function boardHtml(board, { selectedRef = null, draggable = false } = {}) {
+  return `<div class="issues-board" data-mode="${board.mode}">${board.columns.map((col) => `
+    <section class="issues-board-column" data-column="${escapeHtml(col.key)}" data-category="${escapeHtml(col.category)}">
+      <header class="issues-board-column-head">
+        ${stateDot({ color: col.color ?? null, category: col.category, name: col.label })}
+        <span class="issues-board-column-label">${escapeHtml(col.label)}</span>
+        <span class="issue-group-count">${col.issues.length}</span>
+      </header>
+      <div class="issues-board-cards">
+        ${col.issues.length
+    ? col.issues.map((issue) => cardHtml(issue, { selected: issue.ref === selectedRef, draggable })).join('')
+    : `<div class="issues-board-empty">${escapeHtml(draggable ? t('tickets.board.dropHere') : t('tickets.board.empty'))}</div>`}
+      </div>
+    </section>`).join('')}</div>`;
+}
+
 function propHtml(label, value) {
   return value ? `<div class="issue-prop"><span class="issue-prop-label">${escapeHtml(label)}</span><span class="issue-prop-value">${value}</span></div>` : '';
 }
@@ -361,7 +452,13 @@ function propHtml(label, value) {
  * The detail pane. `renderMarkdown` turns the description and comments into
  * HTML: it is MarkdownRenderer, which sanitises with DOMPurify.
  */
-function detailHtml(issue, { renderMarkdown, providerName, metadata }) {
+/** A property value, as a button opening its menu when the tracker lets it change. */
+function editable(field, html, editableFields) {
+  if (!editableFields?.[field]) return html;
+  return `<button type="button" class="issue-prop-edit" data-edit="${field}" aria-haspopup="menu" title="${escapeHtml(t('tickets.detail.edit'))}">${html}</button>`;
+}
+
+function detailHtml(issue, { renderMarkdown, providerName, metadata, editableFields = null }) {
   const facets = Object.entries(issue.facets)
     .map(([id, value]) => propHtml(facetLabel((metadata?.facets || []).find((f) => f.id === id) || { id, label: id }), escapeHtml(value)))
     .join('');
@@ -396,9 +493,9 @@ function detailHtml(issue, { renderMarkdown, providerName, metadata }) {
       <button type="button" class="btn-sm btn-secondary issue-action" data-action="copy-key">${escapeHtml(t('tickets.detail.copyKey'))}</button>
     </div>
     <div class="issue-detail-props">
-      ${propHtml(t('tickets.detail.status'), `${stateDot(issue.state)} ${escapeHtml(issue.state.name)}`)}
-      ${issue.priority != null ? propHtml(t('tickets.detail.priority'), `${priorityIcon(issue.priority)} ${escapeHtml(priorityLabel(issue.priority))}`) : ''}
-      ${propHtml(t('tickets.detail.assignee'), issue.assignee ? `${avatarHtml(issue.assignee, 'issue-avatar-sm')} ${escapeHtml(issue.assignee.name)}` : escapeHtml(t('tickets.groupBy.noAssignee')))}
+      ${propHtml(t('tickets.detail.status'), editable('state', `${stateDot(issue.state)} ${escapeHtml(issue.state.name)}`, editableFields))}
+      ${issue.priority != null ? propHtml(t('tickets.detail.priority'), editable('priority', `${priorityIcon(issue.priority)} ${escapeHtml(priorityLabel(issue.priority))}`, editableFields)) : ''}
+      ${propHtml(t('tickets.detail.assignee'), editable('assignee', issue.assignee ? `${avatarHtml(issue.assignee, 'issue-avatar-sm')} ${escapeHtml(issue.assignee.name)}` : escapeHtml(t('tickets.groupBy.noAssignee')), editableFields))}
       ${issue.container ? propHtml(containerLabel(metadata), escapeHtml(issue.container.name)) : ''}
       ${facets}
       ${issue.estimate != null ? propHtml(t('tickets.detail.estimate'), escapeHtml(String(issue.estimate))) : ''}
@@ -430,6 +527,11 @@ module.exports = {
   rowHtml,
   groupsHtml,
   detailHtml,
+  boardColumns,
+  dropTargetState,
+  statesForIssue,
+  cardHtml,
+  boardHtml,
   priorityIcon,
   stateDot,
   avatarHtml,

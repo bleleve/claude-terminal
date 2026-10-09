@@ -775,6 +775,10 @@
     "daysAgo": "{count}d ago"
   },
   "tickets": {
+    "board": {
+      "empty": "No ticket",
+      "dropHere": "Drop a ticket here"
+    },
     "panel": {
       "title": "Tickets",
       "refresh": "Refresh",
@@ -787,7 +791,9 @@
       "searchPlaceholder": "Search (title, ENG-142)",
       "noConnection": "No ticket tracker is connected",
       "noConnectionHint": "Connect Linear with a personal API key to see your tickets here.",
-      "connect": "Connect a tracker"
+      "connect": "Connect a tracker",
+      "layoutList": "List",
+      "layoutBoard": "Board"
     },
     "quick": {
       "all": "All",
@@ -858,7 +864,8 @@
       "copyBranch": "Copy branch name",
       "copyKey": "Copy key",
       "copied": "Copied to the clipboard",
-      "loadFailed": "Could not load this ticket. {message}"
+      "loadFailed": "Could not load this ticket. {message}",
+      "edit": "Change"
     },
     "errors": {
       "auth": "The {provider} key was rejected. Connect it again in the settings.",
@@ -866,7 +873,8 @@
       "network": "Could not reach {provider}.",
       "notFound": "Not found in {provider}.",
       "provider": "{provider} returned an error: {message}",
-      "openSettings": "Open the settings"
+      "openSettings": "Open the settings",
+      "updateFailed": "Could not change {key}"
     },
     "settings": {
       "title": "Ticket trackers",

@@ -675,6 +675,8 @@ contextBridge.exposeInMainWorld('electron_api', {
     metadata: (connectionId, opts) => ipcRenderer.invoke('issue-trackers:metadata', connectionId, opts),
     listIssues: (connectionId, query, cursor) => ipcRenderer.invoke('issue-trackers:list-issues', connectionId, query, cursor),
     getIssue: (connectionId, key) => ipcRenderer.invoke('issue-trackers:get-issue', connectionId, key),
+    updateIssue: (connectionId, key, patch) => ipcRenderer.invoke('issue-trackers:update-issue', connectionId, key, patch),
+    addComment: (connectionId, key, body) => ipcRenderer.invoke('issue-trackers:add-comment', connectionId, key, body),
   },
 
   // ==================== VOICE ====================

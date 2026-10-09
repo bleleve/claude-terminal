@@ -162,3 +162,59 @@ test('relativeTime speaks the app language and says "now" under a minute', () =>
   expect(view.relativeTime('2026-10-09T09:00:00Z', now)).toBe(rtf.format(-3, 'hour'));
   expect(view.relativeTime('not a date', now)).toBe('');
 });
+
+describe('board', () => {
+  test('several teams on screen: the five shared categories', () => {
+    const board = view.boardColumns(issues, metadata, view.restoreView(null));
+    expect(board.mode).toBe('categories');
+    expect(board.columns.map((c) => c.category)).toEqual(['backlog', 'todo', 'started', 'done', 'canceled']);
+    expect(board.columns.find((c) => c.category === 'started').issues.map((i) => i.key)).toContain('ENG-142');
+  });
+
+  test('one team picked: that team\'s real states, in workflow order', () => {
+    const board = view.boardColumns(issues.filter((i) => i.container.id === 't-eng'), metadata, { facets: { team: ['t-eng'] } });
+    expect(board.mode).toBe('states');
+    expect(board.columns.map((c) => c.label)).toEqual(['Triage', 'Backlog', 'Todo', 'In Progress', 'In Review', 'Done', 'Canceled', 'Duplicate']);
+  });
+
+  test('every listed ticket in one team also means that team\'s states', () => {
+    const ops = issues.filter((i) => i.container.id === 't-ops');
+    expect(view.boardColumns(ops, metadata, view.restoreView(null)).mode).toBe('states');
+  });
+
+  test('a drop on a category column picks the first state of the ticket\'s own team', () => {
+    const ops12 = issues.find((i) => i.key === 'OPS-12');
+    expect(view.dropTargetState(ops12, { key: 'cat:done', category: 'done' }, metadata)).toBe('s-ops-done');
+    expect(view.dropTargetState(ops12, { key: 'cat:started', category: 'started' }, metadata)).toBeNull();
+  });
+
+  test('a drop on a state column takes that state, or nothing when it is already there', () => {
+    const eng142 = issues.find((i) => i.key === 'ENG-142');
+    expect(view.dropTargetState(eng142, { key: 'state:s-eng-review', category: 'started', stateId: 's-eng-review' }, metadata)).toBe('s-eng-review');
+    expect(view.dropTargetState(eng142, { key: 'state:s-eng-progress', category: 'started', stateId: 's-eng-progress' }, metadata)).toBeNull();
+  });
+
+  test('a ticket can only be moved to its own team\'s states', () => {
+    const ops12 = issues.find((i) => i.key === 'OPS-12');
+    const ids = view.statesForIssue(ops12, metadata).map((st) => st.id);
+    expect(ids.every((id) => id.startsWith('s-ops-'))).toBe(true);
+    expect(ids[0]).toBe('s-ops-backlog');
+  });
+
+  test('cards are draggable only when the tracker lets the state change', () => {
+    const todo = issues.filter((i) => i.state.category === 'todo'); // two teams, so empty category columns
+    const board = view.boardColumns(todo, metadata, view.restoreView(null));
+    document.body.innerHTML = view.boardHtml(board, { draggable: false });
+    expect(document.querySelector('.issue-card[draggable]')).toBeNull();
+    expect(document.querySelector('.issues-board-empty').textContent).toBe(t('tickets.board.empty'));
+    document.body.innerHTML = view.boardHtml(board, { draggable: true });
+    expect(document.querySelectorAll('.issue-card[draggable="true"]').length).toBe(todo.length);
+    expect(document.querySelector('.issues-board-empty').textContent).toBe(t('tickets.board.dropHere'));
+  });
+
+  test('the detail offers edit buttons only for what is writable', () => {
+    const detail = { ...issues.find((i) => i.key === 'ENG-142'), description: null, comments: [], children: [] };
+    document.body.innerHTML = view.detailHtml(detail, { renderMarkdown: () => '', providerName: 'Linear', metadata, editableFields: { state: true, assignee: false, priority: true } });
+    expect([...document.querySelectorAll('.issue-prop-edit')].map((b) => b.dataset.edit)).toEqual(['state', 'priority']);
+  });
+});

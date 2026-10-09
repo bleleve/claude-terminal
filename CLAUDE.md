@@ -39,7 +39,7 @@ Electron Main Process (Node.js)
 ├── main.js                          # Bootstrap, lifecycle, single-instance lock, global shortcuts
 ├── src/main/preload.js              # IPC bridge (window.electron_api)
 ├── src/main/preload-quickpicker.js  # Preload for Quick Picker window
-├── src/main/ipc/                    # 37 IPC files, 337 handlers total
+├── src/main/ipc/                    # 37 IPC files, 339 handlers total
 ├── src/main/services/               # 37 services
 ├── src/main/windows/                # 5 window managers
 ├── src/main/utils/                  # 23 utilities
@@ -59,7 +59,7 @@ Electron Renderer Process (Browser)
 ├── src/renderer/workflow-fields/    # 13 custom UI fields for workflow nodes
 ├── src/renderer/workflow-triggers/  # 12 trigger types (definition + configurator)
 ├── src/renderer/viewers/            # PDF viewer + 3D (three.js) viewer
-├── src/renderer/i18n/               # EN/FR/ES/ID/zh-CN locales (3826 keys each)
+├── src/renderer/i18n/               # EN/FR/ES/ID/zh-CN locales (3832 keys each)
 └── src/renderer/utils/              # DOM, color, format, paths, icons, syntax highlighting
 
 Project Types (Plugin System)
@@ -106,7 +106,7 @@ Remote UI (PWA for mobile)
 | `marketplace.ipc.js` | 7 | Skills search/featured/readme/install/uninstall from `skills.sh` |
 | `claude.ipc.js` | 8 | Session listing, conversation history (tail-first read), full tool output, move session, Control Tower agent supervision |
 | `voice.ipc.js` | 6 | Groq transcription, API key in the OS credential store, model selection |
-| `issue-trackers.ipc.js` | 8 | Ticket tracker providers and connections (connect with a personal API key, test, disconnect; keys go in, only masked forms come out), plus metadata, issue pages and issue detail for the Tickets screen |
+| `issue-trackers.ipc.js` | 10 | Ticket tracker providers and connections (connect with a personal API key, test, disconnect; keys go in, only masked forms come out), plus metadata, issue pages, issue detail, and the two writes (update state / assignee / priority, add a comment) |
 | `remote-control.ipc.js` | 6 | Claude Remote Control (claude.ai bridge): status, enable/disable per session |
 | `errorLog.ipc.js` | 6 | Error log entries, stats, patterns, export, clear |
 | `usage.ipc.js` | 5 | Claude usage data (OAuth API primary, PTY `/usage` fallback), monitor |
@@ -126,7 +126,7 @@ Remote UI (PWA for mobile)
 | `cloud-shared.js` | - | Helpers shared by the three cloud IPC files |
 | `index.js` | - | Orchestrator - registers all handlers |
 
-**Total: 337 IPC handlers across 37 files.**
+**Total: 339 IPC handlers across 37 files.**
 
 ### Services (`src/main/services/`)
 
@@ -214,7 +214,7 @@ Provider-neutral ticket layer behind the Tickets screen and the per-session Tick
 
 Adapters are repository code, never loaded at runtime, for the reason `design/project-type-extensions.md` gives. Every adapter must pass `tests/issue-trackers/contract.test.js` with its own network fixture; `tests/issue-trackers/fake.tracker.js` is a complete adapter kept deliberately unlike Linear so the core cannot quietly assume Linear. The contract, the decisions and the delivery plan are in **`design/issue-trackers.md`**.
 
-`linear.tracker.js` is the one adapter shipped: Linear's GraphQL API with a personal key, sent bare in `Authorization` as Linear expects. Its `issues(sort:)` argument is marked internal, so only `createdAt`/`updatedAt` are ordered by the server and the `priority`/`due` sorts apply to the returned page. Its fixture (`tests/issue-trackers/fixtures/linear.fixture.js`) is a fake endpoint over an invented workspace that *evaluates* the `IssueFilter` it receives and errors on a clause it does not know, so the filter tests check which issues come back rather than the shape of the filter. Connections are managed by `IssueTrackerService` and set up in Settings → Tickets (`ticketsSettings`). The service also serves the screens: `metadata()` (cached 10 min per connection), `listIssues()` and `getIssue()`, each result through the shared sanitisers, an unusable issue dropped and logged rather than drawn half-empty. `stateCategories` and `stateIds` are one Status filter (a state matches either); every other clause combines with AND.
+`linear.tracker.js` is the one adapter shipped: Linear's GraphQL API with a personal key, sent bare in `Authorization` as Linear expects. Its `issues(sort:)` argument is marked internal, so only `createdAt`/`updatedAt` are ordered by the server and the `priority`/`due` sorts apply to the returned page. Its fixture (`tests/issue-trackers/fixtures/linear.fixture.js`) is a fake endpoint over an invented workspace that *evaluates* the `IssueFilter` it receives and errors on a clause it does not know, so the filter tests check which issues come back rather than the shape of the filter. Connections are managed by `IssueTrackerService` and set up in Settings → Tickets (`ticketsSettings`). The service also serves the screens: `metadata()` (cached 10 min per connection), `listIssues()`, `getIssue()`, `updateIssue()` (only the fields the adapter declares writable, refused before any request otherwise) and `addComment()`, each result through the shared sanitisers, an unusable issue dropped and logged rather than drawn half-empty. `stateCategories` and `stateIds` are one Status filter (a state matches either); every other clause combines with AND.
 
 ## Renderer Process (`src/renderer/`)
 
@@ -336,7 +336,7 @@ The tests are the point, not the line count. Everything listed above was unreach
 | `ArtifactsPanel` | Gallery of **published** artifacts for the current project - the local equivalent of Claude Desktop's artifact list. These come from the SDK's `Artifact` tool, so each has a real title, subtitle, emoji and shareable URL. Deliberately not the extracts the store also holds |
 | `TasksView` | The "simple mode" tab of the workflow panel. A task is a workflow with `mode: 'simple'`; the user edits what / when / where and `src/shared/simple-task.js` compiles the cron expression, graph and steps. It writes the same workflow object the advanced editor writes, through the same `workflow.save` IPC |
 | `ErrorLogPanel` | Error log viewer with level/domain filtering, pattern detection, AI diagnosis and export |
-| `IssuesPanel` | The **Tickets** screen, under Git in the sidebar: every ticket of the connected workspace (whole workspace, not the current project), quick "mine" chips, search, Status / Assignee / Priority / Labels menus plus one per facet the adapter declares, grouping and sorting, and a detail pane with description, sub-issues and comments. Lazy-loaded. Its pure half (view to query, issues to groups, all HTML) is `issues/issueView.js`; the Status menu merges same-named states across teams and sends a whole category as a category. Refreshes every 60 s only while shown and focused, drops any answer older than the latest request, and keeps its state when the tab is left. Read-only until the board PR |
+| `IssuesPanel` | The **Tickets** screen, under Git in the sidebar: every ticket of the connected workspace (whole workspace, not the current project), quick "mine" chips, search, Status / Assignee / Priority / Labels menus plus one per facet the adapter declares, grouping and sorting, and a detail pane with description, sub-issues and comments. A **List / Board** toggle: the board's columns are the five shared categories when several teams are listed and that team's real states when one is, and dragging a card writes the state (in category mode, the first state of the card's own team in that category). State, assignee and priority also change from the detail pane. Writes are optimistic, undone on refusal, and bump the request sequence so a refresh already in flight cannot paint the old state back; a moved card survives background refreshes until the view changes, so a card dropped on Done does not vanish from a view of open tickets. The `dragover` handler reads the column from the event target and only writes a class when the column changes. Lazy-loaded. Its pure half (view to query, issues to groups, all HTML) is `issues/issueView.js`; the Status menu merges same-named states across teams and sends a whole category as a category. Refreshes every 60 s only while shown, focused, and not mid-drag or mid-write, drops any answer older than the latest request, and keeps its state when the tab is left |
 
 The dashboard has three sub-views, switched by `_dashViews` and rendered from `DashboardService`: **Overview** (the default), **Kanban** (delegated to `KanbanPanel`) and **Timeline**. The timeline is the only one that loads its own data, through `ProjectTimeline`; it caches the collected events for 30 s so changing the period or a filter chip redraws without six more round trips, and `invalidateCache()` drops that cache alongside the dashboard one.
 
@@ -373,7 +373,7 @@ The dashboard has three sub-views, switched by `_dashViews` and rendered from `D
 ### Internationalization (`src/renderer/i18n/locales/`)
 
 - **Languages:** French (default), English (fallback), Spanish, Indonesian, Simplified Chinese (`fr.json`, `en.json`, `es.json`, `id.json`, `zh-CN.json`)
-- **Keys:** 3826 per locale, all five in exact sync (enforced by `tests/i18n/i18n-coherence.test.js`)
+- **Keys:** 3832 per locale, all five in exact sync (enforced by `tests/i18n/i18n-coherence.test.js`)
 - **Loading:** only `en.json` is bundled eagerly, as the guaranteed-loaded fallback for `t()`; the others are fetched by `initI18n()`
 - **Detection:** auto-detect from `navigator.language`, `DEFAULT_LANGUAGE` is `fr`
 - **Usage:** `t('projects.openFolder')`, `t('key', { count: 5 })`, `data-i18n="..."` for static HTML
@@ -487,7 +487,7 @@ system**: no light mode, no `prefers-color-scheme`, no `data-theme`. `--accent` 
 | `workspace.css` | 824 | Workspace KB |
 | `mcp.css` | 816 | MCP management |
 | `discord-theme.css` | 739 | Discord builder theme |
-| `tickets.css` | 731 | Tickets screen: toolbar, filter menus, grouped rows, detail pane |
+| `tickets.css` | 915 | Tickets screen: toolbar, filter menus, grouped rows, detail pane |
 | `kanban.css` | 692 | Kanban board |
 | `artifacts.css` | 554 | Artifact library |
 | `files.css` | 450 | Files screen |

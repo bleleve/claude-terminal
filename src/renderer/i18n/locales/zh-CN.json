@@ -775,6 +775,10 @@
     "daysAgo": "{count}d 前"
   },
   "tickets": {
+    "board": {
+      "empty": "没有工单",
+      "dropHere": "将工单拖放到此处"
+    },
     "panel": {
       "title": "工单",
       "refresh": "刷新",
@@ -787,7 +791,9 @@
       "searchPlaceholder": "搜索（标题、ENG-142）",
       "noConnection": "尚未连接工单追踪器",
       "noConnectionHint": "使用个人 API 密钥连接 Linear，即可在此查看工单。",
-      "connect": "连接追踪器"
+      "connect": "连接追踪器",
+      "layoutList": "列表",
+      "layoutBoard": "看板"
     },
     "quick": {
       "all": "全部",
@@ -858,7 +864,8 @@
       "copyBranch": "复制分支名",
       "copyKey": "复制编号",
       "copied": "已复制到剪贴板",
-      "loadFailed": "无法加载此工单。{message}"
+      "loadFailed": "无法加载此工单。{message}",
+      "edit": "修改"
     },
     "errors": {
       "auth": "{provider} 密钥被拒绝，请在设置中重新连接。",
@@ -866,7 +873,8 @@
       "network": "无法连接到 {provider}。",
       "notFound": "在 {provider} 中未找到。",
       "provider": "{provider} 返回错误：{message}",
-      "openSettings": "打开设置"
+      "openSettings": "打开设置",
+      "updateFailed": "无法修改 {key}"
     },
     "settings": {
       "title": "工单追踪器",

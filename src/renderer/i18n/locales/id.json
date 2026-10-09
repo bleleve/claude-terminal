@@ -775,6 +775,10 @@
     "daysAgo": "{count} hari lalu"
   },
   "tickets": {
+    "board": {
+      "empty": "Tidak ada tiket",
+      "dropHere": "Letakkan tiket di sini"
+    },
     "panel": {
       "title": "Tiket",
       "refresh": "Muat ulang",
@@ -787,7 +791,9 @@
       "searchPlaceholder": "Cari (judul, ENG-142)",
       "noConnection": "Belum ada pelacak tiket yang terhubung",
       "noConnectionHint": "Hubungkan Linear dengan kunci API pribadi untuk melihat tiket Anda di sini.",
-      "connect": "Hubungkan pelacak"
+      "connect": "Hubungkan pelacak",
+      "layoutList": "Daftar",
+      "layoutBoard": "Papan"
     },
     "quick": {
       "all": "Semua",
@@ -858,7 +864,8 @@
       "copyBranch": "Salin nama branch",
       "copyKey": "Salin kunci",
       "copied": "Disalin ke papan klip",
-      "loadFailed": "Tidak dapat memuat tiket ini. {message}"
+      "loadFailed": "Tidak dapat memuat tiket ini. {message}",
+      "edit": "Ubah"
     },
     "errors": {
       "auth": "Kunci {provider} ditolak. Hubungkan kembali di pengaturan.",
@@ -866,7 +873,8 @@
       "network": "Tidak dapat menghubungi {provider}.",
       "notFound": "Tidak ditemukan di {provider}.",
       "provider": "{provider} mengembalikan galat: {message}",
-      "openSettings": "Buka pengaturan"
+      "openSettings": "Buka pengaturan",
+      "updateFailed": "Tidak dapat mengubah {key}"
     },
     "settings": {
       "title": "Pelacak tiket",
