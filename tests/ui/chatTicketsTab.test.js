@@ -306,7 +306,12 @@ describe('@tickets mention source', () => {
       { linkTicket },
     );
     expect(linkTicket).toHaveBeenCalledWith({ ref: 'linear:ENG-142', connectionId: conn.id, title: 'Session tickets tab' }, 'mention');
-    expect(text).toMatch(/^# ENG-142: Session tickets tab\nStatus: In Progress \| Priority: 1 \| Assignee: Ada Lovelace/);
+    // Priority in words and facets labelled like the rest: "Priority: 1" and
+    // "project: Tickets" told Claude nothing it could use.
+    expect(text.split('\n').slice(0, 2)).toEqual([
+      '# ENG-142: Session tickets tab',
+      'Status: In Progress | Priority: Urgent | Assignee: Ada Lovelace | Team: Engineering | Project: Tickets | Cycle: Cycle 42 | Labels: feature',
+    ]);
     expect(text).toContain('## Why');
     expect(text).toContain('## Latest comments');
     expect(text).toContain('## Sub-issues\n- ENG-151 [Todo] Persist ticket filters per screen');

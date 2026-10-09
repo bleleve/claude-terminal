@@ -32,6 +32,13 @@ const STATE_CATEGORIES = Object.freeze(['backlog', 'todo', 'started', 'done', 'c
  */
 const PRIORITY_LEVELS = Object.freeze([0, 1, 2, 3, 4]);
 
+/**
+ * The same scale in words, for text written for Claude rather than for the
+ * screen (the UI goes through i18n). A bare "Priority: 2" only means "high" to
+ * a reader who already knows the scale, and in Jira 2 would read the other way.
+ */
+const PRIORITY_NAMES = Object.freeze(['No priority', 'Urgent', 'High', 'Medium', 'Low']);
+
 /** What an adapter may declare writable in `capabilities.write`. */
 const WRITE_FIELDS = Object.freeze(['state', 'assignee', 'priority', 'comment']);
 
@@ -497,6 +504,7 @@ function normalizeQuery(raw) {
 module.exports = {
   STATE_CATEGORIES,
   PRIORITY_LEVELS,
+  PRIORITY_NAMES,
   WRITE_FIELDS,
   MINE_FILTERS,
   SORT_ORDERS,
