@@ -774,6 +774,30 @@
     "unitMinuteShort": "min",
     "daysAgo": "{count}d ago"
   },
+  "tickets": {
+    "settings": {
+      "title": "Ticket trackers",
+      "intro": "Connect a tracker to browse its tickets here and link them to your sessions. The key is kept in your system's credential store and is only ever sent to that tracker.",
+      "keyPlaceholder": "{provider} personal API key",
+      "connect": "Connect",
+      "connectAnother": "Connect another workspace",
+      "checking": "Checking the key…",
+      "connected": "Connected to {workspace}.",
+      "connectedAs": "{user} · key {key}",
+      "test": "Test",
+      "testOk": "The key works.",
+      "disconnect": "Disconnect",
+      "helpLink": "Create a personal API key in {provider}",
+      "unavailable": "No longer supported by this version",
+      "noProviders": "No ticket tracker is available in this build.",
+      "loadFailed": "Could not read the tracker connections: {message}",
+      "errorAuth": "The key was rejected. Check that it is complete and still active.",
+      "errorRateLimited": "Too many requests for now. Try again in a minute.",
+      "errorNetwork": "Could not reach {provider}. Check your connection.",
+      "errorNotFound": "This connection no longer exists.",
+      "errorProvider": "{provider} returned an error: {message}"
+    }
+  },
   "settings": {
     "title": "Settings",
     "saved": "Settings saved",
@@ -812,6 +836,7 @@
     "tabGeneral": "General",
     "tabClaude": "Claude",
     "tabGitHub": "GitHub",
+    "tabTickets": "Tickets",
     "tabThemes": "Themes",
     "tabShortcuts": "Shortcuts",
     "tabLibrary": "Library",

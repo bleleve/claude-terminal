@@ -774,6 +774,30 @@
     "unitMinuteShort": "mnt",
     "daysAgo": "{count} hari lalu"
   },
+  "tickets": {
+    "settings": {
+      "title": "Pelacak tiket",
+      "intro": "Hubungkan pelacak untuk menelusuri tiketnya di sini dan menautkannya ke sesi Anda. Kunci disimpan di penyimpanan kredensial sistem dan hanya dikirim ke pelacak tersebut.",
+      "keyPlaceholder": "Kunci API pribadi {provider}",
+      "connect": "Hubungkan",
+      "connectAnother": "Hubungkan workspace lain",
+      "checking": "Memeriksa kunci…",
+      "connected": "Terhubung ke {workspace}.",
+      "connectedAs": "{user} · kunci {key}",
+      "test": "Uji",
+      "testOk": "Kunci berfungsi.",
+      "disconnect": "Putuskan",
+      "helpLink": "Buat kunci API pribadi di {provider}",
+      "unavailable": "Tidak lagi didukung oleh versi ini",
+      "noProviders": "Tidak ada pelacak tiket yang tersedia di versi ini.",
+      "loadFailed": "Tidak dapat membaca koneksi pelacak: {message}",
+      "errorAuth": "Kunci ditolak. Pastikan kunci lengkap dan masih aktif.",
+      "errorRateLimited": "Terlalu banyak permintaan. Coba lagi dalam satu menit.",
+      "errorNetwork": "Tidak dapat menghubungi {provider}. Periksa koneksi Anda.",
+      "errorNotFound": "Koneksi ini sudah tidak ada.",
+      "errorProvider": "{provider} mengembalikan galat: {message}"
+    }
+  },
   "settings": {
     "title": "Pengaturan",
     "saved": "Pengaturan disimpan",
@@ -812,6 +836,7 @@
     "tabGeneral": "Umum",
     "tabClaude": "Claude",
     "tabGitHub": "GitHub",
+    "tabTickets": "Tiket",
     "tabThemes": "Tema",
     "tabShortcuts": "Pintasan",
     "tabLibrary": "Pustaka",
