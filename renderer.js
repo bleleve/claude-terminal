@@ -9,7 +9,7 @@ const api = window.electron_api;
 const { path, fs, process: nodeProcess, __dirname } = window.electron_nodeModules;
 const { fileExists, fsp, ensureDirs } = require('./src/renderer/utils/fs-async');
 const { matchesSessionQuery } = require('./src/renderer/utils/sessionSearch');
-const { relevantRun: pickCiRun } = require('./src/renderer/utils/ciRun');
+const { relevantRun: pickCiRun, runKey: ciRunKey, shouldAnnounce: shouldAnnounceCiRun } = require('./src/renderer/utils/ciRun');
 const { createTerminalTicketsButton } = require('./src/renderer/ui/components/terminal/ticketsButton');
 const { applyNavigationMode, isSidebarNavigation, isProjectsPopoverOpen } = require('./src/renderer/ui/navigationMode');
 
@@ -7344,6 +7344,8 @@ const ciIndicator = {
   // Bumped when the project changes: a check still waiting on git or GitHub
   // for the previous project must not draw its run over the new one.
   checkSeq: 0,
+  // Green runs already shown, so the poll does not bring them back after they hide.
+  seen: new Set(),
   _fetchingLogs: false
 };
 
@@ -7462,6 +7464,7 @@ async function checkCIStatus() {
       if (ciIndicator.currentRun) hideCIIndicator();
       return;
     }
+    if (!shouldAnnounceCiRun(relevantRun, ciIndicator.seen) && ciIndicator.currentRun?.id !== relevantRun.id) return;
 
     // Fetch jobs/steps when run is active (for step indicator)
     let jobs = ciIndicator.currentJobs;
@@ -7488,6 +7491,7 @@ async function checkCIStatus() {
       ciIndicator.currentRun.conclusion !== relevantRun.conclusion;
 
     if (changed || relevantRun.status === 'in_progress') {
+      if (relevantRun.status === 'completed' && relevantRun.conclusion === 'success') ciIndicator.seen.add(ciRunKey(relevantRun));
       showCIIndicator(relevantRun, jobs);
     }
   } catch (e) {

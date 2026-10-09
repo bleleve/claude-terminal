@@ -14,4 +14,24 @@ function relevantRun(runs, branch) {
   return own.find((r) => r.status === 'in_progress' || r.status === 'queued') || own[0] || null;
 }
 
-module.exports = { relevantRun };
+/** A run's visible state: the same id, status and conclusion read as "seen". */
+function runKey(run) {
+  return run ? `${run.id}:${run.status}:${run.conclusion || ''}` : null;
+}
+
+/**
+ * Whether the pill should show this run now. A finished green run is shown
+ * once: the pill hides it after a few seconds, and the 30 s poll used to bring
+ * the same old run straight back, so a day-old success kept reappearing. A
+ * run in progress or one that failed is always worth showing.
+ *
+ * @param {object|null} run
+ * @param {Set<string>} seen keys of the green runs already shown
+ */
+function shouldAnnounce(run, seen) {
+  if (!run) return false;
+  if (run.status !== 'completed' || run.conclusion !== 'success') return true;
+  return !seen.has(runKey(run));
+}
+
+module.exports = { relevantRun, runKey, shouldAnnounce };

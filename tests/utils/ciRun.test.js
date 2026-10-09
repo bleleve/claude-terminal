@@ -29,3 +29,23 @@ test('no run for the branch, no branch, or no list: nothing to show', () => {
   expect(relevantRun([run(1, 'main', 'in_progress')], null)).toBeNull();
   expect(relevantRun(undefined, 'main')).toBeNull();
 });
+
+describe('shouldAnnounce', () => {
+  const { shouldAnnounce, runKey } = require('../../src/renderer/utils/ciRun');
+
+  test('a green run is shown once, then not again by the next poll', () => {
+    const seen = new Set();
+    const green = run(2, 'main', 'completed', 'success');
+    expect(shouldAnnounce(green, seen)).toBe(true);
+    seen.add(runKey(green));
+    expect(shouldAnnounce({ ...green }, seen)).toBe(false);
+  });
+
+  test('a run in progress, a failure, or a new run is always shown', () => {
+    const seen = new Set([runKey(run(2, 'main', 'completed', 'success'))]);
+    expect(shouldAnnounce(run(3, 'main', 'in_progress'), seen)).toBe(true);
+    expect(shouldAnnounce(run(3, 'main', 'completed', 'failure'), seen)).toBe(true);
+    expect(shouldAnnounce(run(4, 'main', 'completed', 'success'), seen)).toBe(true);
+    expect(shouldAnnounce(null, seen)).toBe(false);
+  });
+});
