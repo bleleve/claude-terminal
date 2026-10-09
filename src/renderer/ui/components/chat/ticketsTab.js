@@ -65,6 +65,7 @@ function createTicketsTab(deps) {
   let searching = false;
   let searchText = '';
   let searchResults = null;
+  let searchError = null; // a failed search says why instead of "No ticket found"
   let searchSeq = 0;
   let searchTimer = null;
   let menu = null; // { ref } of the open state menu
@@ -143,6 +144,7 @@ function createTicketsTab(deps) {
     const res = await api.issueTrackers.listIssues(conn.id, { text, limit: SEARCH_LIMIT, sort: 'updated' }, null);
     if (destroyed || mine !== searchSeq) return;
     searchResults = res?.ok ? res.issues.map((issue) => ({ issue, connectionId: conn.id })) : [];
+    searchError = res?.ok ? null : issueView.errorText(res, providerFor(conn)?.name || '');
     if (visible) renderSearchResults();
   }
 
@@ -183,7 +185,10 @@ function createTicketsTab(deps) {
       ? `${writable ? `<button type="button" class="session-tickets-state" data-action="state" data-ref="${escapeHtml(l.ref)}" aria-haspopup="menu" title="${escapeHtml(t('tickets.detail.edit'))}">` : '<span class="session-tickets-state">'}
           ${issueView.stateDot(issue.state)} ${escapeHtml(issue.state.name)}
         ${writable ? '</button>' : '</span>'}`
-      : `<span class="session-tickets-state session-tickets-muted">${escapeHtml(hit?.error ? t('chat.tickets.loadFailed') : t('tickets.panel.loading'))}</span>`;
+      : hit?.error
+        // The reason used to be dropped: "Could not load" alone gave nothing to act on.
+        ? `<button type="button" class="session-tickets-state session-tickets-failed" data-action="retry" data-ref="${escapeHtml(l.ref)}" title="${escapeHtml(t('chat.tickets.retryHint', { reason: issueView.errorText(hit.error, provider?.name || '') }))}">${escapeHtml(t('chat.tickets.loadFailed'))}</button>`
+        : `<span class="session-tickets-state session-tickets-muted">${escapeHtml(t('tickets.panel.loading'))}</span>`;
     return `
       <li class="session-tickets-row" data-ref="${escapeHtml(l.ref)}">
         ${issue ? issueView.priorityIcon(issue.priority) : '<span class="issue-priority"></span>'}
@@ -263,15 +268,25 @@ function createTicketsTab(deps) {
       el.innerHTML = '';
       return;
     }
+    if (searchError) {
+      el.innerHTML = `<li class="session-tickets-muted session-tickets-search-error">${escapeHtml(searchError)}</li>`;
+      return;
+    }
+    // A ticket already linked stays in the results, marked: hiding it made a
+    // search for its own key answer "No ticket found".
     const known = new Set(linked().map((l) => l.ref));
-    const rows = searchResults.filter((r) => !known.has(r.issue.ref));
-    el.innerHTML = rows.length
-      ? rows.map((r, i) => `
-        <li><button type="button" class="session-tickets-result" data-action="pick" data-index="${searchResults.indexOf(r)}" ${i === 0 ? 'data-first="1"' : ''}>
+    const first = searchResults.findIndex((r) => !known.has(r.issue.ref));
+    el.innerHTML = searchResults.length
+      ? searchResults.map((r, i) => {
+        const already = known.has(r.issue.ref);
+        return `
+        <li><button type="button" class="session-tickets-result" data-action="pick" data-index="${i}" ${i === first ? 'data-first="1"' : ''} ${already ? 'disabled aria-disabled="true"' : ''}>
           ${issueView.stateDot(r.issue.state)}
           <span class="issue-key">${escapeHtml(r.issue.key)}</span>
           <span class="session-tickets-name">${escapeHtml(r.issue.title)}</span>
-        </button></li>`).join('')
+          ${already ? `<span class="session-tickets-linked-tag">${escapeHtml(t('chat.tickets.alreadyLinked'))}</span>` : ''}
+        </button></li>`;
+      }).join('')
       : `<li class="session-tickets-muted">${escapeHtml(t('chat.tickets.noResults'))}</li>`;
   }
 
@@ -351,9 +366,15 @@ function createTicketsTab(deps) {
         if (!searching) {
           searchText = '';
           searchResults = null;
+          searchError = null;
         }
         render({ focusSearch: searching });
         if (searching && searchResults === null) search('');
+        break;
+      case 'retry':
+        issues.delete(ref);
+        render();
+        fetchIssues();
         break;
       case 'pick': {
         const picked = searchResults?.[Number(el.dataset.index)];
@@ -361,6 +382,7 @@ function createTicketsTab(deps) {
           searching = false;
           searchText = '';
           searchResults = null;
+          searchError = null;
           link(picked.issue, picked.connectionId, 'manual');
         }
         break;
@@ -487,7 +509,10 @@ function createTicketsTab(deps) {
       if (destroyed || !res?.ok) return;
       links = res.links;
       updateBadge();
-      if (visible) render();
+      if (visible) {
+        render();
+        fetchIssues(); // or the new row stays on "Loading" until the tab is reopened
+      }
     },
 
     /** Called once per new suggestion batch; ChatView turns it into a card. */

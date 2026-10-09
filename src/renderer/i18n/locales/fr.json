@@ -1896,6 +1896,8 @@
       "empty": "Aucun ticket lié à cette session. Liez-en un, ou mentionnez-le avec @tickets dans un message.",
       "unlink": "Délier",
       "loadFailed": "Chargement impossible",
+      "retryHint": "{reason} Cliquez pour réessayer.",
+      "alreadyLinked": "Déjà lié",
       "sourceManual": "lié à la main",
       "sourceMention": "mentionné dans un message",
       "sourceStart": "session démarrée depuis ce ticket",

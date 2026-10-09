@@ -1896,6 +1896,8 @@
       "empty": "No ticket is linked to this session. Link one, or mention it with @tickets in a message.",
       "unlink": "Unlink",
       "loadFailed": "Could not load",
+      "retryHint": "{reason} Click to retry.",
+      "alreadyLinked": "Already linked",
       "sourceManual": "linked by hand",
       "sourceMention": "mentioned in a message",
       "sourceStart": "session started from this ticket",

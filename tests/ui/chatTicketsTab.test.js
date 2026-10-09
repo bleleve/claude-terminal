@@ -216,6 +216,74 @@ test('a change broadcast for this session refreshes the tab', async () => {
   expect(rows()).toEqual(['linear:OPS-12']); // destroyed: no longer listening
 });
 
+describe('failures say why', () => {
+  async function typeSearch(text) {
+    panel().querySelector('[data-action="toggle-search"]').click();
+    const input = panel().querySelector('.session-tickets-search-input');
+    input.value = text;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 300));
+    await flush();
+  }
+
+  test('a ticket that cannot be loaded says why on hover, and a click retries', async () => {
+    const tab = makeTab();
+    await tab.probe();
+    await tab.linkTicket({ ref: 'linear:ENG-139', connectionId: conn.id, title: 'Pruner' }, 'manual');
+    // Failing until the click: only the retry can load it.
+    const real = api.issueTrackers.getIssue.getMockImplementation();
+    api.issueTrackers.getIssue.mockImplementation(async () => ({ ok: false, code: 'RATE_LIMITED', error: 'Linear rate limit reached' }));
+    tab.show();
+    await waitFor(() => panel().querySelector('[data-action="retry"]'));
+    const failed = panel().querySelector('[data-action="retry"]');
+    expect(failed.textContent).toBe(t('chat.tickets.loadFailed'));
+    expect(failed.title).toBe(t('chat.tickets.retryHint', { reason: t('tickets.errors.rateLimited', { provider: 'Linear' }) }));
+
+    api.issueTrackers.getIssue.mockImplementation(real);
+    failed.click();
+    await waitFor(() => panel().querySelector('.session-tickets-state')?.textContent.includes('In Progress'));
+    expect(panel().querySelector('.session-tickets-state').textContent).toContain('In Progress');
+    expect(panel().querySelector('[data-action="retry"]')).toBeNull();
+    tab.destroy();
+  });
+
+  test('a ticket linked from outside while the tab is open loads at once', async () => {
+    const tab = makeTab();
+    await tab.probe();
+    tab.show();
+    await tab.linkTicket({ ref: 'linear:ENG-139', connectionId: conn.id, title: 'Pruner' }, 'mention');
+    await waitFor(() => panel().querySelector('.session-tickets-state')?.textContent.includes('In Progress'));
+    expect(panel().querySelector('.session-tickets-state').textContent).toContain('In Progress');
+    tab.destroy();
+  });
+
+  test('a search that fails says why instead of "No ticket found"', async () => {
+    const tab = makeTab();
+    await tab.probe();
+    tab.show();
+    api.issueTrackers.listIssues.mockResolvedValue({ ok: false, code: 'NETWORK', error: 'Linear is unreachable' });
+    await typeSearch('pruner');
+    await waitFor(() => panel().querySelector('.session-tickets-search-error'));
+    expect(panel().querySelector('.session-tickets-results').textContent.trim()).toBe(t('tickets.errors.network', { provider: 'Linear' }));
+    tab.destroy();
+  });
+
+  test('a ticket already linked stays in the results, marked and not pickable', async () => {
+    const tab = makeTab();
+    await tab.probe();
+    await tab.linkTicket({ ref: 'linear:ENG-139', connectionId: conn.id, title: 'Pruner' }, 'manual');
+    tab.show();
+    await typeSearch('ENG-139');
+    await waitFor(() => panel().querySelector('.session-tickets-result'));
+    const result = panel().querySelector('.session-tickets-result');
+    expect(result.disabled).toBe(true);
+    expect(result.textContent).toContain(t('chat.tickets.alreadyLinked'));
+    expect(panel().querySelector('.session-tickets-result[data-first]')).toBeNull(); // Enter picks nothing
+    expect(panel().querySelector('.session-tickets-results').textContent).not.toContain(t('chat.tickets.noResults'));
+    tab.destroy();
+  });
+});
+
 describe('suggestions', () => {
   test('each new suggestion is announced once, and listed in the tab until answered', async () => {
     const tab = makeTab();

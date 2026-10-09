@@ -88,14 +88,7 @@ const canWrite = (field) => !!state.provider?.capabilities?.write?.includes(fiel
 // ── Errors ───────────────────────────────────────────────────────────────────
 
 function errorText(res) {
-  const provider = state.provider?.name || '';
-  switch (res?.code) {
-    case 'AUTH': return t('tickets.errors.auth', { provider });
-    case 'RATE_LIMITED': return t('tickets.errors.rateLimited', { provider });
-    case 'NETWORK': return t('tickets.errors.network', { provider });
-    case 'NOT_FOUND': return t('tickets.errors.notFound', { provider });
-    default: return t('tickets.errors.provider', { provider, message: res?.error || '' });
-  }
+  return view.errorText(res, state.provider?.name || '');
 }
 
 // ── Loading ──────────────────────────────────────────────────────────────────
