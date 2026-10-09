@@ -924,3 +924,28 @@
   font-size: var(--font-xs);
   white-space: nowrap;
 }
+
+/* ── Start a session from a ticket ── */
+.issues-start {
+  width: 340px;
+  max-width: 340px;
+  padding: 12px;
+  gap: 10px;
+  font-size: var(--font-sm);
+  color: var(--text-primary);
+}
+.issues-start-field { display: flex; flex-direction: column; gap: 4px; color: var(--text-secondary); font-size: var(--font-xs); }
+.issues-start-field select {
+  padding: 6px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+}
+.issues-start-check { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+.issues-start-check input { margin-top: 2px; accent-color: var(--accent); }
+.issues-start-check code { font-size: var(--font-xs); color: var(--text-secondary); word-break: break-all; }
+.issues-start-note { margin: 0; color: var(--text-muted); font-size: var(--font-xs); }
+.issues-start-actions { display: flex; gap: 8px; }
+.issues-start-actions .btn-sm { flex: none; }

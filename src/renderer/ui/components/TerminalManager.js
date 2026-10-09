@@ -1521,13 +1521,13 @@ class TerminalManager extends BaseComponent {
   // ── Create terminal ──
 
   async createTerminal(project, options = {}) {
-    const { skipPermissions = false, runClaude = true, name: customName = null, nameCustom = false, mode: explicitMode = null, cwd: overrideCwd = null, initialPrompt = null, initialImages = null, initialModel = null, initialEffort = null, onSessionStart = null, resumeSessionId = null, systemPrompt = null, tabTag = null } = options;
+    const { skipPermissions = false, runClaude = true, name: customName = null, nameCustom = false, mode: explicitMode = null, cwd: overrideCwd = null, initialPrompt = null, initialImages = null, initialModel = null, initialEffort = null, onSessionStart = null, resumeSessionId = null, systemPrompt = null, tabTag = null, draftPrompt = null, initialTickets = null } = options;
 
     const mode = explicitMode || (runClaude ? (getSetting('defaultTerminalMode') || 'terminal') : 'terminal');
 
     if (mode === 'chat' && runClaude) {
       const chatProject = overrideCwd ? { ...project, path: overrideCwd } : project;
-      return this._createChatTerminal(chatProject, { skipPermissions, name: customName, nameCustom, parentProjectId: overrideCwd ? project.id : null, resumeSessionId, initialPrompt, initialImages, initialModel, initialEffort, onSessionStart, systemPrompt, tabTag });
+      return this._createChatTerminal(chatProject, { skipPermissions, name: customName, nameCustom, parentProjectId: overrideCwd ? project.id : null, resumeSessionId, initialPrompt, initialImages, initialModel, initialEffort, onSessionStart, systemPrompt, tabTag, draftPrompt, initialTickets });
     }
 
     // Started before the PTY spawn rather than after it: on the first terminal
@@ -3847,7 +3847,7 @@ class TerminalManager extends BaseComponent {
   // ── Chat terminal ──
 
   async _createChatTerminal(project, options = {}) {
-    const { skipPermissions = false, name: customName = null, nameCustom = false, resumeSessionId = null, forkSession = false, resumeSessionAt = null, resumeDropsTurn = null, parentProjectId = null, initialPrompt = null, initialImages = null, initialModel = null, initialEffort = null, onSessionStart = null, systemPrompt = null, tabTag = null } = options;
+    const { skipPermissions = false, name: customName = null, nameCustom = false, resumeSessionId = null, forkSession = false, resumeSessionAt = null, resumeDropsTurn = null, parentProjectId = null, initialPrompt = null, initialImages = null, initialModel = null, initialEffort = null, onSessionStart = null, systemPrompt = null, tabTag = null, draftPrompt = null, initialTickets = null } = options;
 
     const id = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     let _chatSessionId = null;
@@ -3922,6 +3922,10 @@ class TerminalManager extends BaseComponent {
       resumeDropsTurn,
       initialPrompt,
       initialImages,
+      // A session started from a ticket: its prompt is prefilled, not sent,
+      // and the ticket is linked from the first moment.
+      draftPrompt,
+      initialTickets,
       initialModel: effectiveModel,
       initialEffort: effectiveEffort,
       builtinSystemPrompt: getBuiltinSystemPrompt(project.type),

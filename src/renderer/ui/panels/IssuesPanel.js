@@ -23,13 +23,14 @@ const { copyText } = require('../../utils/clipboard');
 const MarkdownRenderer = require('../../services/MarkdownRenderer');
 const { getSetting, setSetting } = require('../../state/settings.state');
 const view = require('./issues/issueView');
+const { issueAsText } = require('../../services/mention-sources/issue.source');
 
 const POLL_MS = 60_000;
 const SEARCH_DEBOUNCE_MS = 250;
 const RELOAD_DEBOUNCE_MS = 150;
 const SAVE_DEBOUNCE_MS = 400;
 
-let deps = { api: null, openSettings: () => {}, showToast: () => {} };
+let deps = { api: null, openSettings: () => {}, showToast: () => {}, startSession: null, getProjects: () => ({ projects: [], openedProjectId: null }) };
 let root = null;
 let state = null;
 let listeners = [];
@@ -653,6 +654,7 @@ function renderDetail() {
     renderMarkdown: (md) => MarkdownRenderer.render(md),
     providerName: state.provider?.name || state.connection?.providerName || '',
     metadata: state.metadata,
+    canStart: typeof deps.startSession === 'function',
     editableFields: {
       state: canWrite('state'),
       assignee: canWrite('assignee'),
@@ -660,6 +662,96 @@ function renderDetail() {
     },
   });
   MarkdownRenderer.postProcess(el);
+}
+
+// ── Start a session from a ticket ────────────────────────────────────────────
+
+/** The first state of the ticket's own team in the "started" category. */
+function startedStateFor(issue) {
+  return view.statesForIssue(issue, state.metadata).find((st) => st.category === 'started') || null;
+}
+
+function closeStart() {
+  root?.querySelector('.issues-start')?.remove();
+}
+
+function openStart(anchor) {
+  closeMenu();
+  closeStart();
+  const issue = state.detail;
+  const { projects, openedProjectId } = deps.getProjects();
+  if (!projects.length) {
+    deps.showToast({ type: 'error', title: t('tickets.start.noProject') });
+    return;
+  }
+  const ordered = projects.slice().sort((a, b) => (b.id === openedProjectId) - (a.id === openedProjectId));
+  const started = startedStateFor(issue);
+  const canMove = canWrite('state') && started && !['started', 'done', 'canceled'].includes(issue.state.category);
+  const el = document.createElement('div');
+  el.className = 'issues-menu issues-start';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', t('tickets.detail.startSession'));
+  el.innerHTML = `
+    <label class="issues-start-field">
+      <span>${escapeHtml(t('tickets.start.project'))}</span>
+      <select class="issues-start-project">${ordered.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name || p.path)}</option>`).join('')}</select>
+    </label>
+    ${issue.branchName ? `<label class="issues-start-check"><input type="checkbox" class="issues-start-branch" checked>
+      <span>${escapeHtml(t('tickets.start.createBranch'))} <code>${escapeHtml(issue.branchName)}</code></span></label>` : ''}
+    ${canMove ? `<label class="issues-start-check"><input type="checkbox" class="issues-start-move" checked>
+      <span>${escapeHtml(t('tickets.start.moveTo', { state: started.name }))}</span></label>` : ''}
+    <p class="issues-start-note">${escapeHtml(t('tickets.start.note'))}</p>
+    <div class="issues-start-actions">
+      <button type="button" class="btn-sm issues-primary" data-action="start-confirm">${escapeHtml(t('tickets.start.start'))}</button>
+      <button type="button" class="btn-sm btn-secondary" data-action="start-cancel">${escapeHtml(t('tickets.start.cancel'))}</button>
+    </div>`;
+  root.querySelector('.issues-panel').appendChild(el);
+  const panelBox = root.querySelector('.issues-panel').getBoundingClientRect();
+  const box = anchor.getBoundingClientRect();
+  el.style.top = `${box.bottom - panelBox.top + 4}px`;
+  el.style.left = `${Math.max(0, Math.min(box.left - panelBox.left, panelBox.width - el.offsetWidth - 8))}px`;
+  el.querySelector('.issues-start-project').focus();
+}
+
+/**
+ * Open a chat on the chosen project with the ticket linked and its content in
+ * the composer, unsent. Before that, optionally: check out the tracker's
+ * branch name (created if new), and move the ticket to its team's first
+ * "started" state. A failed branch is said and does not stop the session.
+ */
+async function confirmStart() {
+  const el = root?.querySelector('.issues-start');
+  const issue = state.detail;
+  if (!el || !issue) return;
+  const { projects } = deps.getProjects();
+  const project = projects.find((p) => p.id === el.querySelector('.issues-start-project').value);
+  const wantBranch = !!el.querySelector('.issues-start-branch')?.checked;
+  const wantMove = !!el.querySelector('.issues-start-move')?.checked;
+  closeStart();
+  if (!project) return;
+
+  if (wantBranch && issue.branchName) {
+    let res = await deps.api.git.createBranch({ projectPath: project.path, branch: issue.branchName });
+    if (!res?.success && /already exists/i.test(res?.error || '')) {
+      res = await deps.api.git.checkout({ projectPath: project.path, branch: issue.branchName });
+    }
+    if (!res?.success) {
+      deps.showToast({ type: 'warning', title: t('tickets.start.branchFailed'), message: res?.error || '' });
+    }
+  }
+  let forDraft = issue;
+  if (wantMove) {
+    const started = startedStateFor(issue);
+    if (started) {
+      const moved = { state: { id: started.id, name: started.name, color: started.color, category: started.category } };
+      writeIssue(issue.key, { stateId: started.id }, moved);
+      forDraft = { ...issue, ...moved }; // the draft says where the ticket is now
+    }
+  }
+  deps.startSession(project, {
+    draftPrompt: `${t('tickets.start.draftIntro', { key: issue.key })}\n\n${issueAsText(forDraft)}`,
+    initialTickets: [{ ref: issue.ref, connectionId: state.connection.id, title: issue.title }],
+  });
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────
@@ -671,6 +763,11 @@ function on(target, type, handler) {
 
 async function onClick(event) {
   const target = event.target;
+
+  // The start options are styled as a menu: answered before the menu clicks are swallowed below.
+  if (target.closest('[data-action="start-confirm"]')) return confirmStart();
+  if (target.closest('[data-action="start-cancel"]')) return closeStart();
+  if (target.closest('.issues-start')) return;
 
   const menuItem = target.closest('.issues-menu-item');
   if (menuItem && state.menu) {
@@ -737,6 +834,7 @@ async function onClick(event) {
   const action = target.closest('.issue-action');
   if (action && state.detail) {
     if (action.dataset.action === 'open') deps.api.dialog.openExternal(state.detail.url);
+    else if (action.dataset.action === 'start-session') openStart(action);
     else {
       const text = action.dataset.action === 'copy-branch' ? state.detail.branchName : state.detail.key;
       const ok = await copyText(text);
@@ -885,11 +983,13 @@ function onDocumentKeydown(event) {
   // Registered only while the tab is shown: cleanup() removes it on deactivate.
   if (event.key !== 'Escape' || !root) return;
   if (document.querySelector('#modal-overlay.active')) return;
-  if (state.menu) closeMenu();
+  if (root.querySelector('.issues-start')) closeStart();
+  else if (state.menu) closeMenu();
   else if (state.selectedRef) closeDetail();
 }
 
 function onDocumentMousedown(event) {
+  if (root && !event.target.closest('.issues-start, [data-action="start-session"]')) closeStart();
   if (!state?.menu || !root) return;
   if (event.target.closest('.issues-menu') || event.target.closest('[data-menu], [data-menu-connection]')) return;
   closeMenu();

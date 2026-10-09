@@ -775,6 +775,17 @@
     "daysAgo": "{count} hari lalu"
   },
   "tickets": {
+    "start": {
+      "project": "Proyek",
+      "createBranch": "Pindah ke branch",
+      "moveTo": "Pindahkan ke “{state}”",
+      "note": "Tiket dimasukkan ke kotak pesan; tidak ada yang dikirim sampai Anda mengirimnya.",
+      "start": "Mulai",
+      "cancel": "Batal",
+      "draftIntro": "Kerjakan tiket {key}. Ini isinya:",
+      "branchFailed": "Gagal pindah ke branch",
+      "noProject": "Tambahkan proyek terlebih dahulu: sesi berjalan di dalam proyek."
+    },
     "board": {
       "empty": "Tidak ada tiket",
       "dropHere": "Letakkan tiket di sini"
@@ -866,7 +877,8 @@
       "copyKey": "Salin kunci",
       "copied": "Disalin ke papan klip",
       "loadFailed": "Tidak dapat memuat tiket ini. {message}",
-      "edit": "Ubah"
+      "edit": "Ubah",
+      "startSession": "Mulai sesi"
     },
     "errors": {
       "auth": "Kunci {provider} ditolak. Hubungkan kembali di pengaturan.",
@@ -1897,7 +1909,18 @@
       "cardLinked": "{keys} ditautkan ke sesi ini",
       "cardIgnored": "Saran diabaikan untuk sesi ini",
       "suggestions": "Saran",
-      "confirm": "Tautkan"
+      "confirm": "Tautkan",
+      "recap": "Kirim ringkasan",
+      "recapPublish": "Publikasikan ke {provider}",
+      "recapCancel": "Batal",
+      "recapNote": "Ubah sesuka Anda sebelum dipublikasikan.",
+      "recapPublished": "Ringkasan dikirim ke {key}",
+      "recapFailed": "Gagal mengirim ringkasan",
+      "recapHeading": "**Sesi Claude Terminal** di {project}",
+      "recapBranch": "Branch",
+      "recapCommits": "Commit",
+      "recapPr": "Pull request",
+      "recapFiles": "{count} file diubah"
     },
     "git": {
       "loading": "Membaca repositori…",

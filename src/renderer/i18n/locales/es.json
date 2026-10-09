@@ -772,6 +772,17 @@
     "daysAgo": "hace {count}d"
   },
   "tickets": {
+    "start": {
+      "project": "Proyecto",
+      "createBranch": "Cambiar a la rama",
+      "moveTo": "Pasar a «{state}»",
+      "note": "El ticket va al cuadro de mensaje; no se envía nada hasta que lo envíes.",
+      "start": "Iniciar",
+      "cancel": "Cancelar",
+      "draftIntro": "Trabaja en el ticket {key}. Aquí está:",
+      "branchFailed": "No se pudo cambiar a la rama",
+      "noProject": "Añade primero un proyecto: una sesión se ejecuta en un proyecto."
+    },
     "board": {
       "empty": "Ningún ticket",
       "dropHere": "Suelta un ticket aquí"
@@ -863,7 +874,8 @@
       "copyKey": "Copiar el identificador",
       "copied": "Copiado al portapapeles",
       "loadFailed": "No se pudo cargar este ticket. {message}",
-      "edit": "Cambiar"
+      "edit": "Cambiar",
+      "startSession": "Iniciar una sesión"
     },
     "errors": {
       "auth": "La clave de {provider} fue rechazada. Vuelve a conectarla en los ajustes.",
@@ -1894,7 +1906,18 @@
       "cardLinked": "{keys} vinculado(s) a esta sesión",
       "cardIgnored": "Sugerencias ignoradas para esta sesión",
       "suggestions": "Sugerencias",
-      "confirm": "Vincular"
+      "confirm": "Vincular",
+      "recap": "Publicar un resumen",
+      "recapPublish": "Publicar en {provider}",
+      "recapCancel": "Cancelar",
+      "recapNote": "Edítalo como quieras antes de publicarlo.",
+      "recapPublished": "Resumen publicado en {key}",
+      "recapFailed": "No se pudo publicar el resumen",
+      "recapHeading": "**Sesión de Claude Terminal** en {project}",
+      "recapBranch": "Rama",
+      "recapCommits": "Commits",
+      "recapPr": "Pull request",
+      "recapFiles": "{count} archivo(s) editado(s)"
     },
     "git": {
       "loading": "Leyendo el repositorio…",

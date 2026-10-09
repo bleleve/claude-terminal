@@ -55,25 +55,50 @@ function remoteHost(url) {
 }
 
 /**
- * The branch the session's branch is measured against. The remote the branch
- * tracks comes first: a branch pushed to a fork is based on the fork's main,
- * and measuring it against origin/main (the upstream) would list every commit
- * the fork has that upstream does not.
+ * The branch the session's branch is measured against.
+ *
+ * A branch that tracks a remote is measured against that remote's main: a
+ * branch pushed to a fork is based on the fork's main, and measuring it
+ * against origin/main (the upstream) would list every commit the fork has
+ * that upstream does not.
+ *
+ * A branch not published yet tracks nothing, so every remote's main and the
+ * local main are candidates, and the closest one wins: the base the branch
+ * has the fewest commits on top of. A handful of `rev-list --count`, only for
+ * an unpublished branch.
  */
-async function findBase(cwd, remote) {
-  const remotes = [...new Set([remote, 'origin'].filter(Boolean))];
-  for (const r of remotes) {
+async function findBase(cwd, remote, branch) {
+  const preferred = async (r) => {
     const head = await execGit(cwd, ['for-each-ref', '--format=%(symref:short)', `refs/remotes/${r}/HEAD`]);
     if (head) return head;
+    const refs = [`refs/remotes/${r}/main`, `refs/remotes/${r}/master`];
+    const found = ((await execGit(cwd, ['for-each-ref', '--format=%(refname)', ...refs])) || '').split('\n').filter(Boolean);
+    const first = refs.find((ref) => found.includes(ref));
+    return first ? first.replace(/^refs\/remotes\//, '') : null;
+  };
+
+  if (remote) {
+    const base = await preferred(remote);
+    if (base) return base;
   }
-  const candidates = [
-    ...remotes.flatMap((r) => [`refs/remotes/${r}/main`, `refs/remotes/${r}/master`]),
-    'refs/heads/main',
-    'refs/heads/master',
-  ];
-  const existing = new Set(((await execGit(cwd, ['for-each-ref', '--format=%(refname)', ...candidates])) || '').split('\n').filter(Boolean));
-  const found = candidates.find((ref) => existing.has(ref));
-  return found ? found.replace(/^refs\/(remotes|heads)\//, '') : null;
+
+  const remotes = ((await execGit(cwd, ['remote'])) || '').split('\n').filter(Boolean);
+  const candidates = [];
+  for (const r of ['origin', ...remotes.filter((x) => x !== 'origin')]) {
+    if (!remotes.includes(r)) continue;
+    const base = await preferred(r);
+    if (base && !candidates.includes(base)) candidates.push(base);
+  }
+  const local = ((await execGit(cwd, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/main', 'refs/heads/master'])) || '').split('\n').filter(Boolean);
+  for (const name of ['main', 'master']) if (local.includes(name) && name !== branch) candidates.push(name);
+  if (candidates.length <= 1 || !branch) return candidates[0] || null;
+
+  let best = null;
+  for (const base of candidates) {
+    const count = parseInt((await execGit(cwd, ['rev-list', '--count', `${base}..HEAD`])) || '', 10);
+    if (Number.isFinite(count) && (!best || count < best.count)) best = { base, count };
+  }
+  return best ? best.base : candidates[0];
 }
 
 function summarizeChecks(checkRuns) {
@@ -195,7 +220,7 @@ async function summary(cwd, { withPullRequest = true } = {}) {
     }
   }
 
-  const base = await findBase(cwd, remote);
+  const base = await findBase(cwd, remote, branch);
   const onBase = !branch || !base || base === branch || base.endsWith(`/${branch}`);
   const format = `--format=%H${SEP}%h${SEP}%s${SEP}%an${SEP}%aI`;
   const commits = parseLog(onBase

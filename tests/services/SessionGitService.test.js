@@ -185,3 +185,13 @@ describe('helpers', () => {
     expect(_internals.summarizeReviews([{ user: 'a', state: 'APPROVED' }, { user: 'a', state: 'COMMENTED' }]).approved).toBe(1);
   });
 });
+
+test('a branch not published yet is measured against the closest base, not origin by default', async () => {
+  const wt = path.join(dir, 'unpublished-wt');
+  git(work, 'worktree', 'add', '-q', '--no-track', '-b', 'ada/eng-151', wt, 'fork/main');
+  commit(wt, 'f.txt', 'F on an unpublished branch');
+  const s = await summary(wt, { withPullRequest: false });
+  expect(s.upstream).toBeNull();
+  expect(s.base).toBe('fork/main');
+  expect(s.commits.map((c) => c.subject)).toEqual(['F on an unpublished branch']);
+});
