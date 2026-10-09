@@ -92,10 +92,26 @@ function isSidebarNavigation(doc = typeof document !== 'undefined' ? document : 
   return !!doc && doc.body.classList.contains('nav-sidebar');
 }
 
+/**
+ * True when the projects popover is open over the content.
+ *
+ * In sidebar navigation the same node is docked as a column and always
+ * displayed, so its inline style says nothing about a popover: there is none
+ * to be open. Answering from the style alone made the capture-phase Escape
+ * handler in renderer.js believe a popover was open on every keypress, and it
+ * stopped the propagation of every Escape in the app.
+ */
+function isProjectsPopoverOpen(doc = typeof document !== 'undefined' ? document : null) {
+  if (!doc || isSidebarNavigation(doc)) return false;
+  const popover = doc.getElementById('projects-popover');
+  return !!popover && popover.style.display !== 'none';
+}
+
 module.exports = {
   MODES,
   isNavigationMode,
   resolveNavigationMode,
   applyNavigationMode,
   isSidebarNavigation,
+  isProjectsPopoverOpen,
 };

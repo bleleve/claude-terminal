@@ -10,6 +10,7 @@ const {
   resolveNavigationMode,
   applyNavigationMode,
   isSidebarNavigation,
+  isProjectsPopoverOpen,
 } = require('../../src/renderer/ui/navigationMode');
 
 /** The parts of index.html the mode actually moves things between. */
@@ -144,5 +145,24 @@ describe('applyNavigationMode', () => {
     document.body.innerHTML = '';
     expect(() => applyNavigationMode('sidebar')).not.toThrow();
     expect(document.body.classList.contains('nav-sidebar')).toBe(true);
+  });
+});
+
+describe('isProjectsPopoverOpen', () => {
+  beforeEach(buildDom);
+
+  test('follows the popover in tabs navigation', () => {
+    applyNavigationMode('tabs');
+    expect(isProjectsPopoverOpen()).toBe(false);
+    document.getElementById('projects-popover').style.display = 'flex';
+    expect(isProjectsPopoverOpen()).toBe(true);
+  });
+
+  // The docked column is always displayed. Reading that as an open popover is
+  // what made the capture-phase Escape handler swallow every Escape in the app.
+  test('is never open in sidebar navigation, where the node is a docked column', () => {
+    applyNavigationMode('sidebar');
+    expect(document.getElementById('projects-popover').style.display).toBe('');
+    expect(isProjectsPopoverOpen()).toBe(false);
   });
 });
