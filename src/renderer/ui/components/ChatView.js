@@ -412,10 +412,13 @@ class ChatView extends BaseComponent {
   const gitTabBtn = chatView.querySelector('.chat-tab[data-tab="git"]');
   // Where the session's branch stands (chat/gitTab.js). The tab appears once
   // the folder turns out to be a repository; a cloud project has no local one.
+  // With the CLI's session id it reads the session's transcript and shows the
+  // worktrees it actually used; a resumed tab has that id from the start.
   const gitTab = createGitTab({
     api,
     panelEl: gitPanelEl,
     getCwd: () => project.path,
+    getSessionId: () => sdkSessionId || (resumeSessionId && !forkSession ? resumeSessionId : null),
     sessionStartedAt: recapSessionStartTime,
     onAvailable: () => {
       gitTabBtn.hidden = false;
@@ -499,18 +502,19 @@ class ChatView extends BaseComponent {
     return lines.join('\n');
   }
 
-  let observedBranch = null;
-  let observedPrTitle = null;
+  const observedGit = new Set();
+  // Each branch and title once: a session with several worktrees hands over
+  // several of each on every refresh.
   function observeGitForTickets(summary) {
     if (!summary?.isRepo || !api.issueLinks?.observeText) return;
     const key = ticketsTab.getKey();
-    if (summary.branch && summary.branch !== observedBranch) {
-      observedBranch = summary.branch;
+    if (summary.branch && !observedGit.has(`branch:${summary.branch}`)) {
+      observedGit.add(`branch:${summary.branch}`);
       api.issueLinks.observeText(key, summary.branch, 'branch', summary.branch).catch(() => {});
     }
     const pr = summary.pr?.pullRequest;
-    if (pr?.title && pr.title !== observedPrTitle) {
-      observedPrTitle = pr.title;
+    if (pr?.title && !observedGit.has(`pr:${pr.url || pr.number}:${pr.title}`)) {
+      observedGit.add(`pr:${pr.url || pr.number}:${pr.title}`);
       api.issueLinks.observeText(key, pr.title, 'pr', `#${pr.number}`).catch(() => {});
     }
   }
@@ -7385,6 +7389,8 @@ class ChatView extends BaseComponent {
       sdkSessionId = msg.session_id;
       // The session's ticket links follow it to its real id.
       ticketsTab.onSessionId(msg.session_id);
+      // Its transcript now has a name: the Git tab can say where it worked.
+      gitTab.markStale();
       // The CLI's id is what a restored tab resumes on, so it has to name this
       // tab's task history too — that is the link the next run reads.
       taskOwnerKey = tasksStore.claimSession(taskOwnerKey || msg.session_id, msg.session_id);

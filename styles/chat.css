@@ -5738,6 +5738,16 @@ input.chat-elicit-input[type="checkbox"] {
 }
 .session-git-spacer { flex: 1; }
 
+/* A session's own worktrees: a card each, its pull request nested without a second frame. */
+.session-git-head { display: flex; align-items: center; gap: 8px; }
+.session-git-head .session-git-section-title { margin: 0; }
+.session-git-head .btn-sm { flex: none; width: auto; }
+.session-git-place { margin: 2px 0 6px 22px; color: var(--text-muted); font-size: var(--font-xs); font-family: 'JetBrains Mono', 'Fira Code', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-git-ws-pr { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color); }
+.session-git-ws-pr > .session-git-section,
+.session-git-created > .session-git-section { padding: 0; border: none; background: transparent; }
+.session-git-created + .session-git-created { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color); }
+
 .session-git-icon-btn {
   display: grid;
   place-items: center;

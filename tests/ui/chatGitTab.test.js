@@ -6,7 +6,7 @@
 
 'use strict';
 
-const { createGitTab, gitTabHtml } = require('../../src/renderer/ui/components/chat/gitTab');
+const { createGitTab, gitTabHtml, sessionHtml } = require('../../src/renderer/ui/components/chat/gitTab');
 const { t } = require('../../src/renderer/i18n');
 
 const SESSION_START = Date.parse('2026-10-09T08:00:00Z');
@@ -234,5 +234,105 @@ describe('createGitTab', () => {
     release(summary());
     await pending;
     expect(deps.onAvailable).not.toHaveBeenCalled();
+  });
+});
+
+describe('a session that worked in its own worktrees', () => {
+  const ws = (over = {}) => ({ ...summary(), dir: '/repo/.claude/worktrees/a', label: '.claude/worktrees/a', isRoot: false, at: 2, ...over });
+  const overviewOf = (over = {}) => ({
+    isRepo: true,
+    mode: 'session',
+    workspaces: [
+      ws({ branch: 'feat/a', pr: { ...summary().pr, pullRequest: { ...summary().pr.pullRequest, number: 7, url: 'https://github.com/acme/app/pull/7', createdHere: true } } }),
+      ws({ dir: '/repo/.claude/worktrees/b', label: '.claude/worktrees/b', branch: 'feat/b', removed: true, upstream: null, ahead: 0, dirty: undefined, commits: undefined, base: undefined, onBase: undefined, pr: { authenticated: true, pullRequest: null, createUrl: 'https://x' } }),
+    ],
+    createdPrs: [{ url: 'https://github.com/acme/app/pull/9', number: 9, repo: 'acme/app', authenticated: true, pullRequest: { ...summary().pr.pullRequest, number: 9, title: 'Elsewhere', url: 'https://github.com/acme/app/pull/9', headRef: 'feat/z' } }],
+    ...over,
+  });
+
+  test('a card per worktree with its own branch and pull request, then the ones no card carries', () => {
+    document.body.innerHTML = sessionHtml(overviewOf());
+    const cards = [...document.querySelectorAll('[data-ws]')];
+    expect(cards.map((c) => c.querySelector('.session-git-branch-name').textContent)).toEqual(['feat/a', 'feat/b']);
+    expect(cards[0].querySelector('.session-git-place').textContent).toBe('.claude/worktrees/a');
+    expect(cards[0].textContent).toContain(t('chat.git.createdHere'));
+    expect(cards[0].querySelector('[data-action="open-pr"]').dataset.url).toBe('https://github.com/acme/app/pull/7');
+    expect(cards[1].textContent).toContain(t('chat.git.removedWorktree'));
+    expect(cards[1].querySelector('[data-action="push"]')).toBeNull(); // nothing on disk to push
+    expect(document.querySelector('[data-created="0"] .session-git-pr-text').textContent).toBe('Elsewhere');
+  });
+
+  test('the project folder is named when the session worked there', () => {
+    document.body.innerHTML = sessionHtml(overviewOf({ workspaces: [ws({ label: null, isRoot: true, dir: '/repo' })], createdPrs: [] }));
+    expect(document.querySelector('.session-git-place').textContent).toBe(t('chat.git.projectFolder'));
+    expect(document.querySelector('[data-created]')).toBeNull();
+  });
+
+  describe('in the tab', () => {
+    let panelEl;
+    let api;
+    let deps;
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+
+    beforeEach(() => {
+      document.body.innerHTML = '<div class="panel"></div>';
+      panelEl = document.querySelector('.panel');
+      api = {
+        git: {
+          sessionSummary: jest.fn(async () => summary()),
+          sessionOverview: jest.fn(async () => overviewOf()),
+          push: jest.fn(async () => ({ success: true })),
+          pushBranch: jest.fn(async () => ({ success: true })),
+        },
+        dialog: { openExternal: jest.fn() },
+      };
+      deps = {
+        api, panelEl, getCwd: () => '/repo', sessionStartedAt: SESSION_START, onAvailable: jest.fn(),
+        openGitScreen: jest.fn(), openSettings: jest.fn(), showToast: jest.fn(), onSummary: jest.fn(),
+      };
+    });
+
+    test('with the CLI session id it reads the session, without it the folder', async () => {
+      let sid = null;
+      const tab = createGitTab({ ...deps, getSessionId: () => sid });
+      await tab.probe();
+      expect(api.git.sessionSummary).toHaveBeenCalledWith({ projectPath: '/repo' });
+      expect(api.git.sessionOverview).not.toHaveBeenCalled();
+      sid = 'bfad60ea-7522-4ae7-b996-8808fb848f8d';
+      await tab.probe();
+      expect(api.git.sessionOverview).toHaveBeenCalledWith({ projectPath: '/repo', sessionId: sid });
+      tab.destroy();
+    });
+
+    test('each card acts on its own worktree; links open their own URL', async () => {
+      const tab = createGitTab({ ...deps, getSessionId: () => 'sid-12345678' });
+      await tab.probe();
+      tab.show();
+      panelEl.querySelector('[data-ws="0"] [data-action="push"]').click();
+      await flush();
+      expect(api.git.push).toHaveBeenCalledWith({ projectPath: '/repo/.claude/worktrees/a' });
+      panelEl.querySelector('[data-created="0"] [data-action="open-pr"]').click();
+      expect(api.dialog.openExternal).toHaveBeenCalledWith('https://github.com/acme/app/pull/9');
+      tab.destroy();
+    });
+
+    test('ticket detection sees every branch and pull request; the recap reads the latest worktree', async () => {
+      const tab = createGitTab({ ...deps, getSessionId: () => 'sid-12345678' });
+      await tab.probe();
+      const seen = deps.onSummary.mock.calls.map(([s]) => [s.branch, s.pr?.pullRequest?.number || null]);
+      expect(seen).toEqual([['feat/a', 7], ['feat/b', null], ['feat/z', 9]]);
+      expect(tab.getSummary()).toMatchObject({ branch: 'feat/a' });
+      tab.destroy();
+    });
+
+    test('a session the overview finds nothing for is drawn as the folder', async () => {
+      api.git.sessionOverview.mockResolvedValue({ ...summary(), mode: 'project' });
+      const tab = createGitTab({ ...deps, getSessionId: () => 'sid-12345678' });
+      await tab.probe();
+      tab.show();
+      expect(panelEl.querySelector('[data-ws]')).toBeNull();
+      expect(panelEl.querySelector('.session-git-branch-name').textContent).toBe('feat/x');
+      tab.destroy();
+    });
   });
 });

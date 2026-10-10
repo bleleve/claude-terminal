@@ -549,6 +549,53 @@ async function getPullRequestsForBranch(owner, repo, headOwner, branch) {
 }
 
 /**
+ * One pull request by number: what the Git tab needs for a pull request a
+ * session created, whose branch may live in a worktree since removed.
+ * @returns {Promise<{ authenticated: boolean, pullRequest?: object|null, notFound?: boolean, ssoRequired?: object, error?: string }>}
+ */
+async function getPullRequest(owner, repo, number) {
+  const token = await getToken();
+  if (!token) return { authenticated: false };
+  try {
+    const response = await httpsRequest({
+      hostname: config.apiHostname,
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${Number(number)}`,
+      method: 'GET',
+      headers: {
+        'Accept': 'application/vnd.github.v3+json',
+        'Authorization': `Bearer ${token}`,
+        'User-Agent': 'Claude-Terminal'
+      },
+      etagKey: `pull:${owner}/${repo}#${Number(number)}`
+    });
+    if (response.status === 200) {
+      const pr = response.data || {};
+      return {
+        authenticated: true,
+        pullRequest: {
+          number: pr.number,
+          title: pr.title,
+          state: pr.merged_at ? 'merged' : pr.state,
+          draft: pr.draft || false,
+          url: pr.html_url,
+          headSha: pr.head?.sha || null,
+          headRef: pr.head?.ref || null,
+          baseRef: pr.base?.ref || null,
+          updatedAt: pr.updated_at
+        }
+      };
+    }
+    if (response.status === 404) return { authenticated: true, pullRequest: null, notFound: true };
+    const sso = response.status === 403 ? ssoRequirement(response.sso) : null;
+    if (sso) return { authenticated: true, pullRequest: null, ssoRequired: sso };
+    return { authenticated: true, pullRequest: null, error: `API error: ${response.status}` };
+  } catch (e) {
+    console.error('Error fetching a pull request:', e);
+    return { authenticated: true, pullRequest: null, error: e.message };
+  }
+}
+
+/**
  * Create a pull request
  * @param {string} owner - Repository owner
  * @param {string} repo - Repository name
@@ -1135,6 +1182,7 @@ module.exports = {
   getJobLogs,
   getPullRequests,
   getPullRequestsForBranch,
+  getPullRequest,
   ssoRequirement,
   createPullRequest,
   parseGitHubRemote,

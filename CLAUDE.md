@@ -22,7 +22,7 @@ npm run build:win        # Windows NSIS installer
 npm run build:mac        # macOS DMG
 npm run build:linux      # Linux AppImage
 npm run publish          # Build and publish Windows installer to update server
-npm test                 # Run Jest tests (jsdom, 223 test files)
+npm test                 # Run Jest tests (jsdom, 225 test files)
 npm run test:watch       # Jest in watch mode
 npm run check:docs       # Fail if CLAUDE.md or the README translations have drifted
 npm run lint             # ESLint over main, renderer, shared, MCP servers and scripts
@@ -39,8 +39,8 @@ Electron Main Process (Node.js)
 ├── main.js                          # Bootstrap, lifecycle, single-instance lock, global shortcuts
 ├── src/main/preload.js              # IPC bridge (window.electron_api)
 ├── src/main/preload-quickpicker.js  # Preload for Quick Picker window
-├── src/main/ipc/                    # 37 IPC files, 348 handlers total
-├── src/main/services/               # 40 services
+├── src/main/ipc/                    # 37 IPC files, 349 handlers total
+├── src/main/services/               # 41 services
 ├── src/main/windows/                # 5 window managers
 ├── src/main/utils/                  # 23 utilities
 ├── src/main/issue-trackers/         # Ticket provider adapters (*.tracker.js) + contract
@@ -59,7 +59,7 @@ Electron Renderer Process (Browser)
 ├── src/renderer/workflow-fields/    # 13 custom UI fields for workflow nodes
 ├── src/renderer/workflow-triggers/  # 12 trigger types (definition + configurator)
 ├── src/renderer/viewers/            # PDF viewer + 3D (three.js) viewer
-├── src/renderer/i18n/               # EN/FR/ES/ID/zh-CN locales (3927 keys each)
+├── src/renderer/i18n/               # EN/FR/ES/ID/zh-CN locales (3933 keys each)
 └── src/renderer/utils/              # DOM, color, format, paths, icons, syntax highlighting
 
 Project Types (Plugin System)
@@ -88,7 +88,7 @@ Remote UI (PWA for mobile)
 | File | Handlers | Key Operations |
 |------|---------:|----------------|
 | `terminal.ipc.js` | 4 | Create PTY (node-pty), input, resize, kill |
-| `git.ipc.js` | 70 | Status, branches, pull/push/merge/rebase, clone, stash, cherry-pick, revert, tag, blame, worktree, AI commit message, PR description, inline diff |
+| `git.ipc.js` | 71 | Status, branches, pull/push/merge/rebase, clone, stash, cherry-pick, revert, tag, blame, worktree, AI commit message, PR description, inline diff |
 | `chat.ipc.js` | 26 | Agent SDK streaming sessions, permissions, interrupt, model/effort/permission-mode switching, tab name generation, fork/rewind, skill/agent generation, session recap |
 | `github.ipc.js` | 25 | OAuth Device Flow, workflow runs, PRs, issues, reviews, GitHub Enterprise, repo search |
 | `dialog.ipc.js` | 23 | Window controls, file/folder dialogs, open in explorer/editor/browser, notifications, updates + release notes, startup, clipboard |
@@ -126,7 +126,7 @@ Remote UI (PWA for mobile)
 | `cloud-shared.js` | - | Helpers shared by the three cloud IPC files |
 | `index.js` | - | Orchestrator - registers all handlers |
 
-**Total: 348 IPC handlers across 37 files.**
+**Total: 349 IPC handlers across 37 files.**
 
 ### Services (`src/main/services/`)
 
@@ -146,6 +146,7 @@ Remote UI (PWA for mobile)
 | `ChatService.js` | Claude Agent SDK bridge: streaming input mode, `maxTurns: 100`, permission forwarding, persistent haiku naming session, fork/rewind |
 | `GitHubAuthService.js` | GitHub OAuth Device Flow + API, keytar storage, GitHub Enterprise support (Client ID: `Ov23liYfl42qwDVVk99l`) |
 | `SessionGitService.js` | Everything the chat's **Git tab** shows, in one read-only call (`git-session-summary`): branch, upstream and drift, uncommitted counts, the branch's own commits against its base, and its pull request with checks and reviews. The base comes from the remote the branch *tracks* first (a branch pushed to a fork is measured against the fork's main; against origin/main it would list every fork-only commit), and the PR is looked up on that repository under the fork's owner, then on origin. A branch not published yet tracks nothing, so every remote's main and the local main compete and the closest base wins (fewest commits on top of it). Only git calls that fail as control flow, which `execGit` does not log, so a tab polled every 30 s never fills the error log |
+| `SessionActivityService.js` | Where one Claude session actually worked, read back from its transcript for the Git tab (`git-session-overview`, through `SessionGitService.overview`): every entry's `cwd`, the worktree `EnterWorktree` entered and the branch it reported, the folders `Edit`/`Write` touched, and the pull request URL `gh pr create` printed on a line of its own. Only fields the transcript structures: a URL that merely appears in some output is not the session's (a real transcript had 18 for the 2 actually opened). Read incrementally, and found again when Claude Code moves the file with the session's cwd. The overview keeps the worktrees of the project's own repository, the project folder only if the session edited there (every session starts in it), and a removed worktree by the branch it was on; before this, every session of a project showed the folder's branch and its pull request |
 | `IssueLinkService.js` | Which tickets belong to which Claude session, in `issue-links.json` keyed by session. A link is `linked`, `suggested` (automatic detection, waiting for the user's yes in the chat) or `dismissed` (said no, or unlinked: detection never proposes it again for that session, only an explicit link brings it back). A chat tab has no CLI session id before its first message, so it starts under a provisional `tab:<id>` key that `rekey` moves to the real id; a fork `copy`s its parent's links. Every change is broadcast as `issue-links-changed` |
 | `IssueDetectionService.js` | Automatic ticket detection, which only ever *suggests* (`IssueLinkService.suggest`): the user answers in a card in the conversation. Reads a tracker's own MCP tool calls in chat sessions (subscribed to `ChatService.addEventListener`, each `tool_use` paired with its `tool_result` since a creation's key is only in the result) and in terminal sessions (the `PostToolUse` hook, forwarded by `HookEventServer`); typed prompts (the `UserPromptSubmit` hook for terminals, the renderer for chats, since only it knows the typed text apart from resolved mentions); and the branch name and PR title the Git tab reads. Claude's own prose is never read. A key is suggested only once the tracker confirms the ticket exists, and never when the session already linked or dismissed it |
 | `UsageService.js` | Claude usage via OAuth API (`api.anthropic.com/api/oauth/usage`) with PTY fallback, 5 min staleness. A credential store that gives back no usable token parks the account on an **escalating, bounded** backoff (5 min doubling to 1 h), not on `Infinity`: that never recovered, so one unreadable store or one token caught between two CLI rotations froze the chip for the life of the process. `getUsageData().retryAt` carries the next attempt so the tooltip can say "waiting" rather than leaving the user with a chip that stopped |
@@ -376,7 +377,7 @@ The dashboard has three sub-views, switched by `_dashViews` and rendered from `D
 ### Internationalization (`src/renderer/i18n/locales/`)
 
 - **Languages:** French (default), English (fallback), Spanish, Indonesian, Simplified Chinese (`fr.json`, `en.json`, `es.json`, `id.json`, `zh-CN.json`)
-- **Keys:** 3927 per locale, all five in exact sync (enforced by `tests/i18n/i18n-coherence.test.js`)
+- **Keys:** 3933 per locale, all five in exact sync (enforced by `tests/i18n/i18n-coherence.test.js`)
 - **Loading:** only `en.json` is bundled eagerly, as the guaranteed-loaded fallback for `t()`; the others are fetched by `initI18n()`
 - **Detection:** auto-detect from `navigator.language`, `DEFAULT_LANGUAGE` is `fr`
 - **Usage:** `t('projects.openFolder')`, `t('key', { count: 5 })`, `data-i18n="..."` for static HTML
@@ -647,7 +648,7 @@ Worker); neither is bundled into the desktop app.
 ## Testing
 
 ```bash
-npm test                    # Run all 223 unit test files (jsdom environment)
+npm test                    # Run all 225 unit test files (jsdom environment)
 npm run test:watch          # Watch mode
 npm run check:docs          # Verify this file and the READMEs still match the tree
 npm run lint                # ESLint (see below)
@@ -656,7 +657,7 @@ npm run test:e2e            # Playwright smoke test against the real Electron ap
 
 ### Unit tests (Jest)
 
-- **Framework:** Jest with jsdom, 223 test files
+- **Framework:** Jest with jsdom, 225 test files
 - **Setup:** `tests/setup.js` mocks `window.electron_nodeModules`, `window.electron_api`, `requestAnimationFrame`
 - **Pattern:** `**/tests/**/*.test.js`
 - **Directories:**
@@ -669,7 +670,7 @@ npm run test:e2e            # Playwright smoke test against the real Electron ap
   - `ipc/` - accounts usage, claude, hooks, project, usage, workflow save, and the external-editor launch (the macOS bundle fallback, and the failure that has to come back as `success: false` rather than as a console line)
   - `remote-ui/` - hierarchy
   - `security/` - security tests, including the renderer fs allowlist enforced in the main process (`rendererSecurity.permitted`)
-  - `services/` - ChatService, AccountManager, IssueTrackerService (where a ticket tracker key may go: the credential store, never the file or the renderer), ArtifactService, OrphanReaper, DatabaseService, DashboardService, DiffRenderer, HooksService, KnowledgeService, MarkdownRenderer, ModelCatalogService, RemoteServer, RemoteControlService, UsageService, VoiceService, WorkflowRunner, the workflow engine suite, the lazy `xtermLoader`, the lazy project-type registry, the `~/.claude.json` merge in `McpService.saveMcps`, the plugin-manifest guard in `PluginService.installPlugin`, the silent-install arguments in `UpdaterService.quitAndInstall`, the mermaid failure containment in `postProcess` (`suppressErrorRendering` plus the temp-element cleanup, neither of which shows until a diagram fails), the corruption guards shared by `MarketplaceService`, `WorkspaceService` and `KnowledgeService`, and the em dash ban in `BuiltinSystemPrompts` (present on every path, and obeyed by the prompt text itself)
+  - `services/` - ChatService, AccountManager, IssueTrackerService (where a ticket tracker key may go: the credential store, never the file or the renderer), ArtifactService, OrphanReaper, DatabaseService, DashboardService, DiffRenderer, HooksService, KnowledgeService, MarkdownRenderer, ModelCatalogService, RemoteServer, RemoteControlService, UsageService, VoiceService, WorkflowRunner, the workflow engine suite, the lazy `xtermLoader`, the lazy project-type registry, the `~/.claude.json` merge in `McpService.saveMcps`, the plugin-manifest guard in `PluginService.installPlugin`, the silent-install arguments in `UpdaterService.quitAndInstall`, the mermaid failure containment in `postProcess` (`suppressErrorRendering` plus the temp-element cleanup, neither of which shows until a diagram fails), the corruption guards shared by `MarketplaceService`, `WorkspaceService` and `KnowledgeService`, and the em dash ban in `BuiltinSystemPrompts` (present on every path, and obeyed by the prompt text itself), and the per-session Git tab: the transcript reader (`SessionActivityService`) and the overview against real worktrees, one of them removed
   - `shared/` - context usage, cron, issue trackers (the sanitisers between adapter output and the DOM), model options, permission modes, simple-task
   - `smoke/` - every module parses and loads
   - `state/` - State plus each state module, including the latched save block `timeTracking.state.js` applies to an unreadable `timetracking.json`
