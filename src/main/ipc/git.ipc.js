@@ -110,6 +110,15 @@ function registerGitHandlers() {
     }
   });
 
+  // One session's own worktrees and pull requests (SessionGitService.overview).
+  ipcMain.handle('git-session-overview', async (event, { projectPath, sessionId }) => {
+    try {
+      return await SessionGitService.overview({ projectPath, sessionId });
+    } catch (err) {
+      return { isRepo: false, error: err.message };
+    }
+  });
+
   ipcMain.handle('git-current-branch', async (event, { projectPath }) => {
     try {
       return await getCurrentBranch(projectPath);
