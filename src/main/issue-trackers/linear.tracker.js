@@ -194,7 +194,10 @@ function buildIssueFilter(q) {
     if (key) {
       and.push({ team: { key: { eqIgnoreCase: key[1] } }, number: { eq: Number(key[2]) } });
     } else {
-      and.push({ or: [{ title: { containsIgnoreCase: q.text } }, { description: { containsIgnoreCase: q.text } }] });
+      const text = [{ title: { containsIgnoreCase: q.text } }, { description: { containsIgnoreCase: q.text } }];
+      // "4504" is how people say XCP-4504 out loud: the number, in any team.
+      if (/^\d{1,7}$/.test(q.text)) text.unshift({ number: { eq: Number(q.text) } });
+      and.push({ or: text });
     }
   }
 

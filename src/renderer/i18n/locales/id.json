@@ -1896,6 +1896,8 @@
       "empty": "Belum ada tiket yang ditautkan ke sesi ini. Tautkan satu, atau sebut dengan @tickets dalam pesan.",
       "unlink": "Lepaskan",
       "loadFailed": "Gagal memuat",
+      "retryHint": "{reason} Klik untuk mencoba lagi.",
+      "alreadyLinked": "Sudah ditautkan",
       "sourceManual": "ditautkan manual",
       "sourceMention": "disebut dalam pesan",
       "sourceStart": "sesi dimulai dari tiket ini",

@@ -508,7 +508,24 @@ function detailHtml(issue, { renderMarkdown, providerName, metadata, editableFie
     ${comments}`;
 }
 
+/**
+ * A failed bridge answer in words, naming the tracker. Shared by the Tickets
+ * screen and the session tab, which used to say only "Could not load".
+ * @param {{ code?: string, error?: string }|null} res
+ * @param {string} [provider] the tracker's display name
+ */
+function errorText(res, provider = '') {
+  switch (res?.code) {
+    case 'AUTH': return t('tickets.errors.auth', { provider });
+    case 'RATE_LIMITED': return t('tickets.errors.rateLimited', { provider });
+    case 'NETWORK': return t('tickets.errors.network', { provider });
+    case 'NOT_FOUND': return t('tickets.errors.notFound', { provider });
+    default: return t('tickets.errors.provider', { provider, message: res?.error || '' });
+  }
+}
+
 module.exports = {
+  errorText,
   DEFAULT_VIEW,
   PAGE_SIZE,
   restoreView,

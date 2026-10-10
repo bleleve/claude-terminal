@@ -5934,6 +5934,9 @@ p.session-git-muted { margin: 0; }
 }
 .session-tickets-result:hover,
 .session-tickets-result:focus-visible { background: var(--bg-hover); outline: none; }
+.session-tickets-result:disabled { cursor: default; color: var(--text-muted); background: transparent; }
+.session-tickets-linked-tag { margin-left: auto; flex: none; color: var(--text-muted); font-size: var(--font-xs); }
+.session-tickets-results li.session-tickets-search-error { color: var(--warning); font-size: var(--font-sm); }
 
 .session-tickets-list {
   border: 1px solid var(--border-color);
@@ -5980,6 +5983,8 @@ p.session-git-muted { margin: 0; }
 }
 button.session-tickets-state { cursor: pointer; }
 button.session-tickets-state:hover { background: var(--bg-hover); }
+/* A load that failed: the reason is in the tooltip, a click retries. */
+.session-tickets-state.session-tickets-failed { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 40%, transparent); }
 
 .session-tickets-icon {
   display: grid;

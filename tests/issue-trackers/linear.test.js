@@ -51,6 +51,8 @@ describe('queries reach Linear with the right meaning', () => {
     expect(await keysOf({ priorities: [1] })).toEqual(['ENG-117', 'ENG-142']);
     expect(await keysOf({ labelIds: ['l-perf', 'l-docs'] })).toEqual(['ENG-137', 'OPS-9']);
     expect(await keysOf({ facets: { team: ['t-ops'] } })).toEqual(['OPS-12', 'OPS-9']);
+    // A bare number is how people say a key out loud: it matches the number in any team.
+    expect(await keysOf({ text: '139' })).toContain('ENG-139');
     expect(await keysOf({ facets: { project: ['p-sessions'] } })).toEqual(['ENG-121', 'ENG-128']);
     expect(await keysOf({ facets: { cycle: ['c-eng-42'] } })).toEqual(['ENG-137', 'ENG-139', 'ENG-142']);
   });

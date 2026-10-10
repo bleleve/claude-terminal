@@ -16,6 +16,9 @@ const issueLinks = require('../services/IssueLinkService');
 const issueDetection = require('../services/IssueDetectionService');
 
 function fail(err) {
+  // Logged so ErrorLogService keeps it: the renderer only gets a code, and a
+  // failure nobody can read afterwards cannot be diagnosed.
+  console.warn(`[IssueTrackers] ${err.code || 'PROVIDER'}: ${err.message}`);
   return { ok: false, error: err.message, code: err.code || 'PROVIDER', retryAfterMs: err.retryAfterMs };
 }
 
