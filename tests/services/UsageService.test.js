@@ -781,8 +781,12 @@ describe('figures from the chat stream', () => {
   const CREDENTIALS_MODULE = '../../src/main/utils/claudeCredentials';
   const ACCOUNT_MANAGER = '../../src/main/services/AccountManager';
   const HOUR = 3600 * 1000;
-  const SESSION_RESET = 1791584400;
-  const WEEKLY_RESET = 1791698400;
+  // Resets ahead of now, whatever the day the suite runs: a figure past its
+  // reset reads as an idle window, so fixed dates turned these tests red the
+  // morning after they were written.
+  const NOW_S = Math.floor(Date.now() / 1000);
+  const SESSION_RESET = NOW_S + 3 * 3600;
+  const WEEKLY_RESET = NOW_S + 4 * 24 * 3600;
 
   let dataDir;
 
