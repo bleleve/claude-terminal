@@ -45,7 +45,8 @@ let wtB;
 let other;
 
 beforeAll(() => {
-  dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ct-session-overview-')));
+  // Native realpath, as the code uses: on Windows it expands 8.3 short names (RUNNER~1).
+  dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ct-session-overview-')));
   const seed = path.join(dir, 'seed');
   git(dir, 'init', '-q', '-b', 'main', seed);
   commit(seed, 'a.txt', 'A on main');
@@ -106,7 +107,7 @@ test('the worktrees it used, not the folder\'s branch, and nothing from another 
   expect(activity.read).toHaveBeenCalledWith(proj, 's1');
   expect(o.mode).toBe('session');
   expect(o.workspaces.map((w) => [w.label, w.branch])).toEqual([[path.join('.claude', 'worktrees', 'a'), 'feat/a']]);
-  expect(o.workspaces[0]).toMatchObject({ isRoot: false, dir: fs.realpathSync(wtA) });
+  expect(o.workspaces[0]).toMatchObject({ isRoot: false, dir: fs.realpathSync.native(wtA) });
 });
 
 test('the folder counts once the session edited there, newest first', async () => {
@@ -126,7 +127,7 @@ test('a removed worktree keeps its branch and that branch\'s pull request', asyn
     pullRequests: branch === 'feat/b' ? [{ number: 12, title: 'b', state: 'merged', url: 'https://github.com/acme/app/pull/12', headSha: null }] : [],
   }));
   // As the transcript wrote it: on macOS the temp folder is /var/…, really /private/var/….
-  const asWritten = wtB.replace(fs.realpathSync(os.tmpdir()), os.tmpdir());
+  const asWritten = wtB.replace(fs.realpathSync.native(os.tmpdir()), os.tmpdir());
   const o = await overview({ projectPath: proj, sessionId: 's1' }, { activity: activityOf([d(asWritten, 4, ['enter', 'cwd'], 'feat/b')]) });
   expect(o.workspaces).toEqual([expect.objectContaining({ removed: true, branch: 'feat/b', label: path.join('.claude', 'worktrees', 'b') })]);
   expect(o.workspaces[0].pr.pullRequest).toMatchObject({ number: 12, state: 'merged' });

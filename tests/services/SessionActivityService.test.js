@@ -12,6 +12,8 @@ const path = require('path');
 const { createSessionActivityService, _internals } = require('../../src/main/services/SessionActivityService');
 
 const { createActivity, readEntry, summarize } = _internals;
+// Paths come back normalized for the platform: '/a' is '\\a' on Windows.
+const P = (p) => path.normalize(p);
 
 let clock = Date.parse('2026-10-09T10:00:00Z');
 const at = () => new Date(clock += 1000).toISOString();
@@ -33,10 +35,18 @@ describe('what a transcript says', () => {
       use('t2', 'Edit', { file_path: '/repo/.claude/worktrees/fix-x/src/a.js' }, '/repo/.claude/worktrees/fix-x'),
     ]);
     const byDir = Object.fromEntries(s.dirs.map((d) => [d.dir, d]));
-    expect(byDir['/repo/.claude/worktrees/fix-x']).toMatchObject({ kinds: expect.arrayContaining(['enter', 'cwd']), branch: 'ada/fix-x' });
-    expect(byDir['/repo/.claude/worktrees/fix-x/src']).toMatchObject({ kinds: ['edit'] });
-    expect(byDir['/repo']).toMatchObject({ kinds: ['cwd'], branch: null });
+    expect(byDir[P('/repo/.claude/worktrees/fix-x')]).toMatchObject({ kinds: expect.arrayContaining(['enter', 'cwd']), branch: 'ada/fix-x' });
+    expect(byDir[P('/repo/.claude/worktrees/fix-x/src')]).toMatchObject({ kinds: ['edit'] });
+    expect(byDir[P('/repo')]).toMatchObject({ kinds: ['cwd'], branch: null });
     expect(s.dirs.map((d) => d.at)).toEqual([...s.dirs.map((d) => d.at)].sort((a, b) => b - a)); // newest first
+  });
+
+  test('a worktree path with a space, a branch with dots', () => {
+    const s = read([
+      use('t1', 'EnterWorktree', { name: 'rel' }),
+      result('t1', 'Entered worktree at /Users/Jo Do/repo/.claude/worktrees/rel on branch release/1.2. The session is now working in the worktree.'),
+    ]);
+    expect(s.dirs.find((d) => d.kinds.includes('enter'))).toMatchObject({ dir: P('/Users/Jo Do/repo/.claude/worktrees/rel'), branch: 'release/1.2' });
   });
 
   test('a pull request is the URL gh pr create printed, on a line of its own', () => {
@@ -92,13 +102,13 @@ describe('reading the file', () => {
   test('reads only what was added since the last call, a half-written line included', async () => {
     const file = path.join(projectDir, `${SID}.jsonl`);
     fs.writeFileSync(file, line({ cwd: '/a', timestamp: at() }));
-    expect((await service.read('/p', SID)).dirs.map((d) => d.dir)).toEqual(['/a']);
+    expect((await service.read('/p', SID)).dirs.map((d) => d.dir)).toEqual([P('/a')]);
 
     const next = line({ cwd: '/b', timestamp: at() });
     fs.appendFileSync(file, next.slice(0, 10));
-    expect((await service.read('/p', SID)).dirs.map((d) => d.dir)).toEqual(['/a']);
+    expect((await service.read('/p', SID)).dirs.map((d) => d.dir)).toEqual([P('/a')]);
     fs.appendFileSync(file, next.slice(10));
-    expect((await service.read('/p', SID)).dirs.map((d) => d.dir).sort()).toEqual(['/a', '/b']);
+    expect((await service.read('/p', SID)).dirs.map((d) => d.dir).sort()).toEqual([P('/a'), P('/b')]);
   });
 
   test('a transcript that moved with the session is found again and read whole', async () => {
@@ -106,7 +116,7 @@ describe('reading the file', () => {
     await service.read('/p', SID);
     fs.renameSync(path.join(projectDir, `${SID}.jsonl`), path.join(worktreeDir, `${SID}.jsonl`));
     fs.appendFileSync(path.join(worktreeDir, `${SID}.jsonl`), line({ cwd: '/c', timestamp: at() }));
-    expect((await service.read('/p', SID)).dirs.map((d) => d.dir).sort()).toEqual(['/a', '/c']);
+    expect((await service.read('/p', SID)).dirs.map((d) => d.dir).sort()).toEqual([P('/a'), P('/c')]);
   });
 
   test('a character split across two reads survives', async () => {
@@ -117,7 +127,7 @@ describe('reading the file', () => {
     fs.writeFileSync(file, bytes.subarray(0, cut));
     await service.read('/p', SID);
     fs.appendFileSync(file, bytes.subarray(cut));
-    expect((await service.read('/p', SID)).dirs.map((d) => d.dir)).toEqual(['/projets/équipe']);
+    expect((await service.read('/p', SID)).dirs.map((d) => d.dir)).toEqual([P('/projets/équipe')]);
   });
 
   test('no transcript, or an id that is not one, reads as nothing', async () => {

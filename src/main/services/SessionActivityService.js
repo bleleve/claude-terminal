@@ -32,7 +32,9 @@ const MAX_PENDING = 200;
 const MAX_PRS = 50;
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const PR_URL_LINE = /^\s*https:\/\/([^/\s]+)\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)\s*$/;
-const ENTERED = /Entered worktree at (\/\S+?)(?: on branch (\S+?))?\.?(?:\s|$)/;
+// "Entered worktree at <path> on branch <branch>. …": the path may hold spaces
+// and be a Windows one; a branch may hold dots (release/1.2).
+const ENTERED = /Entered worktree at (.+?)(?: on branch (\S+?))?\.(?:\s|$)/;
 
 function createActivity() {
   return { dirs: new Map(), prs: new Map(), pending: new Map(), branches: new Map() };
