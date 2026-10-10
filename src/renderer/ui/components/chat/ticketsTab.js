@@ -313,6 +313,7 @@ function createTicketsTab(deps) {
       renderSearchResults();
       if (focusSearch) panelEl.querySelector('.session-tickets-search-input').focus();
     }
+    placeMenu();
   }
 
   async function openStateMenu(button) {
@@ -336,18 +337,35 @@ function createTicketsTab(deps) {
         ${issueView.stateDot(st)}
         <span class="issues-menu-label">${escapeHtml(st.name)}</span>
       </button>`).join('')}</div>`;
-    panelEl.appendChild(el);
+    menu = { ref, el };
+    placeMenu();
+  }
+
+  /**
+   * Put the open menu under its button. render() replaces the panel's HTML,
+   * menu included, and a refresh lands whenever the links change: the menu
+   * used to vanish under the pointer, and the next click on the button only
+   * "closed" it.
+   */
+  function placeMenu() {
+    if (!menu) return;
+    const button = [...panelEl.querySelectorAll('[data-action="state"]')].find((b) => b.dataset.ref === menu.ref);
+    if (!button) {
+      menu.el.remove();
+      menu = null; // its ticket is gone
+      return;
+    }
+    if (!menu.el.isConnected) panelEl.appendChild(menu.el);
     const box = button.getBoundingClientRect();
     const host = panelEl.getBoundingClientRect();
-    el.style.top = `${box.bottom - host.top + panelEl.scrollTop + 4}px`;
+    menu.el.style.top = `${box.bottom - host.top + panelEl.scrollTop + 4}px`;
     // Kept inside the panel: the state button sits near the right edge.
-    el.style.left = `${Math.max(0, Math.min(box.left - host.left, host.width - el.offsetWidth - 8))}px`;
-    menu = { ref };
+    menu.el.style.left = `${Math.max(0, Math.min(box.left - host.left, host.width - menu.el.offsetWidth - 8))}px`;
     button.setAttribute('aria-expanded', 'true');
   }
 
   function closeMenu() {
-    panelEl.querySelector('.session-tickets-menu')?.remove();
+    menu?.el.remove();
     menu = null;
   }
 

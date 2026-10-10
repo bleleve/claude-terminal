@@ -165,11 +165,29 @@ test('changing the state from the tab writes it to the tracker', async () => {
   tab.show();
   await waitFor(() => panel().querySelector('[data-action="state"]'));
   panel().querySelector('[data-action="state"]').click();
-  await waitFor(() => panel().querySelector('[data-action="set-state"]'));
-  [...panel().querySelectorAll('[data-action="set-state"]')].find((b) => b.dataset.state === 's-eng-review').click();
+  const review = () => [...panel().querySelectorAll('[data-action="set-state"]')].find((b) => b.dataset.state === 's-eng-review');
+  await waitFor(review);
+  review().click();
   await waitFor(() => panel().querySelector('.session-tickets-state').textContent.includes('In Review'));
   expect(api.issueTrackers.updateIssue).toHaveBeenCalledWith(conn.id, 'ENG-142', { stateId: 's-eng-review' });
   expect(panel().querySelector('.session-tickets-state').textContent).toContain('In Review');
+  tab.destroy();
+});
+
+test('an open state menu survives a refresh of the tab', async () => {
+  const tab = makeTab();
+  await tab.probe();
+  await tab.linkTicket({ ref: 'linear:ENG-142', connectionId: conn.id, title: 'Session tickets tab' }, 'start');
+  tab.show();
+  await waitFor(() => panel().querySelector('[data-action="state"]'));
+  panel().querySelector('[data-action="state"]').click();
+  await waitFor(() => panel().querySelector('.session-tickets-menu'));
+  const before = api.issueLinks.get.mock.calls.length;
+  changedListeners.forEach((fn) => fn({ sessionKey: 'tab:1' })); // the links changed: the tab re-reads and redraws
+  await waitFor(() => api.issueLinks.get.mock.calls.length > before);
+  await flush();
+  expect(panel().querySelector('.session-tickets-menu [data-state="s-eng-review"]')).not.toBeNull();
+  expect(panel().querySelector('[data-action="state"]').getAttribute('aria-expanded')).toBe('true');
   tab.destroy();
 });
 
