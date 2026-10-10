@@ -135,7 +135,7 @@ function httpsRequest(options, postData = null, maxRedirects = 3) {
           if (cacheKey && res.headers.etag) {
             etagCache.set(cacheKey, { etag: res.headers.etag, data: parsed });
           }
-          resolve({ status: res.statusCode, data: parsed });
+          resolve({ status: res.statusCode, data: parsed, sso: res.headers['x-github-sso'] || null });
         } catch (e) {
           // Parse as form-urlencoded if JSON fails
           const parsed = {};
@@ -143,7 +143,7 @@ function httpsRequest(options, postData = null, maxRedirects = 3) {
             const [key, value] = pair.split('=');
             parsed[decodeURIComponent(key)] = decodeURIComponent(value || '');
           });
-          resolve({ status: res.statusCode, data: parsed });
+          resolve({ status: res.statusCode, data: parsed, sso: res.headers['x-github-sso'] || null });
         }
       });
     });
@@ -481,6 +481,26 @@ async function getPullRequests(owner, repo, perPage = 5, page = 1, state = 'all'
 }
 
 /**
+ * What GitHub says when an organization enforces SAML SSO and this token was
+ * never authorized for it: a 403 whose X-GitHub-SSO header is
+ * `required; url=<page that authorizes it>`. Read so the caller can offer that
+ * page instead of taking the 403 for "nothing there".
+ * @param {string|null} header
+ * @returns {{ url: string, org: string|null }|null}
+ */
+function ssoRequirement(header) {
+  const m = /^required;\s*url=(\S+)/i.exec(String(header || ''));
+  if (!m) return null;
+  try {
+    const url = new URL(m[1]);
+    if (url.protocol !== 'https:' || url.host.toLowerCase() !== config.webHostname.toLowerCase()) return null;
+    return { url: url.toString(), org: url.pathname.match(/^\/orgs\/([^/]+)\/sso/)?.[1] || null };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The pull requests whose head is `headOwner:branch`, newest first. The head
  * owner matters: a branch pushed to a fork and proposed upstream lives under
  * the fork's owner, not the repository's.
@@ -519,6 +539,8 @@ async function getPullRequestsForBranch(owner, repo, headOwner, branch) {
       return { authenticated: true, pullRequests };
     }
     if (response.status === 404) return { authenticated: true, pullRequests: [], notFound: true };
+    const sso = response.status === 403 ? ssoRequirement(response.sso) : null;
+    if (sso) return { authenticated: true, pullRequests: [], ssoRequired: sso };
     return { authenticated: true, pullRequests: [], error: `API error: ${response.status}` };
   } catch (e) {
     console.error('Error fetching pull requests for a branch:', e);
@@ -1113,6 +1135,7 @@ module.exports = {
   getJobLogs,
   getPullRequests,
   getPullRequestsForBranch,
+  ssoRequirement,
   createPullRequest,
   parseGitHubRemote,
   getCheckRuns,
