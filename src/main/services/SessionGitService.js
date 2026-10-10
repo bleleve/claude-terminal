@@ -154,14 +154,24 @@ async function findPullRequest(cwd, branch, remote, base) {
   const createUrl = `https://${host}/${pushRepo.owner}/${pushRepo.repo}/compare/${encodeURIComponent(baseBranch)}...${encodeURIComponent(branch)}?expand=1`;
 
   let found = null;
+  // Why a repository could not be searched. "No pull request" would be a guess
+  // then: GitHub answers 403 to a token not authorized for an organization's
+  // SAML SSO, 404 to one the organization never approved.
+  let blocked = null;
   for (const repo of repos) {
     const res = await github.getPullRequestsForBranch(repo.owner, repo.repo, pushRepo.owner, branch);
     if (!res.authenticated) return { authenticated: false, createUrl };
+    const name = `${repo.owner}/${repo.repo}`;
+    if (!blocked) {
+      if (res.ssoRequired) blocked = { ssoRequired: { ...res.ssoRequired, repo: name } };
+      else if (res.notFound) blocked = { unreachable: name };
+      else if (res.error) blocked = { error: res.error, repo: name };
+    }
     const best = res.pullRequests.find((pr) => pr.state === 'open') || res.pullRequests[0];
     if (best && (!found || (found.pr.state !== 'open' && best.state === 'open'))) found = { repo, pr: best };
     if (found?.pr.state === 'open') break;
   }
-  if (!found) return { authenticated: true, createUrl, pullRequest: null };
+  if (!found) return { authenticated: true, createUrl, pullRequest: null, ...blocked };
 
   const { repo, pr } = found;
   const [checks, reviews] = await Promise.all([

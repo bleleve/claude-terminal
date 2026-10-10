@@ -152,6 +152,31 @@ test('without a pull request, it offers the compare page on the fork', async () 
   });
 });
 
+test('an organization behind SAML SSO is named, with the page that authorizes the token', async () => {
+  const sso = { url: 'https://github.com/orgs/Sterll/sso?authorization_request=a1', org: 'Sterll' };
+  github.getPullRequestsForBranch.mockImplementation(async (owner) => (owner === 'Sterll'
+    ? { authenticated: true, pullRequests: [], ssoRequired: sso }
+    : { authenticated: true, pullRequests: [] }));
+  const s = await summary(work);
+  expect(s.pr).toMatchObject({ authenticated: true, pullRequest: null, ssoRequired: { ...sso, repo: 'Sterll/claude-terminal' } });
+});
+
+test('a repository GitHub hides, or a failed lookup, is said rather than read as "no pull request"', async () => {
+  github.getPullRequestsForBranch.mockResolvedValueOnce({ authenticated: true, pullRequests: [], notFound: true });
+  expect((await summary(work)).pr).toMatchObject({ pullRequest: null, unreachable: 'bleleve/claude-terminal' });
+  github.getPullRequestsForBranch.mockReset().mockResolvedValue({ authenticated: true, pullRequests: [], error: 'API error: 502' });
+  expect((await summary(work)).pr).toMatchObject({ pullRequest: null, error: 'API error: 502', repo: 'bleleve/claude-terminal' });
+});
+
+test('a pull request found on one repository wins over another that could not be searched', async () => {
+  github.getPullRequestsForBranch.mockImplementation(async (owner) => (owner === 'bleleve'
+    ? { authenticated: true, pullRequests: [{ number: 57, title: 'x', state: 'merged', url: 'https://github.com/bleleve/claude-terminal/pull/57', headSha: null }] }
+    : { authenticated: true, pullRequests: [], ssoRequired: { url: 'https://github.com/orgs/Sterll/sso', org: 'Sterll' } }));
+  const s = await summary(work);
+  expect(s.pr.pullRequest).toMatchObject({ number: 57, state: 'merged' });
+  expect(s.pr.ssoRequired).toBeUndefined();
+});
+
 test('without a GitHub login, it says so instead of guessing', async () => {
   github.getPullRequestsForBranch.mockResolvedValue({ authenticated: false, pullRequests: [] });
   const s = await summary(work);
