@@ -400,6 +400,11 @@ class ChatView extends BaseComponent {
   const messagesEl = chatView.querySelector('.chat-messages');
   const tabbarEl = chatView.querySelector('.chat-tabbar');
   const changesPanelEl = chatView.querySelector('.chat-changes-panel');
+  // The composer belongs to the conversation: the other tabs (Changes, Git,
+  // Tickets, Documents) are for reading, and a prompt box under them only
+  // took room and suggested the message would be about what they show.
+  const inputAreaEl = chatView.querySelector('.chat-input-area');
+  let activeChatTab = 'conversation';
   const artifactsPanelEl = chatView.querySelector('.chat-artifacts-panel');
   const artifactsSideEl = chatView.querySelector('.chat-artifacts-side');
   const artifactsSummaryEl = chatView.querySelector('.chat-artifacts-summary');
@@ -760,11 +765,16 @@ class ChatView extends BaseComponent {
 
   function insertChipAtCaret(chipEl) {
     const sel = window.getSelection();
-    if (!sel.rangeCount) {
+    // The caret only counts inside the composer. A selection left in another
+    // panel (text selected in Changes or Git, then a file added from the
+    // explorer) used to receive the chip there, outside the composer.
+    if (!sel.rangeCount || !inputEl.contains(sel.getRangeAt(0).startContainer)) {
       inputEl.appendChild(chipEl);
       const zwsp = document.createTextNode('\u200B');
       inputEl.appendChild(zwsp);
       placeCaretAfterNode(zwsp);
+      autoResize();
+      updatePlaceholderVisibility();
       return;
     }
 
@@ -4639,10 +4649,14 @@ class ChatView extends BaseComponent {
   }
 
   function switchChatTab(tab) {
+    activeChatTab = tab;
     tabbarEl.querySelectorAll('.chat-tab').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.tab === tab);
     });
     messagesEl.hidden = tab !== 'conversation';
+    // Claude's task bar sits on the composer, so it goes with it.
+    inputAreaEl.hidden = tab !== 'conversation';
+    if (todoWidgetEl) todoWidgetEl.hidden = tab !== 'conversation';
     changesPanelEl.hidden = tab !== 'changes';
     gitPanelEl.hidden = tab !== 'git';
     ticketsPanelEl.hidden = tab !== 'tickets';
@@ -5943,6 +5957,7 @@ class ChatView extends BaseComponent {
     if (!todoWidgetEl) {
       todoWidgetEl = document.createElement('div');
       todoWidgetEl.className = 'chat-todo';
+      todoWidgetEl.hidden = activeChatTab !== 'conversation';
       if (todoExpanded) todoWidgetEl.classList.add('open');
       // Insert before the input area (anchored above it)
       const inputArea = chatView.querySelector('.chat-input-area');
@@ -9003,6 +9018,9 @@ class ChatView extends BaseComponent {
       handleSend();
     },
     addMentionChip(type, data) {
+      // From outside (a file added from the explorer): it lands in the composer,
+      // which only the conversation shows.
+      if (activeChatTab !== 'conversation') switchChatTab('conversation');
       addMentionChip(type, data);
       inputEl?.focus();
     }

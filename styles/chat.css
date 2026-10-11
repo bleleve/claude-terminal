@@ -3367,6 +3367,8 @@ hr.chat-plan-separator {
 .chat-input-area {
   padding: 0 16px 12px;
 }
+.chat-input-area[hidden],
+.chat-todo[hidden] { display: none; }
 
 .chat-input-wrapper {
   display: flex;
