@@ -309,10 +309,31 @@ async function locateDir(dir) {
   return realTop && realCommon ? { top: realTop, common: realCommon } : null;
 }
 
+const MAX_TRACKED_CHECK = 200;
+
+/**
+ * Whether the session changed a file git tracks in the project folder. Notes
+ * and analyses it wrote there are untracked and say nothing about the
+ * folder's branch: counting them put an unrelated, merged pull request in
+ * every session that had written a note.
+ */
+async function editedTrackedFile(projectPath, top, edits) {
+  const roots = [...new Set([top, path.resolve(projectPath)])];
+  const rel = [];
+  for (const { file } of edits || []) {
+    const root = roots.find((r) => file.startsWith(r + path.sep));
+    if (root) rel.push(path.relative(root, file));
+    if (rel.length >= MAX_TRACKED_CHECK) break;
+  }
+  if (!rel.length) return false;
+  return !!(await execGit(top, ['ls-files', '--', ...rel]));
+}
+
 /**
  * The worktrees of this project's repository the session worked in, newest
- * first. The project folder counts only when the session edited there: every
- * session starts with its cwd in it, so a cwd alone says nothing.
+ * first. The project folder counts only when the session changed a file git
+ * tracks there: every session starts with its cwd in it, and the notes it
+ * writes there are not work on the folder's branch.
  */
 async function workspacesOf(projectPath, activity) {
   const project = await locateDir(projectPath);
@@ -340,8 +361,9 @@ async function workspacesOf(projectPath, activity) {
     kinds.forEach((k) => entry.kinds.add(k));
     tops.set(hit.top, entry);
   }
+  const rootWorked = tops.get(project.top)?.kinds.has('edit') && await editedTrackedFile(projectPath, project.top, activity.edits);
   const live = [...tops.entries()]
-    .filter(([top, e]) => top !== project.top || e.kinds.has('edit'))
+    .filter(([top]) => top !== project.top || rootWorked)
     .map(([top, e]) => ({ dir: top, at: e.at, isRoot: top === project.top, label: top === project.top ? null : path.relative(project.top, top) }));
   return [...live, ...removed].sort((a, b) => b.at - a.at).slice(0, MAX_WORKSPACES);
 }

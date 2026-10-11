@@ -38,6 +38,7 @@ describe('what a transcript says', () => {
     expect(byDir[P('/repo/.claude/worktrees/fix-x')]).toMatchObject({ kinds: expect.arrayContaining(['enter', 'cwd']), branch: 'ada/fix-x' });
     expect(byDir[P('/repo/.claude/worktrees/fix-x/src')]).toMatchObject({ kinds: ['edit'] });
     expect(byDir[P('/repo')]).toMatchObject({ kinds: ['cwd'], branch: null });
+    expect(s.edits).toEqual([{ file: P('/repo/.claude/worktrees/fix-x/src/a.js'), at: expect.any(Number) }]);
     expect(s.dirs.map((d) => d.at)).toEqual([...s.dirs.map((d) => d.at)].sort((a, b) => b - a)); // newest first
   });
 
