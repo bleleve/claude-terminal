@@ -5891,6 +5891,41 @@ p.session-git-muted { margin: 0; }
   margin-bottom: 10px;
 }
 .session-tickets-head .btn-sm { flex: none; }
+/* Title on the left, refresh and "Link a ticket" together on the right. */
+.session-tickets-head { gap: 6px; }
+.session-tickets-head .session-tickets-heading { margin-right: auto; }
+.session-tickets-icon.spinning svg { animation: spin 0.8s linear infinite; }
+
+/* The filter bar over the session's tickets. */
+.session-tickets-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.session-tickets-filter-input {
+  flex: 1 1 200px;
+  min-width: 160px;
+  box-sizing: border-box;
+  padding: 5px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+}
+.session-tickets-filter-input:focus { outline: none; border-color: var(--accent); }
+.session-tickets-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.session-tickets-chip {
+  padding: 3px 9px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+  cursor: pointer;
+}
+.session-tickets-chip:hover { background: var(--bg-hover); }
+.session-tickets-chip.active { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
+.session-tickets-chip-count { margin-left: 2px; color: var(--text-muted); }
+.session-tickets-chip.active .session-tickets-chip-count { color: inherit; }
+.session-tickets-clear { padding: 0; border: none; background: none; color: var(--accent); font-size: inherit; cursor: pointer; }
+.session-tickets-clear:hover { text-decoration: underline; }
 
 .session-tickets-heading {
   margin: 0;
