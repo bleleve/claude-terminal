@@ -23,10 +23,12 @@
 const { t } = require('../../../i18n');
 const { escapeHtml } = require('../../../utils');
 const issueView = require('../../panels/issues/issueView');
+const { STATE_CATEGORIES } = require('../../../../shared/issue-trackers');
 
 const ISSUE_TTL_MS = 30_000;
 const SEARCH_DEBOUNCE_MS = 250;
 const SEARCH_LIMIT = 8;
+const REFRESH_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg>';
 
 function sourceLabel(source) {
   switch (source) {
@@ -73,6 +75,11 @@ function createTicketsTab(deps) {
   let recap = null; // { ref, text } while a recap comment is being written
   let suggestionListener = null;
 
+  // The filter bar over the session's tickets: text on key and title, and a
+  // state category. Kept across renders, local, no tracker call.
+  let filterText = '';
+  let filterCategory = null;
+  let refreshing = false;
   const linked = () => links.filter((l) => l.status === 'linked');
   const suggested = () => links.filter((l) => l.status === 'suggested');
   const connectionFor = (link) => connections.find((c) => c.id === link.connectionId) || null;
@@ -108,15 +115,33 @@ function createTicketsTab(deps) {
     return res;
   }
 
-  async function refreshLinks() {
+  async function refreshLinks({ force = false } = {}) {
     const res = await api.issueLinks.get(key);
-    if (destroyed) return;
+    if (destroyed) return undefined;
     links = res?.ok ? res.links : [];
     updateBadge();
     announce();
     if (visible) {
       render();
-      fetchIssues();
+      return fetchIssues({ force });
+    }
+    return undefined;
+  }
+
+  /** The refresh button: the links again, and every ticket's state from the tracker. */
+  async function refresh() {
+    if (refreshing) return;
+    refreshing = true;
+    panelEl.querySelector('[data-action="refresh"]')?.classList.add('spinning');
+    try {
+      // Forced, not just emptied: a load already on its way would refill the
+      // cache and leave the refresh with nothing to fetch.
+      issues.clear();
+      metadata.clear();
+      await refreshLinks({ force: true });
+    } finally {
+      refreshing = false;
+      if (!destroyed && visible) render();
     }
   }
 
@@ -291,12 +316,73 @@ function createTicketsTab(deps) {
   }
 
   /** `focusSearch` only when the user opens the search: the composer below must keep its focus otherwise. */
+  /** The linked tickets the filter bar lets through. */
+  function filtered(rows) {
+    const q = filterText.trim().toLowerCase();
+    return rows.filter((l) => {
+      const issue = issues.get(l.ref)?.issue;
+      if (filterCategory && issue?.state?.category !== filterCategory) return false;
+      if (!q) return true;
+      return keyOf(l.ref).toLowerCase().includes(q) || String(issue?.title || l.title || '').toLowerCase().includes(q);
+    });
+  }
+
+  /** "All", then each state category the loaded tickets are in, with its count. */
+  function chipsHtml(rows) {
+    const counts = new Map();
+    for (const l of rows) {
+      const category = issues.get(l.ref)?.issue?.state?.category;
+      if (category) counts.set(category, (counts.get(category) || 0) + 1);
+    }
+    const chip = (value, label, count) => `<button type="button" class="session-tickets-chip${filterCategory === value ? ' active' : ''}" data-action="filter-category" data-category="${escapeHtml(value || '')}" aria-pressed="${filterCategory === value}">
+        ${escapeHtml(label)} <span class="session-tickets-chip-count">${count}</span>
+      </button>`;
+    return [
+      chip(null, t('chat.tickets.filterAll'), rows.length),
+      ...STATE_CATEGORIES.filter((c) => counts.has(c) || c === filterCategory).map((c) => chip(c, issueView.categoryLabel(c), counts.get(c) || 0)),
+    ].join('');
+  }
+
+  function listHtml(rows) {
+    if (!rows.length) return `<p class="session-tickets-empty">${escapeHtml(t('chat.tickets.empty'))}</p>`;
+    const shown = filtered(rows);
+    if (!shown.length) {
+      return `<p class="session-tickets-empty">${escapeHtml(t('chat.tickets.filterNone'))}
+        <button type="button" class="session-tickets-clear" data-action="filter-clear">${escapeHtml(t('chat.tickets.filterClear'))}</button></p>`;
+    }
+    return `<ul class="session-tickets-list">${shown.map(rowHtml).join('')}</ul>`;
+  }
+
+  const countText = (rows) => {
+    const shown = filtered(rows).length;
+    return shown === rows.length ? String(rows.length) : `${shown} / ${rows.length}`;
+  };
+
+  /** The chips and the list only: the filter field keeps its focus and caret while typing. */
+  function renderList() {
+    const rows = linked();
+    const chips = panelEl.querySelector('.session-tickets-chips');
+    if (chips) chips.innerHTML = chipsHtml(rows);
+    const list = panelEl.querySelector('.session-tickets-listwrap');
+    if (list) list.innerHTML = listHtml(rows);
+    const count = panelEl.querySelector('.session-tickets-count');
+    if (count) count.textContent = countText(rows);
+    placeMenu();
+  }
+
+  /** `focusSearch` only when the user opens the search: the composer below must keep its focus otherwise. */
   function render({ focusSearch = false } = {}) {
     const rows = linked();
+    // A refresh can land while the filter is being typed in: give it back its focus and caret.
+    const active = document.activeElement;
+    const typing = active && panelEl.contains(active) && active.classList.contains('session-tickets-filter-input')
+      ? { start: active.selectionStart, end: active.selectionEnd }
+      : null;
     panelEl.innerHTML = `
       <div class="session-tickets">
         <div class="session-tickets-head">
-          <h4 class="session-tickets-heading">${escapeHtml(t('chat.tickets.title'))} <span class="session-tickets-count">${rows.length}</span></h4>
+          <h4 class="session-tickets-heading">${escapeHtml(t('chat.tickets.title'))} <span class="session-tickets-count">${countText(rows)}</span></h4>
+          <button type="button" class="session-tickets-icon${refreshing ? ' spinning' : ''}" data-action="refresh" title="${escapeHtml(t('common.refresh'))}" aria-label="${escapeHtml(t('common.refresh'))}">${REFRESH_ICON}</button>
           <button type="button" class="btn-sm btn-secondary" data-action="toggle-search">${escapeHtml(t('chat.tickets.link'))}</button>
         </div>
         ${searching ? `
@@ -305,13 +391,21 @@ function createTicketsTab(deps) {
             <ul class="session-tickets-results"></ul>
           </div>` : ''}
         ${suggestionsHtml()}
-        ${rows.length
-    ? `<ul class="session-tickets-list">${rows.map(rowHtml).join('')}</ul>`
-    : `<p class="session-tickets-empty">${escapeHtml(t('chat.tickets.empty'))}</p>`}
+        ${rows.length ? `
+          <div class="session-tickets-filter">
+            <input type="search" class="session-tickets-filter-input" placeholder="${escapeHtml(t('chat.tickets.filterPlaceholder'))}" aria-label="${escapeHtml(t('chat.tickets.filterPlaceholder'))}" spellcheck="false" value="${escapeHtml(filterText)}">
+            <div class="session-tickets-chips" role="group" aria-label="${escapeHtml(t('chat.tickets.filterPlaceholder'))}">${chipsHtml(rows)}</div>
+          </div>` : ''}
+        <div class="session-tickets-listwrap">${listHtml(rows)}</div>
       </div>`;
     if (searching) {
       renderSearchResults();
       if (focusSearch) panelEl.querySelector('.session-tickets-search-input').focus();
+    }
+    if (typing) {
+      const input = panelEl.querySelector('.session-tickets-filter-input');
+      input?.focus();
+      input?.setSelectionRange(typing.start, typing.end);
     }
     placeMenu();
   }
@@ -379,6 +473,18 @@ function createTicketsTab(deps) {
     }
     const ref = el.dataset.ref;
     switch (el.dataset.action) {
+      case 'refresh':
+        refresh();
+        break;
+      case 'filter-category':
+        filterCategory = el.dataset.category || null;
+        renderList();
+        break;
+      case 'filter-clear':
+        filterText = '';
+        filterCategory = null;
+        render();
+        break;
       case 'toggle-search':
         searching = !searching;
         if (!searching) {
@@ -450,6 +556,11 @@ function createTicketsTab(deps) {
   }
 
   function onInput(event) {
+    if (event.target.matches('.session-tickets-filter-input')) {
+      filterText = event.target.value;
+      renderList();
+      return;
+    }
     if (event.target.matches('.session-tickets-recap-input') && recap) {
       recap.text = event.target.value;
       return;
@@ -461,6 +572,13 @@ function createTicketsTab(deps) {
   }
 
   function onKeydown(event) {
+    if (event.key === 'Escape' && event.target.matches('.session-tickets-filter-input') && filterText) {
+      filterText = '';
+      event.target.value = '';
+      renderList();
+      event.stopPropagation();
+      return;
+    }
     if (event.key === 'Escape' && (menu || searching)) {
       if (menu) closeMenu();
       else {

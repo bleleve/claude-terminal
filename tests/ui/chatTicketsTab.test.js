@@ -234,6 +234,74 @@ test('a change broadcast for this session refreshes the tab', async () => {
   expect(rows()).toEqual(['linear:OPS-12']); // destroyed: no longer listening
 });
 
+describe('refresh and filter bar', () => {
+  async function withThree() {
+    const tab = makeTab();
+    await tab.probe();
+    await tab.linkTicket({ ref: 'linear:ENG-142', connectionId: conn.id, title: 'Session tickets tab' }, 'manual');
+    await tab.linkTicket({ ref: 'linear:ENG-151', connectionId: conn.id, title: 'Persist ticket filters per screen' }, 'manual');
+    await tab.linkTicket({ ref: 'linear:ENG-117', connectionId: conn.id, title: 'Crash when a tab closes mid-stream' }, 'manual');
+    tab.show();
+    await waitFor(() => panel().querySelectorAll('.session-tickets-row .session-tickets-state:not(.session-tickets-muted)').length === 3);
+    return tab;
+  }
+  const chips = () => [...panel().querySelectorAll('.session-tickets-chip')].map((c) => c.textContent.replace(/\s+/g, ' ').trim());
+
+  test('the refresh button reads the links and every ticket again', async () => {
+    const tab = await withThree();
+    const links = api.issueLinks.get.mock.calls.length;
+    const loads = api.issueTrackers.getIssue.mock.calls.length;
+    panel().querySelector('[data-action="refresh"]').click();
+    await waitFor(() => api.issueTrackers.getIssue.mock.calls.length >= loads + 3);
+    await waitFor(() => !panel().querySelector('[data-action="refresh"].spinning'));
+    expect(api.issueLinks.get.mock.calls.length).toBeGreaterThan(links);
+    expect(api.issueTrackers.getIssue.mock.calls.slice(loads).map((c) => c[1]).sort()).toEqual(['ENG-117', 'ENG-142', 'ENG-151']);
+    expect(rows()).toHaveLength(3);
+    tab.destroy();
+  });
+
+  test('typing filters on key and title, and the field keeps its focus through a refresh', async () => {
+    const tab = await withThree();
+    const input = panel().querySelector('.session-tickets-filter-input');
+    input.focus();
+    input.value = 'persist';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(rows()).toEqual(['linear:ENG-151']);
+    expect(panel().querySelector('.session-tickets-count').textContent).toBe('1 / 3');
+    expect(document.activeElement).toBe(input); // the list redrew, not the field
+
+    changedListeners.forEach((fn) => fn({ sessionKey: 'tab:1' })); // a full redraw lands meanwhile
+    await waitFor(() => panel().querySelector('.session-tickets-filter-input') !== input);
+    const again = panel().querySelector('.session-tickets-filter-input');
+    expect(again.value).toBe('persist');
+    expect(document.activeElement).toBe(again);
+    expect(rows()).toEqual(['linear:ENG-151']);
+
+    again.value = 'eng-11';
+    again.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(rows()).toEqual(['linear:ENG-117']);
+    tab.destroy();
+  });
+
+  test('state chips count and narrow; nothing left offers to clear', async () => {
+    const tab = await withThree();
+    expect(chips()).toEqual([`${t('chat.tickets.filterAll')} 3`, `${t('tickets.category.todo')} 1`, `${t('tickets.category.started')} 1`, `${t('tickets.category.done')} 1`]);
+    panel().querySelector('.session-tickets-chip[data-category="started"]').click();
+    expect(rows()).toEqual(['linear:ENG-142']);
+    expect(panel().querySelector('.session-tickets-chip.active').dataset.category).toBe('started');
+
+    const input = panel().querySelector('.session-tickets-filter-input');
+    input.value = 'crash';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(rows()).toEqual([]);
+    expect(panel().textContent).toContain(t('chat.tickets.filterNone'));
+    panel().querySelector('[data-action="filter-clear"]').click();
+    expect(rows()).toHaveLength(3);
+    expect(panel().querySelector('.session-tickets-filter-input').value).toBe('');
+    tab.destroy();
+  });
+});
+
 describe('failures say why', () => {
   async function typeSearch(text) {
     panel().querySelector('[data-action="toggle-search"]').click();
