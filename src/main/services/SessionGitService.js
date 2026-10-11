@@ -12,14 +12,19 @@
  * does not log. A tab polled every 30 s must not fill the error log.
  */
 
+const fsp = require('fs').promises;
 const path = require('path');
 const { execGit, parseGitStatus } = require('../utils/git');
 const github = require('./GitHubAuthService');
+const sessionActivity = require('./SessionActivityService');
 
 const COMMIT_LIMIT = 30;
 const RECENT_ON_BASE = 10;
 const SEP = '\x1f';
 const CONFLICT_CODES = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
+const MAX_WORKSPACES = 6;
+const MAX_DIRS = 100;
+const TOP_CACHE_MS = 5 * 60 * 1000;
 
 /** `git log` lines as commits. */
 function parseLog(output) {
@@ -263,4 +268,148 @@ async function summary(cwd, { withPullRequest = true } = {}) {
   };
 }
 
-module.exports = { summary, _internals: { parseLog, parseRemotes, remoteHost, summarizeChecks, summarizeReviews } };
+// ── A session's own worktrees ──────────────────────────────────────────────
+
+/** dir → { top, at }: which worktree of the project a directory belongs to, or null. */
+const topCache = new Map();
+
+async function realpathOrNull(p) {
+  try {
+    return await fsp.realpath(p);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The real path of a directory that may no longer exist: its closest existing
+ * ancestor resolved, the rest appended. On macOS /var is /private/var, so a
+ * removed worktree's path only compares with the project's once resolved.
+ */
+async function realpathLoose(p) {
+  const rest = [];
+  let cur = path.resolve(p);
+  for (;;) {
+    const real = await realpathOrNull(cur);
+    if (real) return path.join(real, ...rest);
+    const parent = path.dirname(cur);
+    if (parent === cur) return path.resolve(p);
+    rest.unshift(path.basename(cur));
+    cur = parent;
+  }
+}
+
+/** The worktree a directory sits in and its repository's common git dir, both real paths. */
+async function locateDir(dir) {
+  const top = await execGit(dir, ['rev-parse', '--show-toplevel']);
+  if (!top) return null;
+  const common = await execGit(top, ['rev-parse', '--git-common-dir']);
+  if (!common) return null;
+  const [realTop, realCommon] = await Promise.all([realpathOrNull(top), realpathOrNull(path.resolve(top, common))]);
+  return realTop && realCommon ? { top: realTop, common: realCommon } : null;
+}
+
+/**
+ * The worktrees of this project's repository the session worked in, newest
+ * first. The project folder counts only when the session edited there: every
+ * session starts with its cwd in it, so a cwd alone says nothing.
+ */
+async function workspacesOf(projectPath, activity) {
+  const project = await locateDir(projectPath);
+  if (!project) return [];
+  const tops = new Map();
+  const removed = [];
+  for (const { dir, at, kinds, branch } of activity.dirs.slice(0, MAX_DIRS)) {
+    let hit = topCache.get(dir);
+    if (!hit || Date.now() - hit.at > TOP_CACHE_MS) {
+      const where = await locateDir(dir);
+      hit = { top: where && where.common === project.common ? where.top : null, at: Date.now() };
+      topCache.set(dir, hit);
+    }
+    if (!hit.top) {
+      // A worktree it entered and that has since been removed: its branch
+      // still names a pull request. Only one inside the project's folder.
+      const real = await realpathLoose(dir);
+      if (branch && kinds.includes('enter') && real.startsWith(project.top + path.sep) && !(await realpathOrNull(real))) {
+        removed.push({ dir: real, at, branch, removed: true, isRoot: false, label: path.relative(project.top, real) });
+      }
+      continue;
+    }
+    const entry = tops.get(hit.top) || { at: 0, kinds: new Set() };
+    entry.at = Math.max(entry.at, at);
+    kinds.forEach((k) => entry.kinds.add(k));
+    tops.set(hit.top, entry);
+  }
+  const live = [...tops.entries()]
+    .filter(([top, e]) => top !== project.top || e.kinds.has('edit'))
+    .map(([top, e]) => ({ dir: top, at: e.at, isRoot: top === project.top, label: top === project.top ? null : path.relative(project.top, top) }));
+  return [...live, ...removed].sort((a, b) => b.at - a.at).slice(0, MAX_WORKSPACES);
+}
+
+/** A pull request the session created, looked up by number. */
+async function createdPullRequest(p) {
+  const repo = `${p.owner}/${p.repo}`;
+  const res = await github.getPullRequest(p.owner, p.repo, p.number);
+  const base = { url: p.url, number: p.number, repo };
+  if (!res.authenticated) return { ...base, authenticated: false };
+  if (!res.pullRequest) {
+    if (res.ssoRequired) return { ...base, authenticated: true, pullRequest: null, ssoRequired: { ...res.ssoRequired, repo } };
+    if (res.notFound) return { ...base, authenticated: true, pullRequest: null, unreachable: repo };
+    return { ...base, authenticated: true, pullRequest: null, error: res.error || 'unknown', repo };
+  }
+  const pr = res.pullRequest;
+  const [checks, reviews] = await Promise.all([
+    pr.headSha ? github.getCheckRuns(p.owner, p.repo, pr.headSha) : { checkRuns: [] },
+    github.getPullRequestReviews(p.owner, p.repo, pr.number),
+  ]);
+  return {
+    ...base,
+    authenticated: true,
+    pullRequest: { ...pr, repo, checks: summarizeChecks(checks.checkRuns), reviews: summarizeReviews(reviews.reviews) },
+  };
+}
+
+/**
+ * What one session did in git: the worktrees it used, each with its branch
+ * and that branch's pull request, and the pull requests it created that no
+ * shown worktree carries. Without a transcript to read (a new tab, a session
+ * from elsewhere), or when the session never left the project folder, it is
+ * the project folder's summary, as before.
+ *
+ * @param {{ projectPath: string, sessionId?: string|null }} params
+ * @param {{ activity?: { read: Function } }} [deps]
+ */
+async function overview({ projectPath, sessionId = null } = {}, { activity = sessionActivity } = {}) {
+  if (typeof projectPath !== 'string' || !projectPath) return { isRepo: false };
+  const act = sessionId ? await activity.read(projectPath, sessionId).catch(() => null) : null;
+  const spaces = act ? await workspacesOf(projectPath, act) : [];
+  if (!spaces.length && !act?.prs?.length) return { ...(await summary(projectPath)), mode: 'project' };
+
+  const workspaces = [];
+  for (const ws of spaces) {
+    if (ws.removed) {
+      // Nothing left on disk to read: the branch and its pull request, looked up from the project folder.
+      workspaces.push({ ...ws, isRepo: true, pr: await findPullRequest(projectPath, ws.branch, null, null) });
+      continue;
+    }
+    const s = await summary(ws.dir);
+    if (s.isRepo) workspaces.push({ ...s, dir: ws.dir, isRoot: ws.isRoot, label: ws.label, at: ws.at });
+  }
+  const created = new Set(act.prs.map((p) => p.url.toLowerCase()));
+  for (const ws of workspaces) {
+    const pr = ws.pr?.pullRequest;
+    if (pr?.url && created.has(pr.url.toLowerCase())) pr.createdHere = true;
+  }
+  const shown = new Set(workspaces.map((w) => w.pr?.pullRequest?.url?.toLowerCase()).filter(Boolean));
+  const createdPrs = [];
+  for (const p of [...act.prs].reverse()) {
+    if (!shown.has(p.url.toLowerCase())) createdPrs.push(await createdPullRequest(p));
+  }
+  return { isRepo: true, mode: 'session', workspaces, createdPrs };
+}
+
+module.exports = {
+  summary,
+  overview,
+  _internals: { parseLog, parseRemotes, remoteHost, summarizeChecks, summarizeReviews, workspacesOf, topCache },
+};
