@@ -10,7 +10,7 @@
  * Only fields the transcript already structures are read:
  *  - the `cwd` of every entry, which follows `EnterWorktree`;
  *  - the worktree `EnterWorktree` reports it entered;
- *  - the files `Edit` / `Write` / `MultiEdit` / `NotebookEdit` touched;
+ *  - the files `Edit` / `Write` / `MultiEdit` / `NotebookEdit` touched, and their folders;
  *  - the pull request URL `gh pr create` printed on a line of its own.
  * A URL merely appearing in some output (a test fixture, release notes) is not
  * a pull request of the session: a real transcript had 18 of them for the 2
@@ -30,6 +30,7 @@ const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/;
 const CHUNK_BYTES = 1 << 20;
 const MAX_PENDING = 200;
 const MAX_PRS = 50;
+const MAX_EDITS = 500;
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const PR_URL_LINE = /^\s*https:\/\/([^/\s]+)\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)\s*$/;
 // "Entered worktree at <path> on branch <branch>. …": the path may hold spaces
@@ -37,7 +38,7 @@ const PR_URL_LINE = /^\s*https:\/\/([^/\s]+)\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)\
 const ENTERED = /Entered worktree at (.+?)(?: on branch (\S+?))?\.(?:\s|$)/;
 
 function createActivity() {
-  return { dirs: new Map(), prs: new Map(), pending: new Map(), branches: new Map() };
+  return { dirs: new Map(), prs: new Map(), pending: new Map(), branches: new Map(), edits: new Map() };
 }
 
 function note(activity, dir, kind, at) {
@@ -68,7 +69,15 @@ function readEntry(activity, entry) {
       const input = block.input || {};
       if (EDIT_TOOLS.has(block.name)) {
         const file = input.file_path || input.notebook_path;
-        if (typeof file === 'string' && path.isAbsolute(file)) note(activity, path.dirname(file), 'edit', at);
+        if (typeof file === 'string' && path.isAbsolute(file)) {
+          note(activity, path.dirname(file), 'edit', at);
+          // The files themselves too: a note written in the project folder is
+          // not work on its branch, and only git can tell the two apart.
+          const key = path.normalize(file);
+          activity.edits.delete(key);
+          activity.edits.set(key, at);
+          if (activity.edits.size > MAX_EDITS) activity.edits.delete(activity.edits.keys().next().value);
+        }
       } else if (block.name === 'EnterWorktree'
         || (block.name === 'Bash' && String(input.command || '').includes('gh pr create'))) {
         activity.pending.set(block.id, { name: block.name, input, at });
@@ -106,6 +115,7 @@ function summarize(activity) {
       .map(([dir, e]) => ({ dir, at: e.at, kinds: [...e.kinds], branch: activity.branches.get(dir) || null }))
       .sort((a, b) => b.at - a.at),
     prs: [...activity.prs.values()],
+    edits: [...activity.edits.entries()].map(([file, at]) => ({ file, at })).reverse(),
   };
 }
 

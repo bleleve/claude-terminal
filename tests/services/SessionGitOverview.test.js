@@ -84,7 +84,7 @@ beforeEach(() => {
   github.getPullRequestReviews.mockReset().mockResolvedValue({ reviews: [] });
 });
 
-const activityOf = (dirs, prs = []) => ({ read: jest.fn(async () => ({ dirs, prs })) });
+const activityOf = (dirs, prs = [], edits = []) => ({ read: jest.fn(async () => ({ dirs, prs, edits })) });
 const d = (p, at, kinds, branch = null) => ({ dir: p, at, kinds, branch });
 
 test('without a session id, the project folder as before', async () => {
@@ -110,11 +110,25 @@ test('the worktrees it used, not the folder\'s branch, and nothing from another 
   expect(o.workspaces[0]).toMatchObject({ isRoot: false, dir: fs.realpathSync.native(wtA) });
 });
 
-test('the folder counts once the session edited there, newest first', async () => {
-  const o = await overview({ projectPath: proj, sessionId: 's1' }, { activity: activityOf([
-    d(proj, 7, ['edit']),
-    d(wtA, 5, ['enter', 'cwd'], 'feat/a'),
-  ]) });
+test('notes written in the folder do not tie the session to its branch', async () => {
+  // Untracked files, as a session's analyses and notes are: the folder's
+  // branch (and its pull request) is not this session's work.
+  fs.mkdirSync(path.join(proj, 'notes'), { recursive: true });
+  fs.writeFileSync(path.join(proj, 'notes', 'recette.md'), 'notes\n');
+  const o = await overview({ projectPath: proj, sessionId: 's1' }, { activity: activityOf(
+    [d(path.join(proj, 'notes'), 7, ['edit']), d(wtA, 5, ['enter', 'cwd'], 'feat/a')],
+    [],
+    [{ file: path.join(proj, 'notes', 'recette.md'), at: 7 }],
+  ) });
+  expect(o.workspaces.map((w) => w.branch)).toEqual(['feat/a']);
+});
+
+test('the folder counts once the session changed a tracked file there, newest first', async () => {
+  const o = await overview({ projectPath: proj, sessionId: 's1' }, { activity: activityOf(
+    [d(proj, 7, ['edit']), d(wtA, 5, ['enter', 'cwd'], 'feat/a')],
+    [],
+    [{ file: path.join(proj, 'docs.md'), at: 7 }],
+  ) });
   expect(o.workspaces.map((w) => [w.label, w.branch, w.isRoot])).toEqual([
     [null, 'docs/unrelated', true],
     [path.join('.claude', 'worktrees', 'a'), 'feat/a', false],
