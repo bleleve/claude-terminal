@@ -6071,6 +6071,27 @@ button.session-tickets-state:hover { background: var(--bg-hover); }
   letter-spacing: 0.04em;
 }
 .session-tickets-row.suggested { background: var(--accent-dim); }
+
+/* Sub-tickets under their parent, as on the Tickets screen (tickets.css). */
+.session-tickets-row[data-depth] {
+  position: relative;
+  padding-left: calc(12px + var(--depth) * 22px);
+}
+.session-tickets-row[data-depth]::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(12px + (var(--depth) - 1) * 22px + 8px);
+  border-left: 1px solid var(--border-color);
+}
+.session-tickets-row.context { padding-top: 7px; padding-bottom: 7px; }
+.session-tickets-row.context .issue-key,
+.session-tickets-row.context .session-tickets-name,
+.session-tickets-row.context .session-tickets-state { opacity: 0.6; }
+.session-tickets-row.context:hover .issue-key,
+.session-tickets-row.context:hover .session-tickets-name,
+.session-tickets-row.context:hover .session-tickets-state { opacity: 1; }
 .btn-sm.session-tickets-confirm { flex: none; background: var(--accent); color: var(--bg-primary); }
 .btn-sm.session-tickets-confirm:hover { background: var(--accent-hover); }
 .chat-tab-badge.has-suggestions { box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent-hover); }

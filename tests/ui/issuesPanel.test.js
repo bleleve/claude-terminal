@@ -98,7 +98,8 @@ const flush = async (ms = 0) => {
     quiet = inflight === 0 ? quiet + 1 : 0;
   }
 };
-const rowKeys = () => [...root.querySelectorAll('.issues-list > .issue-group .issue-row')].map((r) => r.dataset.key);
+// The tickets the list holds: a dimmed parent shown for context is not one of them.
+const rowKeys = () => [...root.querySelectorAll('.issues-list > .issue-group .issue-row:not(.context)')].map((r) => r.dataset.key);
 const lastQuery = () => api.issueTrackers.listIssues.mock.calls.at(-1)[1];
 
 beforeEach(() => {
@@ -239,6 +240,23 @@ test('a sub-issue in the detail opens in its place', async () => {
   root.querySelector('.issue-detail-children .issue-row[data-key="ENG-151"]').click();
   await flush();
   expect(root.querySelector('.issue-detail-title').textContent).toBe('Persist ticket filters per screen');
+});
+
+test('a parent shown for context opens like any ticket; a sub-issue\'s detail leads back to it', async () => {
+  await setup();
+  const todo = [...root.querySelectorAll('.issue-group')].find((g) => g.querySelector('.issue-group-label')?.textContent === 'Todo');
+  const context = todo.querySelector('.issue-row.context[data-key="ENG-142"]');
+  expect(context.nextElementSibling.dataset).toMatchObject({ key: 'ENG-151', depth: '1' });
+  context.click();
+  await flush();
+  expect(root.querySelector('.issue-detail-title').textContent).toBe('Session tickets tab');
+  expect(root.querySelector('.issue-detail-parent')).toBeNull();
+
+  root.querySelector('.issue-detail-children .issue-row[data-key="ENG-151"]').click();
+  await flush();
+  root.querySelector('.issue-detail-parent .issue-row').click();
+  await flush();
+  expect(root.querySelector('.issue-detail-title').textContent).toBe('Session tickets tab');
 });
 
 test('a rejected key is explained, with the way to fix it', async () => {
