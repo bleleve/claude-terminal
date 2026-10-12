@@ -445,12 +445,12 @@ function contextIssue(parent) {
   };
 }
 
-/** Depth-first, each node with how deep it sits. */
+/** Depth-first, each node with how deep it sits and whether it closes its parent's branch. */
 function flattenTree(nodes, depth = 0, out = []) {
-  for (const node of nodes) {
-    out.push({ node, depth: Math.min(depth, MAX_DEPTH) });
+  nodes.forEach((node, i) => {
+    out.push({ node, depth: Math.min(depth, MAX_DEPTH), last: i === nodes.length - 1 });
     flattenTree(node.children, depth + 1, out);
-  }
+  });
   return out;
 }
 
@@ -468,17 +468,17 @@ function progressHtml(subIssues) {
     </span>`;
 }
 
-/** Where a sub-issue sits in its tree, as attributes a row carries. */
-function depthAttrs(depth) {
-  return depth ? ` data-depth="${depth}" style="--depth: ${depth}"` : '';
+/** Where a sub-issue sits in its tree, as attributes a row carries. The last one ends the line in an elbow. */
+function depthAttrs(depth, last = false) {
+  return depth ? ` data-depth="${depth}"${last ? ' data-last' : ''} style="--depth: ${depth}"` : '';
 }
 
-function rowHtml(issue, { selected = false, now, sessions = 0, depth = 0, context = false, hint = true } = {}) {
+function rowHtml(issue, { selected = false, now, sessions = 0, depth = 0, last = false, context = false, hint = true } = {}) {
   if (context) {
     // The parent of the rows below, not in the list itself: dimmed, and only
     // what the child carried about it.
     return `
-    <div class="issue-row context${selected ? ' selected' : ''}" role="row" tabindex="0" data-ref="${escapeHtml(issue.ref)}" data-key="${escapeHtml(issue.key)}"${hint ? ` title="${escapeHtml(t('tickets.subIssues.contextParent'))}"` : ''}${depthAttrs(depth)}>
+    <div class="issue-row context${selected ? ' selected' : ''}" role="row" tabindex="0" data-ref="${escapeHtml(issue.ref)}" data-key="${escapeHtml(issue.key)}"${hint ? ` title="${escapeHtml(t('tickets.subIssues.contextParent'))}"` : ''}${depthAttrs(depth, last)}>
       ${priorityIcon(null)}
       <span class="issue-key">${escapeHtml(issue.key)}</span>
       ${issue.state ? stateDot(issue.state) : '<span class="issue-state" aria-hidden="true"></span>'}
@@ -487,7 +487,7 @@ function rowHtml(issue, { selected = false, now, sessions = 0, depth = 0, contex
   }
   const facet = issue.facets.cycle || issue.facets.sprint || issue.facets.milestone || '';
   return `
-    <div class="issue-row${selected ? ' selected' : ''}" role="row" tabindex="0" data-ref="${escapeHtml(issue.ref)}" data-key="${escapeHtml(issue.key)}"${depthAttrs(depth)}>
+    <div class="issue-row${selected ? ' selected' : ''}" role="row" tabindex="0" data-ref="${escapeHtml(issue.ref)}" data-key="${escapeHtml(issue.key)}"${depthAttrs(depth, last)}>
       ${priorityIcon(issue.priority)}
       <span class="issue-key">${escapeHtml(issue.key)}</span>
       ${stateDot(issue.state)}
@@ -520,7 +520,7 @@ function groupsHtml(groups, { selectedRef = null, collapsed = new Set(), now, se
         </button>`
       : '';
     const rows = isCollapsed ? '' : flattenTree(nestIssues(group.issues))
-      .map(({ node, depth }) => rowHtml(node.issue, { selected: node.issue.ref === selectedRef, now, sessions: sessionCounts[node.issue.ref] || 0, depth, context: node.context }))
+      .map(({ node, depth, last }) => rowHtml(node.issue, { selected: node.issue.ref === selectedRef, now, sessions: sessionCounts[node.issue.ref] || 0, depth, last, context: node.context }))
       .join('');
     return `<section class="issue-group" data-group="${escapeHtml(group.key)}">${header}<div class="issue-group-rows" role="rowgroup">${rows}</div></section>`;
   }).join('');
@@ -668,6 +668,7 @@ module.exports = {
   flattenTree,
   contextIssue,
   progressHtml,
+  depthAttrs,
   detailHtml,
   boardColumns,
   dropTargetState,

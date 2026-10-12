@@ -951,8 +951,10 @@
 .issues-start-actions .btn-sm { flex: none; }
 
 /* ── Sub-issues: tree, context parents, progress ──
-   A sub-issue is indented under its parent and a line runs down from the
-   parent's priority column. A parent drawn only for context is dimmed. */
+   As Linear draws them: a sub-issue is indented under its parent and a thin
+   line runs down from the parent's priority column, ending in an elbow at the
+   last one. A parent drawn only for context keeps its weight but not its
+   colour. The progress is a ring and a count, no frame. */
 .issue-title-cell {
   flex: 1;
   min-width: 0;
@@ -970,39 +972,51 @@
   padding-left: calc(20px + var(--depth) * 24px);
 }
 
-.issue-row[data-depth]::before {
+.issue-row[data-depth]::before,
+.issue-row[data-depth]::after {
   content: '';
   position: absolute;
+  left: calc(20px + (var(--depth) - 1) * 24px + 8px);
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.issue-row[data-depth]::before {
   top: 0;
   bottom: 0;
-  left: calc(20px + (var(--depth) - 1) * 24px + 8px);
-  border-left: 1px solid var(--border-color);
+  border-left: 1px solid var(--text-muted);
 }
 
-.issue-row.context {
-  color: var(--text-muted);
+.issue-row[data-depth]::after {
+  top: 50%;
+  width: 10px;
+  border-top: 1px solid var(--text-muted);
 }
 
-.issue-row.context .issue-title,
-.issue-row.context .issue-key,
-.issue-row.context .issue-state {
-  opacity: 0.6;
+.issue-row[data-depth][data-last]::before {
+  bottom: 50%;
+  width: 10px;
+  border-bottom: 1px solid var(--text-muted);
+  border-bottom-left-radius: 6px;
 }
 
-.issue-row.context:hover .issue-title,
-.issue-row.context:hover .issue-key,
-.issue-row.context:hover .issue-state {
-  opacity: 1;
+.issue-row[data-depth][data-last]::after {
+  content: none;
+}
+
+.issue-row.context .issue-title {
+  color: var(--text-tertiary);
+}
+
+.issue-row.context .issue-key {
+  opacity: 0.75;
 }
 
 .issue-progress {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   flex: none;
-  padding: 1px 7px 1px 5px;
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
   color: var(--text-secondary);
   font-size: var(--font-xs);
   font-variant-numeric: tabular-nums;
@@ -1010,8 +1024,8 @@
 }
 
 .issue-progress svg {
-  width: 12px;
-  height: 12px;
+  width: 13px;
+  height: 13px;
 }
 
 .issue-progress-track {
@@ -1050,9 +1064,11 @@
   border-radius: var(--radius-sm);
 }
 
-.issue-detail-parent .issue-row.context .issue-title,
-.issue-detail-parent .issue-row.context .issue-key,
-.issue-detail-parent .issue-row.context .issue-state {
+.issue-detail-parent .issue-row.context .issue-title {
+  color: var(--text-primary);
+}
+
+.issue-detail-parent .issue-row.context .issue-key {
   opacity: 1;
 }
 

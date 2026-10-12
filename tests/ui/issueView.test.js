@@ -243,6 +243,15 @@ describe('sub-issues', () => {
     expect(tree[1].issue).toMatchObject({ title: 'Session tickets tab', subIssues: { total: 3, done: 1 }, state: { name: 'In Progress' } });
   });
 
+  test('only the last sub-issue of a parent closes its branch', () => {
+    const flat = view.flattenTree(view.nestIssues([byKey('ENG-142'), byKey('ENG-151'), byKey('ENG-121'), byKey('ENG-139')]));
+    expect(flat.map(({ node, depth, last }) => [node.issue.key, depth, last])).toEqual([
+      ['ENG-142', 0, false], ['ENG-151', 1, false], ['ENG-121', 1, true], ['ENG-139', 0, true],
+    ]);
+    expect(view.depthAttrs(1, true)).toBe(' data-depth="1" data-last style="--depth: 1"');
+    expect(view.depthAttrs(0, true)).toBe('');
+  });
+
   test('a loop sent by an adapter keeps every issue on screen', () => {
     const a = { ...byKey('ENG-139'), parent: { ref: 'linear:ENG-128', key: 'ENG-128', title: 'x' } };
     const b = { ...byKey('ENG-128'), parent: { ref: 'linear:ENG-139', key: 'ENG-139', title: 'y' } };
@@ -266,7 +275,7 @@ describe('sub-issues', () => {
     const context = rows.find((r) => r.dataset.key === 'ENG-142');
     expect(context.classList.contains('context')).toBe(true);
     expect(context.title).toBe(t('tickets.subIssues.contextParent'));
-    expect(rows[rows.indexOf(context) + 1].dataset).toMatchObject({ key: 'ENG-151', depth: '1' });
+    expect(rows[rows.indexOf(context) + 1].dataset).toMatchObject({ key: 'ENG-151', depth: '1', last: '' }); // its only sub-issue here: the line ends in an elbow
     expect(todo.querySelector('.issue-group-count').textContent).toBe(String(groups.find((g) => g.label === 'Todo').issues.length));
   });
 

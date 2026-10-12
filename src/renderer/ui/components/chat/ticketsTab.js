@@ -200,7 +200,7 @@ function createTicketsTab(deps) {
 
   // ── Rendering ──
 
-  function rowHtml(l, depth = 0) {
+  function rowHtml(l, depth = 0, last = false) {
     const hit = issues.get(l.ref);
     const conn = connectionFor(l);
     const provider = providerFor(conn);
@@ -216,7 +216,7 @@ function createTicketsTab(deps) {
         ? `<button type="button" class="session-tickets-state session-tickets-failed" data-action="retry" data-ref="${escapeHtml(l.ref)}" title="${escapeHtml(t('chat.tickets.retryHint', { reason: issueView.errorText(hit.error, provider?.name || '') }))}">${escapeHtml(t('chat.tickets.loadFailed'))}</button>`
         : `<span class="session-tickets-state session-tickets-muted">${escapeHtml(t('tickets.panel.loading'))}</span>`;
     return `
-      <li class="session-tickets-row" data-ref="${escapeHtml(l.ref)}"${depthAttrs(depth)}>
+      <li class="session-tickets-row" data-ref="${escapeHtml(l.ref)}"${issueView.depthAttrs(depth, last)}>
         ${issue ? issueView.priorityIcon(issue.priority) : '<span class="issue-priority"></span>'}
         <span class="issue-key">${escapeHtml(key)}</span>
         <span class="session-tickets-title">
@@ -238,15 +238,13 @@ function createTicketsTab(deps) {
       </li>${recap?.ref === l.ref ? recapEditorHtml(provider) : ''}`;
   }
 
-  const depthAttrs = (depth) => (depth ? ` data-depth="${depth}" style="--depth: ${depth}"` : '');
-
   /**
    * The parent of linked tickets that is not linked itself: dimmed, drawn from
    * what its children carry, with a way to open it or link it too.
    */
-  function contextRowHtml(parent, depth, providerName) {
+  function contextRowHtml(parent, depth, last, providerName) {
     return `
-      <li class="session-tickets-row context" data-ref="${escapeHtml(parent.ref)}" title="${escapeHtml(t('tickets.subIssues.contextParent'))}"${depthAttrs(depth)}>
+      <li class="session-tickets-row context" data-ref="${escapeHtml(parent.ref)}" title="${escapeHtml(t('tickets.subIssues.contextParent'))}"${issueView.depthAttrs(depth, last)}>
         <span class="issue-priority"></span>
         <span class="issue-key">${escapeHtml(parent.key)}</span>
         <span class="session-tickets-title"><span class="session-tickets-name">${escapeHtml(parent.title)}</span></span>
@@ -394,11 +392,11 @@ function createTicketsTab(deps) {
     // Sub-tickets under their parent, as on the Tickets screen.
     contextParents.clear();
     const tree = issueView.flattenTree(issueView.nestIssues(shown, (l) => issues.get(l.ref)?.issue));
-    return `<ul class="session-tickets-list">${tree.map(({ node, depth }) => {
-      if (!node.context) return rowHtml(node.item, depth);
+    return `<ul class="session-tickets-list">${tree.map(({ node, depth, last }) => {
+      if (!node.context) return rowHtml(node.item, depth, last);
       const child = node.children[0]?.item || {};
       contextParents.set(node.issue.ref, { issue: node.issue, connectionId: child.connectionId || null });
-      return contextRowHtml(node.issue, depth, providerFor(connectionFor(child))?.name || '');
+      return contextRowHtml(node.issue, depth, last, providerFor(connectionFor(child))?.name || '');
     }).join('')}</ul>`;
   }
 
