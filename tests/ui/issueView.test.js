@@ -142,7 +142,7 @@ describe('HTML', () => {
     document.body.innerHTML = view.detailHtml(detail, { renderMarkdown, providerName: 'Linear', metadata });
     expect(renderMarkdown).toHaveBeenCalledTimes(3); // description + two comments
     expect(document.querySelector('.issue-detail-title').textContent).toBe('Session tickets tab');
-    expect(document.querySelectorAll('.issue-detail-children .issue-row')).toHaveLength(2);
+    expect(document.querySelectorAll('.issue-detail-children .issue-row')).toHaveLength(3);
     expect(document.querySelector('[data-action="open"]').textContent).toBe(t('tickets.detail.openIn', { provider: 'Linear' }));
     expect(document.querySelector('[data-action="copy-branch"]').title).toBe(detail.branchName);
   });
@@ -216,5 +216,86 @@ describe('board', () => {
     const detail = { ...issues.find((i) => i.key === 'ENG-142'), description: null, comments: [], children: [] };
     document.body.innerHTML = view.detailHtml(detail, { renderMarkdown: () => '', providerName: 'Linear', metadata, editableFields: { state: true, assignee: false, priority: true } });
     expect([...document.querySelectorAll('.issue-prop-edit')].map((b) => b.dataset.edit)).toEqual(['state', 'priority']);
+  });
+});
+
+describe('sub-issues', () => {
+  const byKey = (key) => issues.find((i) => i.key === key);
+  const shape = (nodes) => nodes.map((n) => (n.children.length
+    ? { key: n.issue.key, context: n.context, children: shape(n.children) }
+    : { key: n.issue.key, context: n.context }));
+
+  test('a sub-issue goes under its parent when both are listed, wherever the parent is', () => {
+    const tree = view.nestIssues([byKey('ENG-151'), byKey('ENG-139'), byKey('ENG-142')]);
+    expect(shape(tree)).toEqual([
+      { key: 'ENG-139', context: false },
+      { key: 'ENG-142', context: false, children: [{ key: 'ENG-151', context: false }] },
+    ]);
+  });
+
+  test('a parent that is not listed is shown once, for context, where its first sub-issue was', () => {
+    const tree = view.nestIssues([byKey('ENG-139'), byKey('ENG-151'), byKey('ENG-128'), byKey('ENG-121')]);
+    expect(shape(tree)).toEqual([
+      { key: 'ENG-139', context: false },
+      { key: 'ENG-142', context: true, children: [{ key: 'ENG-151', context: false }, { key: 'ENG-121', context: false }] },
+      { key: 'ENG-128', context: false },
+    ]);
+    expect(tree[1].issue).toMatchObject({ title: 'Session tickets tab', subIssues: { total: 3, done: 1 }, state: { name: 'In Progress' } });
+  });
+
+  test('only the last sub-issue of a parent closes its branch', () => {
+    const flat = view.flattenTree(view.nestIssues([byKey('ENG-142'), byKey('ENG-151'), byKey('ENG-121'), byKey('ENG-139')]));
+    expect(flat.map(({ node, depth, last }) => [node.issue.key, depth, last])).toEqual([
+      ['ENG-142', 0, false], ['ENG-151', 1, false], ['ENG-121', 1, true], ['ENG-139', 0, true],
+    ]);
+    expect(view.depthAttrs(1, true)).toBe(' data-depth="1" data-last style="--depth: 1"');
+    expect(view.depthAttrs(0, true)).toBe('');
+  });
+
+  test('a loop sent by an adapter keeps every issue on screen', () => {
+    const a = { ...byKey('ENG-139'), parent: { ref: 'linear:ENG-128', key: 'ENG-128', title: 'x' } };
+    const b = { ...byKey('ENG-128'), parent: { ref: 'linear:ENG-139', key: 'ENG-139', title: 'y' } };
+    const keys = view.flattenTree(view.nestIssues([a, b])).map(({ node }) => node.issue.key);
+    expect(keys.sort()).toEqual(['ENG-128', 'ENG-139']);
+  });
+
+  test('items that are not issues nest through the accessor, and an unloaded one stays a leaf', () => {
+    const links = [{ ref: 'linear:ENG-151' }, { ref: 'linear:ENG-999' }];
+    const loaded = { 'linear:ENG-151': byKey('ENG-151') };
+    const tree = view.nestIssues(links, (l) => loaded[l.ref]);
+    expect(tree.map((n) => [n.context, n.issue?.key ?? null])).toEqual([[true, 'ENG-142'], [false, null]]);
+    expect(tree[0].children[0].item).toBe(links[0]);
+  });
+
+  test('by status, a sub-issue in another status than its parent sits under it, dimmed, in its own group', () => {
+    const groups = view.groupIssues(issues, 'status', metadata);
+    document.body.innerHTML = view.groupsHtml(groups);
+    const todo = [...document.querySelectorAll('.issue-group')].find((g) => g.querySelector('.issue-group-label').textContent === 'Todo');
+    const rows = [...todo.querySelectorAll('.issue-row')];
+    const context = rows.find((r) => r.dataset.key === 'ENG-142');
+    expect(context.classList.contains('context')).toBe(true);
+    expect(context.title).toBe(t('tickets.subIssues.contextParent'));
+    expect(rows[rows.indexOf(context) + 1].dataset).toMatchObject({ key: 'ENG-151', depth: '1', last: '' }); // its only sub-issue here: the line ends in an elbow
+    expect(todo.querySelector('.issue-group-count').textContent).toBe(String(groups.find((g) => g.label === 'Todo').issues.length));
+  });
+
+  test('a parent row says how far its sub-issues are, on the list and on the board', () => {
+    document.body.innerHTML = view.rowHtml(byKey('ENG-142'));
+    const progress = document.querySelector('.issue-progress');
+    expect(progress.textContent.trim()).toBe('1/3');
+    expect(progress.title).toBe(t('tickets.subIssues.progress', { done: 1, total: 3 }));
+    document.body.innerHTML = view.cardHtml(byKey('ENG-151'));
+    expect(document.querySelector('.issue-card-parent').textContent).toContain('ENG-142');
+    expect(view.progressHtml(null)).toBe('');
+  });
+
+  test('the detail of a sub-issue leads to its parent', async () => {
+    const client = linear.createClient({ secret: fixture.secret, fetch: fixture.fetch });
+    const { issue: detail } = sanitizeIssueDetail(await client.getIssue('ENG-151'), 'linear');
+    document.body.innerHTML = view.detailHtml(detail, { renderMarkdown: (md) => md, providerName: 'Linear', metadata });
+    const parent = document.querySelector('.issue-detail-parent .issue-row');
+    expect(parent.dataset.key).toBe('ENG-142');
+    expect(parent.hasAttribute('title')).toBe(false);
+    expect(parent.querySelector('.issue-progress').textContent.trim()).toBe('1/3');
   });
 });

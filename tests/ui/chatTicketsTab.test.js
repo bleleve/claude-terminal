@@ -123,7 +123,7 @@ function makeTab(over = {}) {
 
 const panel = () => document.querySelector('.panel');
 const badge = () => document.querySelector('.badge');
-const rows = () => [...panel().querySelectorAll('.session-tickets-row')].map((r) => r.dataset.ref);
+const rows = () => [...panel().querySelectorAll('.session-tickets-row:not(.context)')].map((r) => r.dataset.ref);
 
 test('the tab only appears once a tracker is connected', async () => {
   api.issueTrackers.connections.mockResolvedValueOnce({ ok: true, connections: [] });
@@ -218,6 +218,28 @@ test('the provisional tab key moves to the CLI session id; a fork copies', async
   expect((await api.issueLinks.get('sess-A')).links).toHaveLength(1);
   expect((await api.issueLinks.get('sess-B')).links).toHaveLength(1);
   expect(badge().textContent).toBe('1');
+  tab.destroy();
+});
+
+test('a sub-ticket sits under its parent: dimmed while the parent is not linked, linked in one click', async () => {
+  const tab = makeTab();
+  await tab.probe();
+  await tab.linkTicket({ ref: 'linear:ENG-151', connectionId: conn.id, title: 'Persist ticket filters per screen' }, 'manual');
+  tab.show();
+  await waitFor(() => panel().querySelector('.session-tickets-row.context'));
+  const context = panel().querySelector('.session-tickets-row.context');
+  expect(context.dataset.ref).toBe('linear:ENG-142');
+  expect(context.querySelector('.issue-progress').textContent.trim()).toBe('1/3');
+  expect(context.nextElementSibling.dataset).toMatchObject({ ref: 'linear:ENG-151', depth: '1' });
+  expect(badge().textContent).toBe('1'); // shown, not linked
+  context.querySelector('[data-action="open"]').click();
+  expect(api.dialog.openExternal).toHaveBeenCalledWith(expect.stringMatching(/^https:\/\/linear\.app\/acme\/issue\/ENG-142\//));
+
+  context.querySelector('[data-action="link-parent"]').click();
+  await waitFor(() => rows().length === 2 && !panel().querySelector('.session-tickets-row.context'));
+  expect([...panel().querySelectorAll('.session-tickets-row')].map((r) => [r.dataset.ref, r.dataset.depth || '0']))
+    .toEqual([['linear:ENG-142', '0'], ['linear:ENG-151', '1']]);
+  expect(badge().textContent).toBe('2');
   tab.destroy();
 });
 
@@ -468,7 +490,10 @@ describe('@tickets mention source', () => {
     ]);
     expect(text).toContain('## Why');
     expect(text).toContain('## Latest comments');
-    expect(text).toContain('## Sub-issues\n- ENG-151 [Todo] Persist ticket filters per screen');
+    expect(text).toContain('## Sub-issues (1/3 done)\n');
+    expect(text).toContain('\n- ENG-151 [Todo] Persist ticket filters per screen');
+    const child = await issueSource.resolve({ ref: 'linear:ENG-151', key: 'ENG-151', title: 'Persist', connectionId: conn.id }, {});
+    expect(child.split('\n')).toContain('Sub-issue of ENG-142: Session tickets tab');
   });
 
   test('a ticket that cannot be loaded still sends something useful', async () => {
