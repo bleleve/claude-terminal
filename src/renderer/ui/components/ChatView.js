@@ -40,7 +40,7 @@ const { createLightbox } = require('./chat/lightbox');
 const { attachExportMenu } = require('./chat/exportConversation');
 const { createTranscriptSearch } = require('./chat/transcriptSearch');
 const { createAttachmentTray } = require('./chat/attachmentTray');
-const { createGitTab } = require('./chat/gitTab');
+const { createGitTab, ciStatusText } = require('./chat/gitTab');
 const { createTicketsTab } = require('./chat/ticketsTab');
 const { createSuggestionCard } = require('./chat/ticketSuggestionCard');
 const { formatTokenCount, contextSummaryText, contextSummaryHtml, contextUsageRows } = require('./chat/contextUsage');
@@ -244,6 +244,7 @@ class ChatView extends BaseComponent {
         </button>
         <button class="chat-tab" data-tab="git" hidden>
           <span class="chat-tab-label">${escapeHtml(t('chat.tabGit') || 'Git')}</span>
+          <span class="chat-tab-ci" role="img" hidden></span>
         </button>
         <button class="chat-tab" data-tab="tickets" hidden>
           <span class="chat-tab-label">${escapeHtml(t('chat.tabTickets') || 'Tickets')}</span>
@@ -415,10 +416,13 @@ class ChatView extends BaseComponent {
   const changesBadgeEl = chatView.querySelector('.chat-tab-badge[data-badge="changes"]');
   const gitPanelEl = chatView.querySelector('.session-git-panel');
   const gitTabBtn = chatView.querySelector('.chat-tab[data-tab="git"]');
+  const gitTabCiEl = gitTabBtn.querySelector('.chat-tab-ci');
   // Where the session's branch stands (chat/gitTab.js). The tab appears once
   // the folder turns out to be a repository; a cloud project has no local one.
   // With the CLI's session id it reads the session's transcript and shows the
   // worktrees it actually used; a resumed tab has that id from the start.
+  // Its pull requests' checks are the session's CI: a dot on the tab button
+  // says where they stand without opening it.
   const gitTab = createGitTab({
     api,
     panelEl: gitPanelEl,
@@ -434,6 +438,22 @@ class ChatView extends BaseComponent {
     showToast: (opts) => require('./Toast').showToast(opts),
     // The branch name and the PR title may name tickets: detection suggests them.
     onSummary: (summary) => observeGitForTickets(summary),
+    onCiStatus: (ci) => {
+      gitTabCiEl.hidden = !ci;
+      gitTabCiEl.className = `chat-tab-ci${ci ? ` ${ci.state}` : ''}`;
+      const text = ciStatusText(ci);
+      gitTabCiEl.setAttribute('aria-label', text);
+      gitTabBtn.title = text;
+    },
+    isOnScreen: () => gitTabBtn.offsetParent !== null,
+    // A failed check's log, as a draft in this conversation: the session that
+    // wrote the code is the one with the context to fix it.
+    fillComposer: (text) => {
+      switchChatTab('conversation');
+      const current = getInputText().trim();
+      setInputText(current ? `${current}\n\n${text}` : text);
+      inputEl.focus();
+    },
   });
   if (!project.isCloud) gitTab.probe();
 
