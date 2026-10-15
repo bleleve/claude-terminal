@@ -1,0 +1,813 @@
+/* remote.css - SSH remote projects: host badges, the Open Remote Project
+   dialog, the host profile editor and the Settings "SSH hosts" tab.
+   Colours come from base.css variables only. */
+
+/* ── Host badge (project list, project bar) ── */
+
+.remote-host-badge {
+  --ssh-state: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 160px;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: var(--font-2xs);
+  line-height: 1.4;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.remote-host-badge svg {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.remote-host-badge.compact {
+  padding: 1px 4px;
+}
+
+.remote-host-badge:hover,
+.remote-host-badge:focus-visible {
+  border-color: var(--ssh-state);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.remote-host-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-host-dot,
+.ssh-state-dot {
+  --ssh-state: var(--text-muted);
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ssh-state);
+  flex-shrink: 0;
+}
+
+.remote-host-badge .remote-host-dot {
+  --ssh-state: inherit;
+}
+
+.remote-host-badge.state-connected,
+.ssh-state-dot.state-connected { --ssh-state: var(--success); }
+
+.remote-host-badge.state-connecting,
+.remote-host-badge.state-reconnecting,
+.ssh-state-dot.state-connecting,
+.ssh-state-dot.state-reconnecting { --ssh-state: var(--warning); }
+
+.remote-host-badge.state-authFailed,
+.remote-host-badge.state-hostKeyChanged,
+.remote-host-badge.state-unsupported,
+.ssh-state-dot.state-authFailed,
+.ssh-state-dot.state-hostKeyChanged,
+.ssh-state-dot.state-unsupported { --ssh-state: var(--danger); }
+
+.remote-host-badge.state-hostKeyUnknown,
+.ssh-state-dot.state-hostKeyUnknown { --ssh-state: var(--info); }
+
+.remote-host-badge.state-unconfigured,
+.ssh-state-dot.state-unconfigured { --ssh-state: var(--purple); }
+
+.remote-host-badge.state-unconfigured .remote-host-dot,
+.ssh-state-dot.state-unconfigured {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--ssh-state);
+}
+
+.remote-host-badge.state-connecting .remote-host-dot,
+.remote-host-badge.state-reconnecting .remote-host-dot,
+.ssh-state-dot.state-connecting,
+.ssh-state-dot.state-reconnecting {
+  animation: ssh-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes ssh-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .remote-host-badge .remote-host-dot,
+  .ssh-state-dot { animation: none; }
+}
+
+/* Project bar tabs are tight: the badge is a dot and an icon there. */
+.project-tab .remote-host-badge {
+  margin-left: 2px;
+  padding: 0 3px;
+  border-color: transparent;
+  background: transparent;
+}
+
+/* Menu items a remote project cannot use stay readable, with their reason as
+   a tooltip; the click handler explains instead of acting. */
+.more-actions-item.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Dialog shell ── */
+
+.ssh-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 260px;
+}
+
+.ssh-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.ssh-actions-spacer {
+  flex: 1;
+}
+
+.ssh-btn {
+  padding: 6px 12px;
+  font-size: var(--font-sm);
+}
+
+.ssh-icon-btn {
+  min-width: 32px;
+  justify-content: center;
+}
+
+.ssh-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ssh-row .ssh-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.ssh-input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+  font-family: inherit;
+}
+
+.ssh-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.ssh-input[readonly] {
+  color: var(--text-secondary);
+}
+
+.ssh-row .ssh-input.ssh-input-narrow {
+  flex: 0 0 160px;
+}
+
+.ssh-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ssh-field-label,
+.ssh-check-label {
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+}
+
+.ssh-field-hint {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  line-height: 1.4;
+}
+
+.ssh-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ssh-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ssh-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.ssh-check input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.ssh-notice {
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+  line-height: 1.5;
+}
+
+.ssh-notice.ssh-notice-muted {
+  border-left-color: var(--border-color);
+}
+
+.ssh-notice.is-error,
+.ssh-editor-error {
+  border-left-color: var(--danger);
+  color: var(--danger-hover);
+}
+
+.ssh-editor-error {
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-xs);
+}
+
+.ssh-test-result {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+  line-height: 1.5;
+}
+
+.ssh-test-result.is-ok {
+  color: var(--success);
+}
+
+.ssh-test-result.is-error {
+  color: var(--danger-hover);
+}
+
+.ssh-test-result .ssh-btn {
+  margin-top: 8px;
+}
+
+.ssh-stderr {
+  margin-top: 6px;
+  padding: 6px 8px;
+  max-height: 90px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: var(--font-2xs);
+  white-space: pre-wrap;
+}
+
+.ssh-empty {
+  padding: 20px;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  text-align: center;
+}
+
+/* ── Host list (dialog picker and Settings) ── */
+
+.ssh-host-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.ssh-host-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+}
+
+.ssh-picker .ssh-host-item {
+  cursor: pointer;
+}
+
+.ssh-host-item:hover {
+  background: var(--bg-hover);
+}
+
+.ssh-host-item.selected {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.ssh-host-item:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.ssh-host-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ssh-host-name {
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ssh-host-dest {
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Inset like the .settings-row cards around it: the settings card itself has
+   no padding, so 4px 0 left the intro text against the card border. */
+.ssh-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 18px;
+}
+
+/* ── Remote directory browser ── */
+
+.ssh-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ssh-browser-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ssh-browser-host {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
+.ssh-path-input {
+  font-family: 'Cascadia Code', Consolas, monospace;
+}
+
+.ssh-browser-status {
+  min-height: 18px;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+}
+
+.ssh-browser-status.is-error {
+  color: var(--danger-hover);
+}
+
+.ssh-browser-status .ssh-btn {
+  margin-left: 6px;
+}
+
+.ssh-dir-list {
+  height: 260px;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.ssh-dir-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+  cursor: pointer;
+}
+
+.ssh-dir-item svg {
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.ssh-dir-item:hover,
+.ssh-dir-item:focus-visible {
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.ssh-dir-link {
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+}
+
+.ssh-dir-empty {
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  text-align: center;
+}
+
+.ssh-browser-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ssh-clone summary {
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+  cursor: pointer;
+}
+
+.ssh-clone[open] summary {
+  margin-bottom: 8px;
+}
+
+.ssh-clone-progress {
+  min-height: 16px;
+  margin-top: 6px;
+  font-family: 'Cascadia Code', Consolas, monospace;
+}
+
+/* ── Verify host ── */
+
+.ssh-verify {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ssh-verify-term {
+  height: 240px;
+  padding: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  overflow: hidden;
+}
+
+.ssh-verify-status {
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+}
+
+/* ── Remote terminal tabs ── */
+
+/* The host badge on a terminal tab: dot and icon only, the label is in the
+   tooltip. Clicking it acts on the host, not on the tab. */
+.terminal-tab .tab-remote-host {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.terminal-tab .tab-remote-host .remote-host-badge {
+  margin-left: 0;
+  padding: 0 3px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.terminal-tab.remote-disconnected .tab-name {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* "Connection lost" over a remote tab whose ssh dropped. The scrollback stays
+   underneath; the tab comes back under the same id. */
+.terminal-remote-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
+  pointer-events: auto;
+}
+
+.terminal-remote-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 420px;
+  padding: 16px 18px;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.terminal-remote-title {
+  font-size: var(--font-base);
+  font-weight: 600;
+}
+
+.terminal-remote-detail {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.terminal-remote-error {
+  font-size: var(--font-xs);
+  color: var(--danger);
+}
+
+.terminal-remote-error[hidden] {
+  display: none;
+}
+
+.terminal-remote-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.terminal-remote-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+  cursor: pointer;
+}
+
+.terminal-remote-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.terminal-remote-btn.primary {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.terminal-remote-btn:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* ── Remote chat tabs ─────────────────────────────────────────────────────
+   The bar a chat tab of a remote project carries above its transcript: the
+   host badge, what a remote chat does without, warnings main returned with
+   the session, and the "connection lost" banner. */
+
+.chat-remote-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  font-size: var(--font-xs);
+}
+
+.chat-remote-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-remote-host .remote-host-badge {
+  margin-left: 0;
+  cursor: pointer;
+}
+
+.chat-remote-note {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.chat-remote-warnings[hidden],
+.chat-remote-banner[hidden] {
+  display: none;
+}
+
+.chat-remote-warning {
+  padding: 4px 8px;
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.chat-remote-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.chat-remote-banner-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.chat-remote-reconnect {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-dim);
+  color: var(--text-primary);
+  font-size: var(--font-xs);
+  cursor: pointer;
+}
+
+.chat-remote-reconnect:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.chat-remote-reconnect:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* ── Git over ssh ─────────────────────────────────────────────────────────── */
+
+/* The Git panel while the host is away: a status line, not "not a repo". */
+.git-remote-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.git-remote-banner p {
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* Dashboard of a remote project whose host is not connected. */
+.dashboard-remote-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
+/* ── Remote files (explorer, Files screen, file tabs) ── */
+
+/* A remote root whose host is not connected: shown, not loaded. */
+.fe-remote-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.fe-remote-connect {
+  padding: 3px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: var(--font-xs);
+  cursor: pointer;
+}
+
+.fe-remote-connect:hover,
+.fe-remote-connect:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* The host of an Overview root, coloured by its connection state. */
+.fe-root-host {
+  --ssh-state: var(--text-muted);
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--ssh-state);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--font-2xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+  flex-shrink: 0;
+}
+
+.fe-root-host--connected { --ssh-state: var(--success); }
+.fe-root-host--connecting,
+.fe-root-host--reconnecting { --ssh-state: var(--warning); }
+.fe-root-host--authFailed,
+.fe-root-host--hostKeyChanged,
+.fe-root-host--unsupported { --ssh-state: var(--danger); }
+.fe-root-host--hostKeyUnknown { --ssh-state: var(--info); }
+
+/* A relative image in a remote markdown file: its alt text, not a local lookup. */
+.md-viewer-img-alt {
+  color: var(--text-muted);
+}
+
+/* ---- Local-only features, disabled for a remote project (slice 7) ---- */
+
+/* Controls greyed by a remote-capabilities row: still focusable, so their
+   tooltip (the reason) shows, and a click explains itself with a toast. */
+.pt-new-run-btn.is-disabled,
+.pt-empty-runs-cta.is-disabled,
+.pt-select-option.is-disabled,
+.cp-pick-item.is-disabled,
+.auto-pchip.is-disabled,
+.wf-dropdown-item.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pt-select-option.is-disabled:hover,
+.cp-pick-item.is-disabled:hover,
+.wf-dropdown-item.is-disabled:hover {
+  background: transparent;
+}
+
+/* Remote projects whose project-scoped MCP servers are not listed. */
+.mcp-remote-note {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 12px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+}
+
+.mcp-remote-note-projects {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* A workflow picker with a remote project selected: why its run is refused. */
+.wf-field-hint--remote {
+  color: var(--warning);
+}

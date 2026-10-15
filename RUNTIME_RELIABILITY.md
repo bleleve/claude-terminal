@@ -28,8 +28,8 @@ bundled Electron executable in Node mode so native database modules use the same
 Renderer filesystem access is limited to app data, registered projects/worktrees, and
 paths selected through native dialogs. App resources and the Claude global configuration
 are read-only through this generic bridge; MCP changes use guarded main-process writers.
-Main-frame IPC senders and exact application document URLs are checked. Only microphone
-requests from the main application document are allowed. Main, setup, Quick Picker and
+Main-frame IPC senders and exact application document URLs are checked. Microphone and sanitized clipboard-write
+requests are restricted to the main application document. Main, setup, Quick Picker and
 notification windows are sandboxed. The preload imports only Electron; native filesystem
 operations execute in the main process through an explicit, authorized IPC allowlist.
 Legacy synchronous callers remain supported; asynchronous callers use invoke handlers.
@@ -45,7 +45,8 @@ file. Exports retry from the beginning using the same result data.
 
 ## Local recovery and long operations
 
-Settings search filters every sub-tab at once on localized labels and descriptions.
+Settings search filters every sub-tab at once on localized labels and descriptions,
+command-palette links and the legacy-backup controls included.
 A word that matches neither is tried again against the English original each string
 was translated from, and against a small synonym table, so `shortcut` finds
 "Raccourcis" and "autorisations" finds Permissions. Labels only: a token or a
@@ -85,7 +86,7 @@ covered separately by `npm run test:runtime`. Neither test uses a production pro
 
 The hub now paginates the complete KV catalogue and stores import counts and hourly
 submission quotas in per-workflow/per-IP SQLite Durable Objects. The migration is in
-`hub-worker/wrangler.toml`; applying it requires deploying the fork's Worker configuration.
+`hub-worker/wrangler.toml`; applying it requires deploying the updated Worker configuration.
 Existing import totals seed each counter on its first increment. Quotas start a fresh
 window when upgrading. Catalogue documents and their 60-second index still use KV's
 eventual consistency; import increments no longer rewrite workflow documents.

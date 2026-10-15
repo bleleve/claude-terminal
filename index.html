@@ -80,15 +80,11 @@
       </div>
       <button class="update-btn" id="update-btn" style="display: none;" data-i18n="ui.restartToUpdate">Restart to update</button>
       <button class="update-changelog-toggle" id="update-changelog-toggle" style="display: none;">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M7 10l5 5 5-5z"/></svg>
         <span data-i18n="updates.whatsNew">What's new</span>
       </button>
       <button class="update-dismiss" id="update-dismiss" data-i18n-title="common.close">
         <svg viewBox="0 0 12 12"><path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
       </button>
-    </div>
-    <div class="update-changelog" id="update-changelog" style="display: none;">
-      <div class="update-changelog-content" id="update-changelog-content"></div>
     </div>
   </div>
 
@@ -193,6 +189,13 @@
             <path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/>
           </svg>
           <span data-i18n="ui.tabTimeTracking">Time Tracking</span>
+        </button>
+        <button class="nav-tab" data-tab="cost" title="Cost" data-i18n-title="ui.tooltipCost">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="2" x2="12" y2="22"/>
+            <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+          </svg>
+          <span data-i18n="cost.tabTitle">Cost</span>
         </button>
         <button class="nav-tab" data-tab="database" title="Database" data-i18n-title="ui.tooltipDatabase">
           <svg viewBox="0 0 24 24" fill="currentColor">
@@ -427,6 +430,9 @@
             <div class="panel-actions">
               <button class="btn-icon" id="btn-new-folder" data-i18n-title="projects.newFolder" aria-label="New folder">
                 <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-1 8h-3v3h-2v-3h-3v-2h3V9h2v3h3v2z"/></svg>
+              </button>
+              <button class="btn-icon" id="btn-new-remote-project" data-i18n-title="ssh.openRemoteProject" title="Open remote project" aria-label="Open remote project">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 3h16a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm0 10h16a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1zm3-7.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm0 10a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z"/></svg>
               </button>
               <button class="btn-icon" id="btn-new-project" data-i18n-title="common.new" aria-label="New project">
                 <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
@@ -782,7 +788,7 @@
                   <button class="database-picker-trigger" id="database-picker-trigger"></button>
                   <div class="database-picker-dropdown" id="database-picker-dropdown"></div>
                 </div>
-                <button class="btn-sm" id="database-detect-btn" data-i18n="database.autoDetect">Auto-detect</button>
+                <button class="btn-sm btn-secondary" id="database-detect-btn" data-i18n="database.autoDetect">Auto-detect</button>
                 <button class="btn-sm btn-accent" id="database-add-btn" data-i18n="database.addConnection">Add Connection</button>
               </div>
             </div>
@@ -816,6 +822,11 @@
       </div>
       <div class="tab-content" id="tab-errorlog">
         <div id="errorlog-panel-root"></div>
+      </div>
+
+      <!-- Cost Tab -->
+      <div class="tab-content" id="tab-cost">
+        <div id="cost-panel-root"></div>
       </div>
 
       <!-- Cloud Tab -->

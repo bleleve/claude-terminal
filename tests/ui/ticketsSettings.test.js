@@ -10,25 +10,25 @@
 const { mountTicketsSettings } = require('../../src/renderer/ui/components/ticketsSettings');
 const { t } = require('../../src/renderer/i18n');
 
-const LINEAR = {
-  id: 'linear',
-  name: 'Linear',
-  auth: { type: 'apiKey', helpUrl: 'https://linear.app/settings/account/security' },
-  capabilities: { priority: true, labels: true, estimate: true, comments: true, write: [] },
+const TRACKER = {
+  id: 'fake',
+  name: 'Fake Tracker',
+  auth: { type: 'apiKey', helpUrl: 'https://example.com/settings/tokens' },
+  capabilities: { priority: false, labels: true, estimate: false, comments: true, write: [] },
 };
 
 const CONNECTION = {
-  id: 'linear-abc',
-  provider: 'linear',
-  providerName: 'Linear',
-  workspace: { id: 'org-acme', name: 'Acme', url: 'https://linear.app/acme' },
+  id: 'fake-abc',
+  provider: 'fake',
+  providerName: 'Fake Tracker',
+  workspace: { id: 'acme', name: 'Acme', url: 'https://example.com/acme' },
   user: { id: 'u-ada', name: 'Ada Lovelace', avatarUrl: null },
   connectedAt: '2026-10-09T09:00:00.000Z',
-  maskedKey: 'lin_api_••••0000',
+  maskedKey: 'fake_••••0000',
   available: true,
 };
 
-function makeApi({ providers = [LINEAR], connections = [] } = {}) {
+function makeApi({ providers = [TRACKER], connections = [] } = {}) {
   const state = { connections: [...connections] };
   return {
     state,
@@ -57,13 +57,13 @@ beforeEach(() => {
 });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
-const card = () => root.querySelector('.tickets-provider[data-provider="linear"]');
+const card = () => root.querySelector('.tickets-provider[data-provider="fake"]');
 const status = () => card().querySelector('.tickets-status');
 
 test('draws one card per provider, with its help link', async () => {
   await mountTicketsSettings(root, { api: makeApi() });
   expect(root.querySelectorAll('.tickets-provider')).toHaveLength(1);
-  expect(card().querySelector('.tickets-provider-name').textContent).toBe('Linear');
+  expect(card().querySelector('.tickets-provider-name').textContent).toBe('Fake Tracker');
   expect(card().querySelector('.tickets-connection')).toBeNull();
   expect(card().querySelector('.tickets-connect').textContent).toBe(t('tickets.settings.connect'));
 });
@@ -72,7 +72,7 @@ test('a connected workspace shows its user and the masked key', async () => {
   await mountTicketsSettings(root, { api: makeApi({ connections: [CONNECTION] }) });
   const conn = card().querySelector('.tickets-connection');
   expect(conn.querySelector('.tickets-connection-workspace').textContent).toBe('Acme');
-  expect(conn.querySelector('.tickets-connection-meta').textContent).toContain('lin_api_••••0000');
+  expect(conn.querySelector('.tickets-connection-meta').textContent).toContain('fake_••••0000');
   expect(conn.querySelector('.tickets-avatar').textContent).toBe('AL');
   expect(card().querySelector('.tickets-connect').textContent).toBe(t('tickets.settings.connectAnother'));
 });
@@ -80,12 +80,12 @@ test('a connected workspace shows its user and the masked key', async () => {
 test('connect sends the key once, clears the input, and shows the new workspace', async () => {
   const api = makeApi();
   await mountTicketsSettings(root, { api });
-  card().querySelector('.tickets-key-input').value = '  lin_api_secret  ';
+  card().querySelector('.tickets-key-input').value = '  fake_secret_key  ';
   card().querySelector('.tickets-connect').click();
   await flush();
   await flush();
-  expect(api.issueTrackers.connect).toHaveBeenCalledWith('linear', 'lin_api_secret');
-  expect(root.innerHTML).not.toContain('lin_api_secret');
+  expect(api.issueTrackers.connect).toHaveBeenCalledWith('fake', 'fake_secret_key');
+  expect(root.innerHTML).not.toContain('fake_secret_key');
   expect(card().querySelector('.tickets-connection-workspace').textContent).toBe('Acme');
   expect(status().textContent).toBe(t('tickets.settings.connected', { workspace: 'Acme' }));
   expect(status().dataset.kind).toBe('ok');
@@ -95,7 +95,7 @@ test('Enter in the key field connects too', async () => {
   const api = makeApi();
   await mountTicketsSettings(root, { api });
   const input = card().querySelector('.tickets-key-input');
-  input.value = 'lin_api_secret';
+  input.value = 'fake_secret_key';
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   await flush();
   expect(api.issueTrackers.connect).toHaveBeenCalledTimes(1);
@@ -113,13 +113,13 @@ test('an empty key sends nothing', async () => {
 test.each([
   ['AUTH', () => t('tickets.settings.errorAuth')],
   ['RATE_LIMITED', () => t('tickets.settings.errorRateLimited')],
-  ['NETWORK', () => t('tickets.settings.errorNetwork', { provider: 'Linear' })],
-  ['PROVIDER', () => t('tickets.settings.errorProvider', { provider: 'Linear', message: 'Boom' })],
+  ['NETWORK', () => t('tickets.settings.errorNetwork', { provider: 'Fake Tracker' })],
+  ['PROVIDER', () => t('tickets.settings.errorProvider', { provider: 'Fake Tracker', message: 'Boom' })],
 ])('a %s failure is explained, and the key still leaves the input', async (code, expected) => {
   const api = makeApi();
   api.issueTrackers.connect.mockResolvedValueOnce({ ok: false, code, error: 'Boom' });
   await mountTicketsSettings(root, { api });
-  card().querySelector('.tickets-key-input').value = 'lin_api_wrong';
+  card().querySelector('.tickets-key-input').value = 'fake_wrong';
   card().querySelector('.tickets-connect').click();
   await flush();
   expect(card().querySelector('.tickets-key-input').value).toBe('');
@@ -134,7 +134,7 @@ test('disconnect removes the connection', async () => {
   card().querySelector('.tickets-disconnect').click();
   await flush();
   await flush();
-  expect(api.issueTrackers.disconnect).toHaveBeenCalledWith('linear-abc');
+  expect(api.issueTrackers.disconnect).toHaveBeenCalledWith('fake-abc');
   expect(card().querySelector('.tickets-connection')).toBeNull();
 });
 
@@ -143,7 +143,7 @@ test('test reports whether the stored key still works', async () => {
   await mountTicketsSettings(root, { api });
   card().querySelector('.tickets-test').click();
   await flush();
-  expect(api.issueTrackers.test).toHaveBeenCalledWith('linear-abc');
+  expect(api.issueTrackers.test).toHaveBeenCalledWith('fake-abc');
   expect(status().textContent).toBe(t('tickets.settings.testOk'));
 
   api.issueTrackers.test.mockResolvedValueOnce({ ok: false, code: 'AUTH', error: 'x' });
@@ -156,7 +156,7 @@ test('the help link opens the provider page outside the app', async () => {
   const api = makeApi();
   await mountTicketsSettings(root, { api });
   card().querySelector('.tickets-help-link').click();
-  expect(api.dialog.openExternal).toHaveBeenCalledWith('https://linear.app/settings/account/security');
+  expect(api.dialog.openExternal).toHaveBeenCalledWith('https://example.com/settings/tokens');
 });
 
 test('names from the network are escaped', async () => {

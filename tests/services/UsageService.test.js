@@ -9,6 +9,9 @@
  * than a silent blank bar.
  */
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { readBuckets } = require('../../src/main/services/UsageService');
 
 /** A response captured from /api/oauth/usage, trimmed to the fields we read. */
@@ -329,6 +332,79 @@ describe('OAuth token cache', () => {
         expect(usage.getUsageData().retryAt).toBeNull();
       } finally { clock.mockRestore(); }
     });
+
+    // The chip reads getUsageData on its 30 s poll and getFetchState on an
+    // explicit refresh. Only the first carried this, so the tooltip naming the
+    // next attempt never showed on the path a user takes when they notice the
+    // chip has stopped — which is the path this was added for.
+    test('the refresh path is told the same thing the poll is', async () => {
+      const usage = load();
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
+      try {
+        readCredentials.mockResolvedValue(null);
+        await usage.fetchUsage();
+
+        expect(usage.getFetchState().retryAt).toBe(usage.getUsageData().retryAt);
+        expect(usage.getFetchState().retryAt).not.toBeNull();
+      } finally { clock.mockRestore(); }
+    });
+
+    // Capping the interval bounds how often, not how long. A store that is
+    // refused permanently would be reopened once an hour for as long as the
+    // app is up, and on darwin each of those is a password dialog raised
+    // behind the window — the timer-driven prompt the original `Infinity` was
+    // there to prevent, just slower.
+    test('stops reopening the store for good once the cause is clearly not transient', async () => {
+      const usage = load();
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
+      try {
+        readCredentials.mockResolvedValue(null);
+        let at = start;
+        // Eight failures: 5, 10, 20, 40, 60, 60, 60, 60.
+        for (const wait of [5, 10, 20, 40, 60, 60, 60, 60]) {
+          await usage.fetchUsage();
+          at += wait * MINUTE + 1000;
+          clock.mockReturnValue(at);
+        }
+        const readsWhileTrying = readCredentials.mock.calls.length;
+        expect(readsWhileTrying).toBe(8);
+
+        // A day of polling later, the store has not been touched again.
+        clock.mockReturnValue(at + 24 * 60 * MINUTE);
+        await usage.fetchUsage();
+        clock.mockReturnValue(at + 48 * 60 * MINUTE);
+        await usage.fetchUsage();
+
+        expect(readCredentials.mock.calls.length).toBe(readsWhileTrying);
+        expect(usage.getUsageData().gaveUp).toBe(true);
+        // Nothing is scheduled, so there is no time to name.
+        expect(usage.getUsageData().retryAt).toBeNull();
+      } finally { clock.mockRestore(); }
+    });
+
+    test('an explicit refresh lifts the give-up, so it is a pause not a dead end', async () => {
+      const usage = load();
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
+      try {
+        readCredentials.mockResolvedValue(null);
+        let at = start;
+        for (const wait of [5, 10, 20, 40, 60, 60, 60, 60]) {
+          await usage.fetchUsage();
+          at += wait * MINUTE + 1000;
+          clock.mockReturnValue(at);
+        }
+        expect(usage.getUsageData().gaveUp).toBe(true);
+
+        readCredentials.mockResolvedValue(validCreds('after-login'));
+        await usage.refreshUsage(null, true);
+
+        expect(usage.getUsageData().gaveUp).toBe(false);
+        expect(httpsGet.mock.calls.at(-1)[0].headers.Authorization).toBe('Bearer after-login');
+      } finally { clock.mockRestore(); }
+    });
   });
 
   /**
@@ -336,8 +412,8 @@ describe('OAuth token cache', () => {
    * looks like once nothing has used it for a few hours, which is exactly what
    * happens to one that hit its limit: the user moves to another account, the
    * CLI stops renewing this one's token, and it expires. Treated as a refusal
-   * it climbed the ladder to an hour between reads, so going back to the
-   * account left its chip on the last figure ever fetched for up to an hour.
+   * it climbed the ladder and was given up on overnight, so going back to the
+   * account the next morning left its chip on the last figure ever fetched.
    */
   describe('an expired token is not a refusal', () => {
     const MINUTE = 60 * 1000;
@@ -351,7 +427,7 @@ describe('OAuth token cache', () => {
       try {
         readCredentials.mockImplementation(async () => expiredCreds());
         let at = start;
-        // A refusal would wait 5, 10, 20, 40, then 60 minutes each time.
+        // A refusal would wait 5, 10, 20, 40, 60... and stop after eight.
         for (let i = 0; i < 12; i++) {
           await usage.fetchUsage();
           at += 5 * MINUTE + 1000;
@@ -360,6 +436,7 @@ describe('OAuth token cache', () => {
 
         expect(readCredentials).toHaveBeenCalledTimes(12);
         expect(httpsGet).not.toHaveBeenCalled();
+        expect(usage.getUsageData().gaveUp).toBe(false);
       } finally { clock.mockRestore(); }
     });
 
@@ -383,7 +460,7 @@ describe('OAuth token cache', () => {
       const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
       try {
         readCredentials.mockImplementation(async () => expiredCreds());
-        // Idle long enough that a refusal would be waiting an hour by now.
+        // Idle long enough that a refusal would have been given up on.
         let at = start;
         for (let i = 0; i < 10; i++) {
           await usage.fetchUsage();
@@ -431,6 +508,110 @@ describe('OAuth token cache', () => {
       expect(stale).toBe(true);
       expect(error).toMatch(/renews/);
       expect(error).not.toMatch(/\/login/);
+    });
+  });
+
+  /**
+   * On darwin the readers swallow a refused Keychain read and fall back to
+   * ~/.claude/.credentials.json, or to an account's seed file, which
+   * AccountManager rewrites from a snapshot whose token is usually long expired.
+   * Read as "the store answered with an expired token", that fallback reset the
+   * ladder, undid a give-up already reached and reopened the Keychain every five
+   * minutes for good. Only the Keychain itself answering can mean "expired".
+   * These run the real credential readers over a faked /usr/bin/security.
+   */
+  describe('on darwin, only the Keychain answering means expired', () => {
+    const MINUTE = 60 * 1000;
+    const KEYCHAIN_MODULE = '../../src/main/utils/macKeychain';
+    const realPlatform = process.platform;
+    const expiredCreds = () =>
+      ({ claudeAiOauth: { accessToken: 'expired', refreshToken: 'r', expiresAt: Date.now() - 1000 } });
+    let configDir;
+    let getPassword;
+
+    /** UsageService over the real claudeCredentials, the Keychain faked. */
+    function loadOverKeychain() {
+      load();
+      jest.resetModules();
+      jest.dontMock(CREDENTIALS_MODULE);
+      jest.doMock(KEYCHAIN_MODULE, () => ({ getPassword, setPassword: jest.fn(), deletePassword: jest.fn() }));
+      return require('../../src/main/services/UsageService');
+    }
+
+    beforeEach(() => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-usage-creds-'));
+      process.env.CLAUDE_CONFIG_DIR = configDir;
+      // The fallback file holds a token that ran out long ago.
+      fs.writeFileSync(path.join(configDir, '.credentials.json'), JSON.stringify(expiredCreds()));
+      getPassword = jest.fn();
+    });
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+      delete process.env.CLAUDE_CONFIG_DIR;
+      fs.rmSync(configDir, { recursive: true, force: true });
+      jest.dontMock(KEYCHAIN_MODULE);
+    });
+
+    test('a refused Keychain behind an expired file climbs the ladder and gives up', async () => {
+      getPassword.mockRejectedValue(new Error('User canceled the operation.'));
+      const usage = loadOverKeychain();
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
+      try {
+        let at = start;
+        // Every tick lands past the longest step, so only the give-up stops it.
+        for (let i = 0; i < 12; i++) {
+          await usage.fetchUsage();
+          at += 61 * MINUTE;
+          clock.mockReturnValue(at);
+        }
+
+        expect(getPassword).toHaveBeenCalledTimes(8);
+        expect(httpsGet).not.toHaveBeenCalled();
+        const { gaveUp, error } = usage.getUsageData();
+        expect(gaveUp).toBe(true);
+        expect(error).not.toMatch(/renews/);
+      } finally { clock.mockRestore(); }
+    });
+
+    test('a refused Keychain does not reopen on a flat five minutes', async () => {
+      getPassword.mockRejectedValue(new Error('User canceled the operation.'));
+      const usage = loadOverKeychain();
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
+      try {
+        let at = start;
+        for (let i = 0; i < 12; i++) {
+          await usage.fetchUsage();
+          at += 5 * MINUTE + 1000;
+          clock.mockReturnValue(at);
+        }
+
+        // 5, 10, 20 then 40 minutes apart: four reads in the first hour.
+        expect(getPassword).toHaveBeenCalledTimes(4);
+      } finally { clock.mockRestore(); }
+    });
+
+    test('a Keychain that answers with an expired token is rechecked on the flat interval', async () => {
+      getPassword.mockImplementation(async () => JSON.stringify(expiredCreds()));
+      const usage = loadOverKeychain();
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
+      try {
+        let at = start;
+        for (let i = 0; i < 12; i++) {
+          await usage.fetchUsage();
+          at += 5 * MINUTE + 1000;
+          clock.mockReturnValue(at);
+        }
+
+        expect(getPassword).toHaveBeenCalledTimes(12);
+        const { gaveUp, error } = usage.getUsageData();
+        expect(gaveUp).toBe(false);
+        expect(error).toMatch(/renews/);
+      } finally { clock.mockRestore(); }
     });
   });
 
@@ -781,12 +962,10 @@ describe('figures from the chat stream', () => {
   const CREDENTIALS_MODULE = '../../src/main/utils/claudeCredentials';
   const ACCOUNT_MANAGER = '../../src/main/services/AccountManager';
   const HOUR = 3600 * 1000;
-  // Resets ahead of now, whatever the day the suite runs: a figure past its
-  // reset reads as an idle window, so fixed dates turned these tests red the
-  // morning after they were written.
-  const NOW_S = Math.floor(Date.now() / 1000);
-  const SESSION_RESET = NOW_S + 3 * 3600;
-  const WEEKLY_RESET = NOW_S + 4 * 24 * 3600;
+  // Relative to now, in unix seconds as on the wire: fixed dates ran into the
+  // past and turned into reset windows, which asOfNow() rightly reads as 0%.
+  const SESSION_RESET = Math.floor(Date.now() / 1000) + 2 * 3600;
+  const WEEKLY_RESET = Math.floor(Date.now() / 1000) + 3 * 24 * 3600;
 
   let dataDir;
 
@@ -928,6 +1107,101 @@ describe('figures from the chat stream', () => {
       await usage.refreshUsage('acc-team');
       expect(usage.getUsageData('acc-team').stale).toBe(true);
     } finally { clock.mockRestore(); }
+  });
+
+  test('a refusal that names no reset keeps the one already on hand', async () => {
+    const usage = load([200]);
+    await usage.fetchUsage('acc-team');
+    usage.applyRateLimitInfo('acc-team', { status: 'rejected', rateLimitType: 'five_hour' });
+
+    const session = usage.getUsageData('acc-team').data.buckets[0];
+    expect(session.utilization).toBe(100);
+    expect(session.resetsAt).toBe('2099-01-01T00:00:00Z');
+  });
+
+  test('a refusal that names no reset does not borrow one already past', async () => {
+    const usage = load([200]);
+    await usage.fetchUsage('acc-team');
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2099-01-01T01:00:00Z'));
+    try {
+      usage.applyRateLimitInfo('acc-team', { status: 'rejected', rateLimitType: 'five_hour' });
+      // The fetched reset belongs to the window before: borrowed, this refusal
+      // would be served as an idle window.
+      const session = usage.getUsageData('acc-team').data.buckets[0];
+      expect(session.utilization).toBe(100);
+      expect(session.resetsAt).toBeNull();
+    } finally { clock.mockRestore(); }
+  });
+
+  test('mirrors the streamed figures for the MCP tools', async () => {
+    const usage = load([200]);
+    await usage.fetchUsage(null);
+    usage.applyRateLimitInfo(null, event(0.71, 0.33));
+
+    const mirror = JSON.parse(fs.readFileSync(path.join(dataDir, 'usage.json'), 'utf8'));
+    expect(mirror.buckets.slice(0, 2).map(b => [b.id, b.utilization])).toEqual([['session', 71], ['weekly', 33]]);
+    expect(mirror.streamedAt).not.toBeNull();
+  });
+
+  test('pushes the figures as of now, not as stored', async () => {
+    const usage = load([200]);
+    await usage.fetchUsage('acc-team');
+    const onUpdate = jest.fn();
+    usage.onUpdate(onUpdate);
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2099-01-03T00:00:00Z'));
+    try {
+      // Past the fetched session reset; the stream reports the weekly window only.
+      usage.applyRateLimitInfo('acc-team', {
+        unifiedWindows: { seven_day: { utilization: 0.5, resetsAt: Date.parse('2099-01-05T00:00:00Z') / 1000 } }
+      });
+    } finally { clock.mockRestore(); }
+
+    const pushed = onUpdate.mock.calls[0][0];
+    expect(pushed.buckets.find(b => b.id === 'session')).toMatchObject({ utilization: 0, resetsAt: null });
+    expect(pushed.buckets.find(b => b.id === 'weekly').utilization).toBe(50);
+  });
+
+  test('does not stand in for a fetch: lastFetch stays the fetch, and an old one is refetched', async () => {
+    const start = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
+    try {
+      const usage = load([200, 200]);
+      await usage.fetchUsage('acc-team');
+      const fetchedAt = usage.getUsageData('acc-team').lastFetch;
+
+      clock.mockReturnValue(start + 6 * 60 * 1000);
+      usage.applyRateLimitInfo('acc-team', event(0.5, 0.3));
+      expect(usage.getUsageData('acc-team').lastFetch).toBe(fetchedAt);
+
+      // The scoped limit and the extra-usage balance were not on the stream,
+      // so figures older than the caller's bound are still asked for.
+      const served = await usage.usageForAccount('acc-team');
+      expect(served.lastFetch).not.toBe(fetchedAt);
+    } finally { clock.mockRestore(); }
+  });
+
+  test('figures only the stream ever reported age out on its clock', () => {
+    const start = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
+    try {
+      const usage = load();
+      usage.applyRateLimitInfo(null, event(0.25, 0.35));
+      expect(usage.getUsageData(null).stale).toBe(false);
+      clock.mockReturnValue(start + 11 * 60 * 1000);
+      expect(usage.getUsageData(null).stale).toBe(true);
+    } finally { clock.mockRestore(); }
+  });
+
+  test('an account swap drops the stream clock along with the figures', async () => {
+    const usage = load([200]);
+    await usage.fetchUsage(null);
+    usage.applyRateLimitInfo(null, event(0.5, 0.3));
+    usage.invalidateCredentials();
+
+    // The incoming account's first failed fetch is not vouched for by the
+    // outgoing account's chat.
+    await usage.fetchUsage(null);
+    expect(usage.getUsageData(null).stale).toBe(true);
   });
 
   test('a failed fetch with no stream behind it is still badged at once', async () => {

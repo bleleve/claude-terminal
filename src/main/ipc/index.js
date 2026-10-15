@@ -40,10 +40,12 @@ const { registerWorkspaceHandlers } = require('./workspace.ipc');
 const { registerKnowledgeHandlers } = require('./knowledge.ipc');
 const { registerArtifactHandlers } = require('./artifacts.ipc');
 const { registerErrorLogHandlers } = require('./errorLog.ipc');
+const { registerCostHandlers } = require('./cost.ipc');
 const { registerAccountsHandlers } = require('./accounts.ipc');
 const { registerDiscordRpcHandlers } = require('./discord-rpc.ipc');
 const { registerPreviewHandlers } = require('./preview.ipc');
 const { registerProjectTypeHandlers } = require('./project-types.ipc');
+const { registerSshHandlers } = require('./ssh.ipc');
 
 /**
  * Register all IPC handlers
@@ -95,10 +97,12 @@ function registerAllHandlers(mainWindow) {
   registerKnowledgeHandlers();
   registerArtifactHandlers();
   registerErrorLogHandlers();
+  registerCostHandlers();
   registerAccountsHandlers();
   registerDiscordRpcHandlers();
   registerPreviewHandlers();
   registerProjectTypeHandlers();
+  registerSshHandlers();
 
   // Wire terminal PTY exits → workflow triggers (no circular dep)
   const terminalService = require('../services/TerminalService');
@@ -132,7 +136,10 @@ function registerAllHandlers(mainWindow) {
       const raw = JSON.parse(fsModule.readFileSync(projectsFile, 'utf8'));
       const projects = Array.isArray(raw) ? raw : (raw.projects || []);
       let match = projectId ? projects.find((p) => p.id === projectId) : null;
-      if (!match && cwd) {
+      if (!match && cwd && require('../../shared/remote-path').isRemotePath(cwd)) {
+        // A remote URI is case-sensitive and never resolved against a local drive.
+        match = projects.find((p) => p.path === cwd);
+      } else if (!match && cwd) {
         const norm = (s) => pathModule.resolve(String(s)).toLowerCase();
         const target = norm(cwd);
         match = projects.find((p) => p.path && norm(p.path) === target);
@@ -144,7 +151,9 @@ function registerAllHandlers(mainWindow) {
 
   // Second presence line: current git branch, else the project type.
   const resolveSubtitle = async (cwd, type) => {
-    if (cwd) {
+    // A remote (SSH) session's cwd is an ssh-remote:// URI: its branch lives on
+    // the host, and the presence line is not worth a request there.
+    if (cwd && !require('../../shared/remote-path').isRemotePath(cwd)) {
       try {
         const { getCurrentBranch } = require('../utils/git');
         const branch = await getCurrentBranch(cwd);

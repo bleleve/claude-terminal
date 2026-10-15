@@ -11,6 +11,8 @@ const { State } = require('./State');
 const { projectsFile, dataDir } = require('../utils/paths');
 const { mergeProjectsData, snapshot, deepEqual } = require('./projects.merge');
 const { t } = require('../i18n');
+const remotePath = require('../../shared/remote-path');
+const { isRemoteProject } = require('../../shared/remote-capabilities');
 
 // Initial state
 const initialState = {
@@ -224,6 +226,77 @@ async function createCorruptedBackup(filePath) {
 }
 
 /**
+ * Re-root anything whose parent chain is broken or circular.
+ *
+ * A folder that ends up as its own ancestor is rendered nowhere: it is missing
+ * from rootOrder and the tree walk never reaches it through a parent, so it
+ * looks deleted while still sitting in the file. The drop handlers refuse to
+ * create that state, but a file written by an older build - or by another
+ * process - can still hold it, so the load path repairs it instead of
+ * inheriting it. Nesting is lost for the folders involved; their contents are
+ * not.
+ * @param {Array} folders
+ * @param {Array} projects
+ * @param {Array} rootOrder - mutated in place
+ * @returns {boolean} true when something was repaired
+ */
+function repairBrokenParents(folders, projects, rootOrder) {
+  let repaired = false;
+  const byId = new Map(folders.map(f => [f.id, f]));
+
+  // Reads live objects, so a folder repaired earlier in the pass counts as a
+  // valid parent for the ones checked after it.
+  const reachesRoot = (folder) => {
+    const seen = new Set([folder.id]);
+    let parentId = folder.parentId;
+    while (parentId) {
+      if (seen.has(parentId)) return false;
+      const parent = byId.get(parentId);
+      if (!parent) return false;
+      seen.add(parentId);
+      parentId = parent.parentId;
+    }
+    return true;
+  };
+
+  const reroot = (item, key) => {
+    item[key] = null;
+    if (!rootOrder.includes(item.id)) rootOrder.push(item.id);
+    repaired = true;
+  };
+
+  folders.forEach(folder => {
+    if (folder.children && folder.children.includes(folder.id)) {
+      folder.children = folder.children.filter(id => id !== folder.id);
+      repaired = true;
+    }
+    if (folder.parentId && !reachesRoot(folder)) reroot(folder, 'parentId');
+  });
+
+  projects.forEach(project => {
+    if (project.folderId && !byId.has(project.folderId)) reroot(project, 'folderId');
+  });
+
+  // `children` is the display order; `parentId`/`folderId` is the truth. A
+  // subfolder missing from its parent's children array is drawn nowhere while
+  // still being counted in that parent's badge, so put it back. Runs after the
+  // re-rooting above, on the parents items actually ended up under.
+  const adopt = (parentId, childId) => {
+    const parent = byId.get(parentId);
+    if (!parent) return;
+    parent.children = parent.children || [];
+    if (parent.children.includes(childId)) return;
+    parent.children.push(childId);
+    repaired = true;
+  };
+
+  folders.forEach(folder => { if (folder.parentId) adopt(folder.parentId, folder.id); });
+  projects.forEach(project => { if (project.folderId) adopt(project.folderId, project.id); });
+
+  return repaired;
+}
+
+/**
  * Load projects from file
  */
 async function loadProjects() {
@@ -328,10 +401,18 @@ async function loadProjects() {
         });
       }
 
-      projectsState.set({ projects, folders, rootOrder });
       // What we just read IS the disk content, so it is the baseline every
-      // later save merges against.
-      _diskBaseline = snapshot({ projects, folders, rootOrder });
+      // later save merges against — taken *before* the repair, so a re-rooted
+      // folder reads as a local edit. Baselined after, the merge would see no
+      // change of ours and take the broken parent back off the disk.
+      const diskState = snapshot({ projects, folders, rootOrder });
+
+      if (repairBrokenParents(folders, projects, rootOrder)) {
+        needsSave = true;
+      }
+
+      projectsState.set({ projects, folders, rootOrder });
+      _diskBaseline = diskState;
 
       if (needsSave) {
         saveProjects();
@@ -378,6 +459,10 @@ function saveProjects() {
   }
 
   saveDebounceTimer = setTimeout(() => {
+    // Fired: no longer pending. Left set, it read as "a save of ours is on
+    // its way" forever, and _checkExternalWrite() ignored every write by
+    // another process (MCP tools, a second window) after the first save.
+    saveDebounceTimer = null;
     if (saveInProgress) {
       // Another save is running, queue for after it finishes
       pendingSave = true;
@@ -436,11 +521,12 @@ async function saveProjectsImmediate() {
     return;
   }
 
-  saveInProgress = false;
   saveRetryCount = 0;
   _diskBaseline = snapshot(data);
-  // Remember our own write, so the watcher does not reload on it.
-  _statSignature().then(sig => { _lastSeenSignature = sig; });
+  // Remember our own write before the watcher can look again, so it does not
+  // reload on it: saveInProgress keeps the watcher out until this is known.
+  _lastSeenSignature = await _statSignature();
+  saveInProgress = false;
 
   // The merge may have brought back data we did not have (tasks added by an
   // MCP session, a worktree project). Adopt it so the UI stops being stale —
@@ -452,6 +538,27 @@ async function saveProjectsImmediate() {
     pendingSave = false;
     setTimeout(saveProjectsImmediate, 50);
   }
+}
+
+/**
+ * Write the projects now instead of after the debounce, and resolve once it is
+ * on disk. For a caller that hands a just-added project to the main process
+ * at once: main resolves a remote project's URI against projects.json, so a
+ * request sent inside the debounce window was refused as "not inside a
+ * registered remote project".
+ * @param {{timeoutMs?: number}} [opts] - how long to wait for a save already running
+ * @returns {Promise<void>}
+ */
+async function flushProjectsSave({ timeoutMs = 5000 } = {}) {
+  if (saveDebounceTimer) {
+    clearTimeout(saveDebounceTimer);
+    saveDebounceTimer = null;
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (saveInProgress && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  await saveProjectsImmediate();
 }
 
 // ── External write detection ────────────────────────────────────────────────
@@ -495,8 +602,27 @@ async function _checkExternalWrite() {
   }
   if (_sameSignature(sig, _lastSeenSignature)) return;
 
+  // A reload replaces the projects in memory with the file. loadProjects()
+  // answers an empty or unparseable file by starting fresh, and the next save
+  // would then merge that empty list against the baseline and delete every
+  // project. A file in that state is left alone, and looked at again on the
+  // next poll (its signature is not recorded).
+  if (!(await _diskParses())) return;
+
   _lastSeenSignature = sig;
   await loadProjects();
+}
+
+/** Whether projects.json holds JSON right now: false when absent, empty, unreadable or truncated. */
+async function _diskParses() {
+  try {
+    const raw = await fsp.readFile(projectsFile, 'utf8');
+    if (!raw || !raw.trim()) return false;
+    JSON.parse(raw);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Start watching projects.json for writes made by other processes. */
@@ -764,6 +890,9 @@ function toggleFolderCollapse(folderId) {
  *                        or null if input is invalid.
  */
 function addProject(projectData) {
+  if (projectData && (projectData.remote || remotePath.isRemotePath(projectData.path))) {
+    return _addRemoteProject(projectData);
+  }
   if (!projectData || typeof projectData.path !== 'string') return null;
 
   const rawPath = projectData.path.trim();
@@ -808,6 +937,73 @@ function addProject(projectData) {
       f.id === targetFolder.id
         ? { ...f, children: [...(f.children || []), project.id] }
         : f
+    );
+  } else {
+    project.folderId = null;
+    rootOrder = [...state.rootOrder, project.id];
+  }
+
+  projectsState.set({ projects, folders, rootOrder });
+  saveProjects();
+  return project;
+}
+
+/**
+ * Add a project that lives on an SSH host (design/remote-ssh.md section 3.2).
+ *
+ * The path is always the canonical `ssh-remote://<profileId><posix path>` URI,
+ * rebuilt here from the `remote` block rather than trusted as given, and the
+ * type is always `general`: project-type dashboards read local files.
+ *
+ * Dedupe is exact and case-sensitive on that URI. The local rule lowercases,
+ * which is right for Windows paths and wrong for POSIX ones: /home/A and
+ * /home/a are two folders.
+ *
+ * @param {Object} projectData - { name?, folderId?, remote: { profileId, path, hostLabel? } }
+ *   or a `path` that is already a URI
+ * @returns {Object|null}
+ */
+function _addRemoteProject(projectData) {
+  let profileId, posix;
+  try {
+    if (projectData.remote) {
+      profileId = projectData.remote.profileId;
+      posix = remotePath.toPosix(projectData.remote.path);
+    } else {
+      ({ profileId, path: posix } = remotePath.parse(projectData.path.trim()));
+    }
+    if (!remotePath.isValidProfileId(profileId) || typeof posix !== 'string' || !posix.startsWith('/') || posix === '/') return null;
+  } catch (_) {
+    return null;
+  }
+  const uri = remotePath.format(profileId, posix);
+
+  const state = projectsState.get();
+  const existing = state.projects.find(p => p.path === uri);
+  if (existing) return existing;
+
+  const hostLabel = typeof projectData.remote?.hostLabel === 'string' ? projectData.remote.hostLabel.slice(0, 200) : '';
+  const name = (projectData.name || '').trim() || remotePath.basename(posix) || posix;
+  const { remote: _ignored, path: _alsoIgnored, ...rest } = projectData;
+  const project = {
+    id: generateProjectId(),
+    folderId: null,
+    ...rest,
+    type: 'general',
+    name,
+    path: uri,
+    remote: { profileId, path: posix, hostLabel },
+  };
+  // Account bindings do not apply: the remote host has its own claude login.
+  delete project.accountId;
+
+  const projects = [...state.projects, project];
+  let folders = state.folders;
+  let rootOrder = state.rootOrder;
+  const targetFolder = project.folderId ? state.folders.find(f => f.id === project.folderId) : null;
+  if (targetFolder) {
+    folders = state.folders.map(f =>
+      f.id === targetFolder.id ? { ...f, children: [...(f.children || []), project.id] } : f
     );
   } else {
     project.folderId = null;
@@ -975,8 +1171,11 @@ function reorderItem(itemType, itemId, targetId, position) {
   if (!sourceFolder && !sourceProject) return;
   if (!targetFolder && !targetProject) return;
 
-  // Prevent folder from being moved into its descendants
-  if (sourceFolder && targetFolder && isDescendantOf(targetId, itemId)) return;
+  // Prevent a folder from landing inside itself. Reordering drops the item next
+  // to the target, so what matters is the target's *parent*, not the target: a
+  // folder dropped beside one of its own projects would otherwise become its own
+  // parent and disappear from the tree entirely.
+  if (sourceFolder && (targetParentId === itemId || isDescendantOf(targetParentId, itemId))) return;
 
   const sourceParentId = sourceFolder ? sourceFolder.parentId : (sourceProject ? sourceProject.folderId : null);
 
@@ -1624,6 +1823,9 @@ function setProjectAccount(projectId, accountId) {
  */
 function getProjectAccount(projectId) {
   const project = getProject(projectId);
+  // A remote project runs against the remote host's own claude login, so a
+  // binding (a hand-edited or synced one) has nothing to apply to.
+  if (isRemoteProject(project)) return null;
   return project?.accountId || null;
 }
 
@@ -1782,6 +1984,9 @@ async function checkMissingPaths() {
   const { projects } = projectsState.get();
   const checks = projects.map(async (p) => {
     if (!p.path) return null;
+    // A remote project's URI never exists locally, and probing it would only
+    // ever flag it. Its reachability is the host badge's business.
+    if (isRemoteProject(p)) return null;
     try { await fsp.access(p.path); return null; } catch { return p.id; }
   });
   const results = await Promise.all(checks);
@@ -1817,6 +2022,7 @@ module.exports = {
   loadProjects,
   saveProjects,
   saveProjectsImmediate,
+  flushProjectsSave,
   startExternalWatch,
   stopExternalWatch,
   createFolder,

@@ -79,6 +79,66 @@ describe('attachWebglAddon', () => {
     await expect(attachWebglAddon(null)).resolves.toBe(false);
     await expect(attachWebglAddon({ element: null })).resolves.toBe(false);
   });
+
+  // The escape hatch for #207. A glyph atlas that disagrees with the font's
+  // real metrics is driver-specific and cannot be probed for, and --disable-gpu
+  // does not avoid it: Electron still answers getContext('webgl2') through
+  // SwiftShader. Only this setting takes the renderer out of the picture, so it
+  // has to work without the module even looking for a context.
+  it('never reaches for a context when the renderer is turned off', async () => {
+    const { attachWebglAddon } = require(LOADER);
+    const terminal = fakeTerminal();
+    const spy = jest.spyOn(canvasProto, 'getContext');
+
+    await expect(attachWebglAddon(terminal, { enabled: false })).resolves.toBe(false);
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(terminal.loadAddon).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('is on when the caller says nothing, so the setting is opt-out', async () => {
+    const { attachWebglAddon } = require(LOADER);
+    const terminal = fakeTerminal();
+    const spy = jest.spyOn(canvasProto, 'getContext');
+
+    await attachWebglAddon(terminal);
+
+    // It still resolves false here (jsdom has no WebGL2), but it looked.
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+});
+
+describe('clearGlyphAtlas', () => {
+  beforeEach(() => jest.resetModules());
+
+  // The atlas holds glyphs rasterised for the grid in force when it was cut.
+  // Changing the font size and redrawing from it lays the new size out on the
+  // old advance widths, which is the same ghosting/offset the renderer toggle
+  // exists for — except this one we cause ourselves.
+  it('drops the cached atlas of a terminal that has one', () => {
+    const { clearGlyphAtlas } = require(LOADER);
+    const clearTextureAtlas = jest.fn();
+
+    clearGlyphAtlas({ _ctWebglAddon: { clearTextureAtlas } });
+
+    expect(clearTextureAtlas).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op on a DOM-rendered terminal, which has no atlas', () => {
+    const { clearGlyphAtlas } = require(LOADER);
+
+    expect(() => clearGlyphAtlas({})).not.toThrow();
+    expect(() => clearGlyphAtlas(null)).not.toThrow();
+  });
+
+  it('survives an addon disposed underneath it', () => {
+    const { clearGlyphAtlas } = require(LOADER);
+    const addon = { clearTextureAtlas: () => { throw new Error('disposed'); } };
+
+    expect(() => clearGlyphAtlas({ _ctWebglAddon: addon })).not.toThrow();
+  });
 });
 
 describe('loadXterm', () => {
@@ -99,5 +159,67 @@ describe('loadXterm', () => {
     const second = mod.loadXterm();
     // A cached rejected promise would make the first flaky failure permanent.
     await expect(second).rejects.toBeDefined();
+  });
+});
+
+describe('trackForRepaintOnReturn', () => {
+  const originalProcess = window.electron_nodeModules.process;
+
+  function fakeTerminal() {
+    const element = document.createElement('div');
+    document.body.appendChild(element);
+    return { element, rows: 24, refresh: jest.fn() };
+  }
+  function fakeWebgl() {
+    return { clearTextureAtlas: jest.fn(), onContextLoss: jest.fn() };
+  }
+  const nextFrame = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+  beforeEach(() => jest.resetModules());
+  afterEach(() => {
+    window.electron_nodeModules.process = originalProcess;
+    document.body.innerHTML = '';
+  });
+
+  it('re-cuts the atlas once per return on Linux, even when focus and visibility both fire', async () => {
+    window.electron_nodeModules.process = { ...originalProcess, platform: 'linux' };
+    const { trackForRepaintOnReturn } = require(LOADER);
+    const terminal = fakeTerminal();
+    const webgl = fakeWebgl();
+    trackForRepaintOnReturn(terminal, webgl);
+
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    await nextFrame();
+
+    expect(webgl.clearTextureAtlas).toHaveBeenCalledTimes(1);
+    expect(terminal.refresh).toHaveBeenCalledWith(0, 23);
+  });
+
+  it('forgets a terminal once it is closed', async () => {
+    window.electron_nodeModules.process = { ...originalProcess, platform: 'linux' };
+    const { trackForRepaintOnReturn } = require(LOADER);
+    const terminal = fakeTerminal();
+    const webgl = fakeWebgl();
+    trackForRepaintOnReturn(terminal, webgl);
+
+    terminal.element.remove();
+    window.dispatchEvent(new Event('focus'));
+    await nextFrame();
+
+    expect(webgl.clearTextureAtlas).not.toHaveBeenCalled();
+  });
+
+  it('does nothing off Linux, where the fault has not been seen', async () => {
+    window.electron_nodeModules.process = { ...originalProcess, platform: 'win32' };
+    const { trackForRepaintOnReturn } = require(LOADER);
+    const webgl = fakeWebgl();
+    trackForRepaintOnReturn(fakeTerminal(), webgl);
+
+    window.dispatchEvent(new Event('focus'));
+    await nextFrame();
+
+    expect(webgl.onContextLoss).not.toHaveBeenCalled();
+    expect(webgl.clearTextureAtlas).not.toHaveBeenCalled();
   });
 });

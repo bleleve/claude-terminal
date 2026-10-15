@@ -9,7 +9,12 @@
 
 const { t } = require('../../../i18n');
 
-function createContextSuggestions(api, project, inputAdapter, getDefaultPlaceholder) {
+/**
+ * @param {Function} [mayRead]  whether the project may be read now: false for
+ *   a remote project whose host is not connected, which is then left alone
+ *   rather than connected for a hint
+ */
+function createContextSuggestions(api, project, inputAdapter, getDefaultPlaceholder, mayRead = () => true) {
   const CACHE_TTL = 30_000;
   const ROTATION_INTERVAL = 4_000;
 
@@ -31,7 +36,11 @@ function createContextSuggestions(api, project, inputAdapter, getDefaultPlacehol
   }
 
   async function refresh() {
-    if (!project?.path || _refreshing) return;
+    if (_refreshing) return;
+    // Nothing to read (no project, or a remote host that is not connected):
+    // still put the default back, or the "queue a follow-up" placeholder the
+    // last turn set would stay on an idle composer.
+    if (!project?.path || !mayRead()) { suggestions = []; _start(); return; }
     _refreshing = true;
     const now = Date.now();
     if (cache && now - cache.timestamp < CACHE_TTL) {
@@ -57,7 +66,12 @@ function createContextSuggestions(api, project, inputAdapter, getDefaultPlacehol
 
   function _start() {
     stop();
-    if (!suggestions.length) return;
+    if (!suggestions.length) {
+      // Called after every turn: with no hint to show, the placeholder must
+      // still go back from "queue a follow-up" to the default one.
+      if (inputAdapter.isEmpty()) inputAdapter.setPlaceholder(getDefaultPlaceholder());
+      return;
+    }
     currentIndex = 0;
     _apply();
     if (suggestions.length > 1) {

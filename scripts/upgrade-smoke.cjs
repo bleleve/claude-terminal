@@ -96,8 +96,14 @@ app.whenReady().then(async () => {
   assert.equal(await search('zzzznotasetting'), 0);
   assert(await emptyShown());
 
-  // Clearing leaves search mode, so the panel is usable again afterwards.
-  await search('');
+  // A recovery control is reachable by its own label, like any other row.
+  await js(`(() => { const input = document.querySelector('#settings-search-input'); input.value = document.querySelector('[data-section="secret-backups"] .settings-label > div').textContent; input.dispatchEvent(new Event('input')); })()`);
+  assert(await js('document.querySelectorAll(".settings-search-match .settings-row:not(.settings-search-hidden)").length > 0'));
+
+  // The clear button empties the field, hands focus back to it and leaves
+  // search mode, so the panel is usable again afterwards.
+  await js("document.querySelector('#settings-search-clear').click()");
+  assert(await js("document.activeElement.id === 'settings-search-input' && document.activeElement.value === ''"));
   assert(await js('!document.querySelector(".settings-inline-wrapper").classList.contains("settings-search-active")'));
   await wait(200);
   if (process.env.CT_UPGRADE_SCREENSHOT) fs.writeFileSync(process.env.CT_UPGRADE_SCREENSHOT, (await window.webContents.capturePage()).toPNG());

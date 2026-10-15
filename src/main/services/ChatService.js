@@ -18,6 +18,11 @@ const { isCliFailureText } = require('../../shared/cli-failure-text');
 const { isApiErrorMessage } = require('../../shared/api-error');
 const { isPermissionMode } = require('../../shared/permission-modes');
 
+// Remote (SSH) sessions only, so required on first use: a local session never
+// loads the ssh modules.
+const isRemotePath = (value) => require('../../shared/remote-path').isRemotePath(value);
+const sshClaudeSpawnLib = () => require('../utils/sshClaudeSpawn');
+
 /**
  * SDKAssistantMessageError codes that mean *this account* cannot run the turn
  * and another one could. A refusal, an overloaded upstream or a bad request
@@ -385,6 +390,20 @@ class ChatService {
   }
 
   /**
+   * Whether a CLI session id is one of this service's live chat sessions.
+   * Chat sessions load the user's settings, so the app's own Claude hooks
+   * fire for them as well; a hook consumer that already follows chat through
+   * this service asks here to skip the duplicate.
+   */
+  ownsCliSession(cliSessionId) {
+    if (!cliSessionId) return false;
+    for (const session of this.sessions.values()) {
+      if (session.sdkSessionId === cliSessionId || session.resumedCliSessionId === cliSessionId) return true;
+    }
+    return false;
+  }
+
+  /**
    * Subscribe to every chat event this service dispatches, as raw
    * `(channel, data)` pairs — the same stream the renderer window receives.
    *
@@ -666,7 +685,7 @@ class ChatService {
    * @param {string[]} [params.disallowedTools] - Tools to withhold from the session.
    * @returns {Promise<string>} Session ID
    */
-  async startSession({ cwd, projectId = null, accountId = null, prompt, permissionMode = 'default', resumeSessionId = null, sessionId = null, images = [], documents = [], mentions = [], model = null, enable1MContext = false, forkSession = false, resumeSessionAt = null, resumeDropsTurn = null, effort = null, outputFormat = null, skills = null, systemPrompt = null, settingSources = null, maxTurns = null, cloud = false, cloudProjectName = null, userMessageUuid = null, persistSession = true, allowedTools = null, disallowedTools = null }) {
+  async startSession({ cwd, projectId = null, accountId = null, prompt, permissionMode = 'default', resumeSessionId = null, sessionId = null, images = [], documents = [], mentions = [], model = null, enable1MContext = false, forkSession = false, resumeSessionAt = null, resumeDropsTurn = null, effort = null, outputFormat = null, skills = null, systemPrompt = null, settingSources = null, maxTurns = null, cloud = false, cloudProjectName = null, userMessageUuid = null, persistSession = true, allowedTools = null, disallowedTools = null, remote = null }) {
     if (!sessionId) sessionId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     // Cloud session: delegate to cloud server instead of local SDK
@@ -678,7 +697,8 @@ class ChatService {
     // A retry under the same handle must release the previous query first.
     this.closeSession(sessionId);
     const abortController = new AbortController();
-    const session = { abortController, cwd, projectId };
+    // A plain resume keeps the CLI's id; until `init` confirms it, this is the only record of it.
+    const session = { abortController, cwd, projectId, resumedCliSessionId: (resumeSessionId && !forkSession) ? resumeSessionId : null };
     this.sessions.set(sessionId, session);
     this._send('chat-initializing', { sessionId });
 
@@ -713,12 +733,18 @@ class ChatService {
       // overlay points the CLI's credential store at the account's own
       // directory, leaving everything else in ~/.claude shared. Unbound
       // projects keep reading the machine-wide login.
-      const accountOverlay = await AccountManager.accountEnv(accountId);
+      //
+      // A remote (SSH) session has none of that: its CLI runs on the host
+      // under the host's own `claude /login`.
+      const accountOverlay = remote ? null : await AccountManager.accountEnv(accountId);
       abortController.signal.throwIfAborted();
       if (accountOverlay) runtime.env = { ...runtime.env, ...accountOverlay };
       // Only the child environment changes; other startups may be awaiting SDK/account data.
       delete runtime.env.CLAUDECODE;
-      const effectiveCwd = cwd || require('os').homedir();
+      // A remote session's directory exists only on its host. The SDK gets
+      // the local home directory, so any check it makes locally passes, and
+      // the spawn hook below enters the remote one.
+      const effectiveCwd = remote ? require('os').homedir() : (cwd || require('os').homedir());
       // An allowlist is what makes a session hands-free, so it is also what
       // marks it unattended. An empty array is not a restriction.
       const effectiveMaxTurns = maxTurns
@@ -770,6 +796,24 @@ class ChatService {
         }
       };
 
+      // Remote (SSH) project: same query, but the CLI is spawned on the host
+      // through ssh. The SDK only wires `stderr` for its own local spawn, so
+      // the hook pipes the child's stderr into the same sink.
+      if (remote) {
+        options.spawnClaudeCodeProcess = sshClaudeSpawnLib().createRemoteSpawn({
+          launch: remote.launch,
+          remotePath: remote.remotePath,
+          claude: remote.claude,
+          loginPath: remote.loginPath,
+          onStderr: options.stderr,
+          // How ssh ended, which the SDK's own error does not always say
+          // (see classifyRemoteChatFailure)
+          onExit: (exit) => {
+            if (this.sessions.get(sessionId) === session) session._remoteExit = exit;
+          },
+        });
+      }
+
       // Set model if specified
       if (model) {
         options.model = model;
@@ -815,7 +859,10 @@ class ChatService {
       // it runs unattended off a possibly-misheard transcription, and its
       // allowlist would withhold the browser tools anyway, so spawning the
       // server would only cost a process.
-      if (!allowedTools?.length) {
+      //
+      // Never for a remote session: the server is a local binary the remote
+      // CLI cannot start.
+      if (!allowedTools?.length && !remote) {
         const chrome = chromeBridgeService.getSessionConfig();
         if (chrome) {
           options.mcpServers = { ...(options.mcpServers || {}), ...chrome.mcpServers };
@@ -867,6 +914,8 @@ class ChatService {
           ? { resumeSessionId, resumeSessionAt }
           : null,
       });
+      // Which host a remote session runs on, for its error messages
+      if (remote) session.remote = { profileId: remote.profileId, host: remote.host };
 
       this._emitLifecycle('start', sessionId, { projectId, cwd });
 
@@ -877,9 +926,14 @@ class ChatService {
       // Free catalog refresh: the SDK caches the init handshake, so reading it
       // here costs no extra round trip. Detached on purpose — a model list is
       // never worth delaying or failing a session start over.
-      queryStream.initializationResult?.()
-        .then(init => ModelCatalogService.ingestInitResult(init))
-        .catch(() => {});
+      //
+      // Not for a remote session: the host's CLI may be another version, and
+      // its model list must not overwrite the catalog keyed to the bundled one.
+      if (!remote) {
+        queryStream.initializationResult?.()
+          .then(init => ModelCatalogService.ingestInitResult(init))
+          .catch(() => {});
+      }
       this._processStream(sessionId, queryStream);
       return sessionId;
     } catch (err) {
@@ -887,7 +941,7 @@ class ChatService {
         this.closeSession(sessionId);
         console.error(`[ChatService] startSession error (cwd: ${cwd}, perm: ${permissionMode}):`, err.message, err.stack);
       }
-      const humanized = this._humanizeError(err.message);
+      const humanized = this._humanizeError(err.message, remote ? { host: remote.host, stderr: session._stderr || '', exit: session._remoteExit || null } : null);
       throw humanized === err.message ? err : new Error(humanized);
     }
   }
@@ -1555,7 +1609,10 @@ class ChatService {
         // The plan's usage as the API stated it on this session's own
         // responses, which keeps the titlebar current while the usage endpoint
         // answers 429. Never allowed to end the session.
-        if (message.type === 'rate_limit_event') {
+        // Not for a remote session: it runs on the host's own login, and its
+        // accountId is null, so its figures would land on the machine-wide
+        // entry and overwrite this machine's with another login's.
+        if (message.type === 'rate_limit_event' && !session?.remote) {
           try {
             UsageService.applyRateLimitInfo(session?.accountId || null, message.rate_limit_info);
           } catch (err) {
@@ -1630,6 +1687,17 @@ class ChatService {
         // handle the CLI has never heard of.
         if (message.type === 'system' && message.subtype === 'init' && message.session_id && session) {
           session.sdkSessionId = message.session_id;
+          // The transcript does not record the account; the cost screen needs
+          // to know which one this session ran on from here on. A remote
+          // session's transcript is written on its host, out of the cost
+          // report's reach, and it runs on the host's own login anyway.
+          if (!session.remote) {
+            try {
+              require('./CostService').noteSessionAccount(message.session_id, session.accountId || null);
+            } catch (err) {
+              console.warn('[ChatService] could not record session account:', err.message);
+            }
+          }
         }
 
         // In-band failures: assistant messages tagged `error`, and results
@@ -1729,6 +1797,19 @@ class ChatService {
       } else {
         const stderrLog = session?._stderr || '';
         console.error(`[ChatService] Stream error after ${msgCount} msgs:`, err.message, stderrLog ? `\nstderr: ${stderrLog}` : '');
+        // A remote session ends for ssh reasons too: a lost connection is
+        // reported as `connection_lost` so the tab can resume once the host
+        // is back, the rest as a sentence about the host.
+        const remoteLib = session?.remote ? sshClaudeSpawnLib() : null;
+        const remoteExit = session?._remoteExit || null;
+        const remoteKind = remoteLib ? remoteLib.classifyRemoteChatFailure(err.message, stderrLog, remoteExit) : null;
+        if (remoteKind) {
+          const remoteMsg = this._humanizeError(err.message, { host: session.remote.host, stderr: stderrLog, exit: remoteExit });
+          const remoteType = remoteLib.TRANSIENT_KINDS.has(remoteKind) ? 'connection_lost' : 'generic';
+          this._send('chat-error', { sessionId, error: remoteMsg, errorType: remoteType, remote: { kind: remoteKind, profileId: session.remote.profileId } });
+          this._emitLifecycle('end', sessionId, { status: 'error', error: remoteMsg });
+          return;
+        }
         let errorMsg = this._humanizeError(err.message);
         // Append stderr details for crash diagnostics (exit code errors)
         if (stderrLog && err.message?.includes('exited with code')) {
@@ -1736,7 +1817,9 @@ class ChatService {
         }
         // A limit seen in-band counts even if the stream went on to die of
         // something else: the account is out of budget either way.
-        const errorType = (pendingAccountLimit || this._isUsageLimitError(err.message, stderrLog))
+        // A remote session runs on the host's own login: there is no local
+        // account to switch to, so its limit is shown as the error it is.
+        const errorType = (!session?.remote && (pendingAccountLimit || this._isUsageLimitError(err.message, stderrLog)))
           ? 'usage_limit' : 'generic';
         if (errorType === 'usage_limit') {
           await this._emitAccountLimit(sessionId, session, pendingAccountLimit || errorMsg);
@@ -1790,6 +1873,9 @@ class ChatService {
    * the project rather than swap a global account.
    */
   async _emitAccountLimit(sessionId, session, error) {
+    // No account switch to offer for a remote session (see the account
+    // binding row of remote-capabilities): the CLI's own text is on screen.
+    if (session?.remote) return;
     let activeAccountId = session?.accountId || null;
     try {
       if (!activeAccountId) activeAccountId = (await AccountManager.listAccounts()).defaultId;
@@ -1853,8 +1939,16 @@ class ChatService {
   /**
    * Convert raw SDK/process errors into user-friendly messages.
    */
-  _humanizeError(raw) {
+  _humanizeError(raw, remote = null) {
     if (!raw) return 'An unknown error occurred.';
+
+    // Remote (SSH) session: ssh's own failures (exit 255) and a missing
+    // remote `claude` (127) are about the host, and say so.
+    if (remote) {
+      const lib = sshClaudeSpawnLib();
+      const kind = lib.classifyRemoteChatFailure(raw, remote.stderr || '', remote.exit || null);
+      if (kind) return lib.describeSshFailure(kind, remote.host);
+    }
 
     // ENOENT — distinguish between spawn failures and file-not-found
     if (raw.includes('ENOENT')) {
@@ -2248,6 +2342,11 @@ class ChatService {
    * @returns {Promise<{success: boolean, type: string, error?: string, genId: string}>}
    */
   async generateSkillOrAgent({ type, description, cwd, model, genId }) {
+    // The generator runs the local CLI with every permission granted; a remote
+    // project's URI is no local directory to run it in.
+    if (isRemotePath(cwd)) {
+      return { success: false, type, genId, error: 'Skills and agents cannot be generated in a remote project yet. Pick the global scope or a local project.' };
+    }
     const sdk = await loadSDK();
     const abortController = new AbortController();
 
@@ -2343,12 +2442,51 @@ class ChatService {
   /**
    * Run a single prompt through the SDK (no streaming input, no session to manage).
    * Used by WorkflowRunner for Claude/agent steps — the stream terminates on its own.
-   * @param {Object} opts - { cwd, prompt, model, effort, maxTurns, permissionMode, outputFormat, skills, onMessage, signal }
+   * @param {Object} opts - { cwd, prompt, model, effort, maxTurns, accountId, automation, permissionMode, outputFormat, skills, onMessage, signal }
+   *   `automation` ({ workflowId, workflowName, runId, noteAccount }) is set when
+   *   the step belongs to a workflow run: the account it ran on is reported
+   *   through `noteAccount`, and its tokens are priced under that workflow
+   *   before the transcript is deleted.
    * @returns {Promise<{ output: string, success: boolean, ... }>}
    */
-  async runSinglePrompt({ cwd, prompt, model, effort, maxTurns, permissionMode, outputFormat, skills, systemPrompt, disallowedTools, resume, onMessage, onOutput, signal }) {
+  async runSinglePrompt({ cwd, prompt, model, effort, maxTurns, accountId = null, automation = null, permissionMode, outputFormat, skills, systemPrompt, disallowedTools, resume, onMessage, onOutput, signal }) {
+    // A workflow step runs the local CLI. A remote project's path does not
+    // exist here, and falling back to the home directory would run the step
+    // somewhere the user never asked for.
+    if (isRemotePath(cwd)) throw new Error('Remote projects are not supported by workflow Claude steps yet');
     const sdk = await loadSDK();
     const runtime = resolveRuntime();
+
+    // Same overlay a chat session gets, so the step authenticates as the
+    // account its automation names. No account means the machine-wide login.
+    //
+    // Stricter than the chat about a dead id: a chat falls back to the
+    // machine-wide login, but an unattended run that does so spends someone
+    // else's quota with nobody watching. Failing says which account to fix.
+    if (accountId) {
+      const { accounts } = await AccountManager.listAccounts({ includeCredentials: false });
+      const account = accounts.find(a => a.id === accountId);
+      if (!account) throw new Error(`Claude account "${accountId}" no longer exists. Pick another account for this step.`);
+      const overlay = await AccountManager.accountEnv(accountId);
+      if (!overlay && !(await AccountManager.ownsLiveStore(accountId))) {
+        throw new Error(`No usable credentials for Claude account "${account.name}". Capture it again from the accounts menu.`);
+      }
+      if (overlay) runtime.env = { ...runtime.env, ...overlay };
+    }
+
+    // The account this step is really spending: the named one, or whichever
+    // account holds the machine-wide login right now. Resolved once, here,
+    // so the run history and the cost record cannot disagree.
+    let effectiveAccountId = accountId;
+    if (automation && !effectiveAccountId) {
+      try {
+        effectiveAccountId = (await AccountManager.listAccounts({ includeCredentials: false })).liveId || null;
+      } catch {
+        effectiveAccountId = null;
+      }
+    }
+    automation?.noteAccount?.(effectiveAccountId);
+    const startedAt = Date.now();
 
     const abortController = new AbortController();
     if (signal) {
@@ -2437,6 +2575,23 @@ class ChatService {
       // NEW id, but if a future SDK ever ignored it we would be deleting the
       // user's own conversation. Cheap check, unrecoverable loss if wrong.
       if (workflowSessionId && workflowSessionId !== resume) {
+        // Price the step first: once the transcript is gone, nothing records
+        // what it spent. Also on failure or cancel, which spent tokens too.
+        if (automation?.workflowId) {
+          try {
+            const { file, dir } = _workflowSessionPaths(resolvedCwd, workflowSessionId);
+            await require('./CostService').recordAutomationRun({
+              files: [file, ..._listJsonl(path.join(dir, 'subagents'))],
+              since: startedAt,
+              workflowId: automation.workflowId,
+              workflowName: automation.workflowName,
+              runId: automation.runId,
+              accountId: effectiveAccountId,
+            });
+          } catch (e) {
+            console.warn(`[ChatService] Could not record automation cost: ${e.message}`);
+          }
+        }
         _deleteWorkflowSession(resolvedCwd, workflowSessionId);
       }
     }
@@ -2767,6 +2922,7 @@ class ChatService {
    * @returns {Promise<{suggestions: Array, claudeMdExists: boolean}>}
    */
   async analyzeSessionForClaudeMd(messages, projectPath) {
+    if (isRemotePath(projectPath)) return { suggestions: [], claudeMdExists: false };
     // Read existing CLAUDE.md (or empty string if not found)
     const claudeMdPath = require('path').join(projectPath, 'CLAUDE.md');
     let existingContent = '';
@@ -2895,6 +3051,9 @@ If there are no new useful discoveries, return exactly: []`;
    */
   applyClaudeMdSections(projectPath, sections) {
     if (!sections || sections.length === 0) return { success: true };
+    // A remote project's CLAUDE.md is on its host; joining its URI onto a
+    // local path would write somewhere on this machine instead.
+    if (isRemotePath(projectPath)) return { success: false, error: 'The CLAUDE.md of a remote project cannot be edited from here yet' };
 
     const fs = require('fs');
     const path = require('path');
@@ -3205,14 +3364,47 @@ If there are no useful discoveries, return exactly: []`;
  * We capture the session_id from the SDK's system:init message and clean up
  * after the step completes so workflow runs don't pollute "Resume conversation".
  */
+/**
+ * Where the CLI keeps a session: its transcript, and the directory beside it
+ * holding the subagent transcripts and spilled tool results.
+ *
+ * Encoded with the CLI's own rule (every non-alphanumeric character becomes a
+ * dash). The hand-rolled version this replaced only mapped `:`, `\` and `/`,
+ * so a project path with a dot or a space never matched and the session was
+ * never deleted.
+ *
+ * @param {string} cwd
+ * @param {string} sessionId
+ * @returns {{ file: string, dir: string }}
+ */
+function _workflowSessionPaths(cwd, sessionId) {
+  const { encodeProjectPath } = require('../../shared/session-dirs');
+  const base = path.join(require('os').homedir(), '.claude', 'projects', encodeProjectPath(cwd));
+  return { file: path.join(base, `${sessionId}.jsonl`), dir: path.join(base, sessionId) };
+}
+
+/** The `.jsonl` files directly inside `dir`, or none when it does not exist. */
+function _listJsonl(dir) {
+  try {
+    return fs.readdirSync(dir).filter(name => name.endsWith('.jsonl')).map(name => path.join(dir, name));
+  } catch {
+    return [];
+  }
+}
+
 function _deleteWorkflowSession(cwd, sessionId) {
   try {
-    const os = require('os');
-    const encoded = cwd.replace(/:/g, '-').replace(/\\/g, '-').replace(/\//g, '-');
-    const sessionFile = require('path').join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
-    if (require('fs').existsSync(sessionFile)) {
-      require('fs').unlinkSync(sessionFile);
+    const { file, dir } = _workflowSessionPaths(cwd, sessionId);
+    if (fs.existsSync(file)) {
+      fs.unlinkSync(file);
       console.log(`[ChatService] Deleted workflow session file: ${sessionId}.jsonl`);
+    }
+    // Subagent transcripts and tool results of a session nobody can resume:
+    // left behind, the cost scan would count the subagents a second time.
+    // A recursive delete: only ever on a plain session id, never on something
+    // that could name a parent directory.
+    if (/^[A-Za-z0-9-]+$/.test(String(sessionId)) && fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   } catch (e) {
     console.warn(`[ChatService] Could not delete workflow session file: ${e.message}`);

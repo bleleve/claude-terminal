@@ -137,6 +137,21 @@ describe('macOS Keychain store', () => {
     expect(fs.existsSync(credentialsFile())).toBe(false);
   });
 
+  test('switching writes compact JSON, as the CLI does', async () => {
+    // A newline makes `security -w` print the item as hex, and indented JSON
+    // in hex outgrew the `security -i` line, pushing the secret onto argv.
+    mockKeychain.set(MOCK_KEY, JSON.stringify(creds('tok-max')));
+    const max = await AccountManager.captureCurrent('Max 20x');
+    mockKeychain.set(MOCK_KEY, JSON.stringify(creds('tok-team', 'team')));
+    await AccountManager.captureCurrent('Team');
+
+    await AccountManager.switchTo(max.id);
+
+    const written = mockKeychain.get(MOCK_KEY);
+    expect(written).not.toMatch(/\s/);
+    expect(written).toBe(JSON.stringify(JSON.parse(written)));
+  });
+
   test('switching preserves a token the CLI rotated on the outgoing account', async () => {
     mockKeychain.set(MOCK_KEY, JSON.stringify(creds('tok-max')));
     const max = await AccountManager.captureCurrent('Max 20x');
@@ -497,6 +512,57 @@ describe('MCP server tokens', () => {
     const live = readCredentialsFile();
     expect(live.claudeAiOauth.accessToken).toBe('tok-a');
     expect(Object.keys(live.mcpOAuth)).toEqual(['stripe|abc123']);
+  });
+});
+
+describe('Claude Design grant', () => {
+  // `/design-login` stores `designOauth` beside the login, for that account
+  // only: the CLI's own /logout deletes it together with `claudeAiOauth`.
+  const withDesign = (accessToken, grant) => ({
+    ...creds(accessToken),
+    organizationUuid: `org-${accessToken}`,
+    designOauth: { accessToken: `design-${grant}`, refreshToken: `design-refresh-${grant}` }
+  });
+
+  test('the snapshot keeps the account\'s design grant and organisation', async () => {
+    mockKeychain.set(MOCK_KEY, JSON.stringify(withDesign('tok-a', 'a')));
+    const a = await AccountManager.captureCurrent('Account A');
+
+    expect(snapshotOf(a.id)).toEqual({
+      claudeAiOauth: creds('tok-a').claudeAiOauth,
+      organizationUuid: 'org-tok-a',
+      designOauth: { accessToken: 'design-a', refreshToken: 'design-refresh-a' }
+    });
+  });
+
+  test('switching does not hand one account\'s design grant to the other', async () => {
+    mockKeychain.set(MOCK_KEY, JSON.stringify(creds('tok-b')));
+    const b = await AccountManager.captureCurrent('Account B');
+    mockKeychain.set(MOCK_KEY, JSON.stringify(withDesign('tok-a', 'a')));
+    const a = await AccountManager.captureCurrent('Account A');
+
+    await AccountManager.switchTo(b.id);
+    const live = JSON.parse(mockKeychain.get(MOCK_KEY));
+    expect(live.claudeAiOauth.accessToken).toBe('tok-b');
+    expect(live.designOauth).toBeUndefined();
+    expect(live.organizationUuid).toBeUndefined();
+
+    await AccountManager.switchTo(a.id);
+    expect(JSON.parse(mockKeychain.get(MOCK_KEY)).designOauth.accessToken).toBe('design-a');
+  });
+
+  test('a grant added after capture is picked up before the account is swapped out', async () => {
+    mockKeychain.set(MOCK_KEY, JSON.stringify(creds('tok-b')));
+    const b = await AccountManager.captureCurrent('Account B');
+    mockKeychain.set(MOCK_KEY, JSON.stringify(creds('tok-a')));
+    const a = await AccountManager.captureCurrent('Account A');
+
+    // `/design-login` run on A after it was saved.
+    mockKeychain.set(MOCK_KEY, JSON.stringify(withDesign('tok-a', 'a')));
+    await AccountManager.switchTo(b.id);
+    await AccountManager.switchTo(a.id);
+
+    expect(JSON.parse(mockKeychain.get(MOCK_KEY)).designOauth.accessToken).toBe('design-a');
   });
 });
 

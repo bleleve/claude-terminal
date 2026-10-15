@@ -1016,6 +1016,7 @@ class SettingsPanel extends BasePanel {
           <button class="settings-tab ${initialTab === 'general' ? 'active' : ''}" data-tab="general">${t('settings.tabGeneral')}</button>
           <button class="settings-tab ${initialTab === 'claude' ? 'active' : ''}" data-tab="claude">${t('settings.tabClaude')}</button>
           <button class="settings-tab ${initialTab === 'github' ? 'active' : ''}" data-tab="github">${t('settings.tabGitHub')}</button>
+          <button class="settings-tab ${initialTab === 'ssh' ? 'active' : ''}" data-tab="ssh">${t('ssh.settings.tab')}</button>
           <button class="settings-tab ${initialTab === 'tickets' ? 'active' : ''}" data-tab="tickets">${t('settings.tabTickets')}</button>
           <button class="settings-tab ${initialTab === 'themes' ? 'active' : ''}" data-tab="themes">${t('settings.tabThemes')}</button>
           <button class="settings-tab ${initialTab === 'shortcuts' ? 'active' : ''}" data-tab="shortcuts">${t('settings.tabShortcuts')}</button>
@@ -1087,6 +1088,16 @@ class SettingsPanel extends BasePanel {
                     <div class="settings-desc" id="terminal-font-size-desc">${t('settings.terminalFontSizeDesc')}</div>
                   </div>
                   <input type="number" class="settings-input-sm" id="terminal-font-size-input" aria-labelledby="terminal-font-size-label" aria-describedby="terminal-font-size-desc" value="${settings.terminalFontSize || 14}" min="10" max="24" step="1" style="width: 70px; flex: 0 0 auto; text-align: center;">
+                </div>
+                <div class="settings-toggle-row">
+                  <div class="settings-toggle-label">
+                    <div>${t('settings.terminalWebglRenderer')}</div>
+                    <div class="settings-toggle-desc">${t('settings.terminalWebglRendererDesc')}</div>
+                  </div>
+                  <label class="settings-toggle">
+                    <input type="checkbox" id="terminal-webgl-toggle" ${settings.terminalWebglRenderer !== false ? 'checked' : ''}>
+                    <span class="settings-toggle-slider"></span>
+                  </label>
                 </div>
               </div>
             </div>
@@ -1832,6 +1843,15 @@ class SettingsPanel extends BasePanel {
               </div>
             </div>
           </div>
+          <!-- SSH hosts Tab (remote projects) -->
+          <div class="settings-panel ${initialTab === 'ssh' ? 'active' : ''}" data-panel="ssh">
+            <div class="settings-group" data-section="ssh-hosts">
+              <div class="settings-group-title">${t('ssh.settings.title')}</div>
+              <div class="settings-card">
+                <div id="ssh-hosts-settings"></div>
+              </div>
+            </div>
+          </div>
           <!-- Tickets Tab -->
           <div class="settings-panel ${initialTab === 'tickets' ? 'active' : ''}" data-panel="tickets">
             <div class="settings-group" data-section="tickets">
@@ -1941,6 +1961,14 @@ class SettingsPanel extends BasePanel {
       </div>
     `;
 
+    // SSH hosts: the same profile editor the Open Remote Project dialog uses.
+    // It owns its own markup and repaints on profile or status changes.
+    try {
+      require('../components/RemoteProjectModal').renderHostsSettings(container.querySelector('#ssh-hosts-settings'));
+    } catch (e) {
+      console.error('[Settings] SSH hosts section failed to render:', e);
+    }
+
     // Tab switching
     container.querySelectorAll('.settings-tab').forEach(tab => {
       tab.onclick = () => {
@@ -1958,10 +1986,10 @@ class SettingsPanel extends BasePanel {
       };
     });
 
-    // The settings search now lives in _wireSettingsSearch(): sticky bar, all
-    // sub-tabs at once, empty state, deep links. Installing SettingsSearch
-    // here as well put a second .settings-search bar above it. The module is
-    // kept because its bilingual/synonym matching has no equivalent yet.
+    // The settings search lives in _wireSettingsSearch(): sticky bar, all
+    // sub-tabs at once, empty state, deep links, and the English-name and
+    // synonym matching of settingsSearchMatching.js. Installing a second
+    // search component here put another .settings-search bar above it.
     const backupStatus = container.querySelector('#settings-backup-status');
     const renderBackupStatus = result => {
       if (!backupStatus.isConnected) return;
@@ -2381,6 +2409,9 @@ class SettingsPanel extends BasePanel {
       // apply the second change to open terminals.
       const prevTerminalFontSize = self._ctx.settingsState.get().terminalFontSize;
 
+      const webglToggle = document.getElementById('terminal-webgl-toggle');
+      const newTerminalWebgl = webglToggle ? webglToggle.checked : true;
+
       let accentColor = settings.accentColor;
       const selectedSwatch = container.querySelector('.color-swatch.selected');
       const customSwatchSelected = container.querySelector('.color-swatch-custom.selected');
@@ -2485,6 +2516,7 @@ class SettingsPanel extends BasePanel {
         closeAction: closeActionDropdown?.dataset.value || 'ask',
         terminalTheme: newTerminalTheme,
         terminalFontSize: newTerminalFontSize,
+        terminalWebglRenderer: newTerminalWebgl,
         language: newLanguage,
         compactProjects: newCompactProjects,
         restoreTerminalSessions: newRestoreTerminalSessions,
@@ -2929,6 +2961,19 @@ class SettingsPanel extends BasePanel {
           }), 8000);
           return;
         }
+        // Same for automations pinned to it, asked of main because the
+        // workflow list is only loaded here once the Workflows tab opened.
+        // accounts-remove refuses again, so a failed check only costs the
+        // early answer, never the account.
+        const showAutomationsBlock = (names) => showError(t('accounts.removeBlockedAutomations', {
+          count: names.length,
+          automations: names.join(', ')
+        }), 8000);
+        const users = await this.api.accounts.automationsUsing?.(id).catch(() => null);
+        if (users?.success && users.data?.length) {
+          showAutomationsBlock(users.data);
+          return;
+        }
         const { showConfirm } = require('../components/Modal');
         const ok = await showConfirm({
           title: t('common.delete') || 'Delete',
@@ -2937,6 +2982,11 @@ class SettingsPanel extends BasePanel {
         if (!ok) return;
         try {
           const r = await this.api.accounts.remove(id);
+          if (r?.code === 'ACCOUNT_USED_BY_AUTOMATIONS') {
+            // An automation was pinned to it while the dialog was open.
+            showAutomationsBlock(r.automations);
+            return;
+          }
           if (!r?.success) {
             showError(r?.error || t('accounts.removeError'), 5000);
             return;

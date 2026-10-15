@@ -1,7 +1,7 @@
 /**
- * The Tickets screen, wired to the real IssueTrackerService and Linear adapter
- * over the fixture's invented workspace: what the panel asks for is answered
- * the way main would answer it. Only the markdown renderer is stubbed, since
+ * The Tickets screen, wired to the real IssueTrackerService over the fake
+ * test adapter (GitHub Issues-like: `#12` keys, open or closed, only the state
+ * writable): what the panel asks for is answered the way main would answer it. Only the markdown renderer is stubbed, since
  * the detail pane's job is to hand it text, not to render mermaid.
  */
 
@@ -29,8 +29,8 @@ const { setSetting } = require('../../src/renderer/state/settings.state');
 const panel = require('../../src/renderer/ui/panels/IssuesPanel');
 const { createIssueTrackerService } = require('../../src/main/services/IssueTrackerService');
 const { describeTrackers } = require('../../src/main/issue-trackers/_registry');
-const linear = require('../../src/main/issue-trackers/linear.tracker');
-const fixture = require('../issue-trackers/fixtures/linear.fixture');
+const fake = require('../issue-trackers/fake.tracker');
+const fixture = require('../issue-trackers/fixtures/fake.fixture');
 
 /** Bridge calls still waiting for the service, see flush(). */
 let inflight = 0;
@@ -70,10 +70,10 @@ async function setup({ connect = true } = {}) {
   service = createIssueTrackerService({
     storePath: path.join(dir, 'issue-trackers.json'),
     secrets: { get: async (a) => secrets.get(a) ?? null, set: async (a, v) => { secrets.set(a, v); }, delete: async (a) => secrets.delete(a) },
-    registry: { get: (id) => (id === 'linear' ? linear : null), describe: () => describeTrackers([linear]) },
+    registry: { get: (id) => (id === 'fake' ? fake : null), describe: () => describeTrackers([fake]) },
     fetch: fixture.fetch,
   });
-  if (connect) await service.connect('linear', fixture.secret);
+  if (connect) await service.connect('fake', fixture.secret);
   api = { issueTrackers: bridgeFor(service), dialog: { openExternal: jest.fn() } };
   deps = { api, showToast: jest.fn(), openSettings: jest.fn() };
   panel.init(deps);
@@ -98,13 +98,12 @@ const flush = async (ms = 0) => {
     quiet = inflight === 0 ? quiet + 1 : 0;
   }
 };
-// The tickets the list holds: a dimmed parent shown for context is not one of them.
+// The tickets the list holds: a parent shown only for context is not one of them.
 const rowKeys = () => [...root.querySelectorAll('.issues-list > .issue-group .issue-row:not(.context)')].map((r) => r.dataset.key);
 const lastQuery = () => api.issueTrackers.listIssues.mock.calls.at(-1)[1];
 
 beforeEach(() => {
   jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'nextTick'] });
-  fixture.reset();
   mockSettings.ticketsView = undefined;
   setSetting.mockClear();
   panel._reset();
@@ -128,9 +127,8 @@ test('without a connection it says so and leads to the settings', async () => {
 test('a first visit lists every open ticket of the workspace, grouped by status', async () => {
   await setup();
   expect(lastQuery()).toMatchObject({ mine: null, stateCategories: ['backlog', 'todo', 'started'] });
-  expect(rowKeys()).toHaveLength(13);
-  expect(rowKeys()).not.toContain('ENG-117'); // done
-  expect(root.querySelector('.issues-count').textContent).toBe('13');
+  expect(rowKeys()).toEqual(['#2', '#1', '#4']); // #3 is closed; #4 is a sub-issue of #1, so under it
+  expect(root.querySelector('.issues-count').textContent).toBe('3');
   expect(root.querySelector('.issues-reset')).toBeNull();
 });
 
@@ -139,7 +137,7 @@ test('"My tickets" narrows to what is assigned to me', async () => {
   root.querySelector('.issues-quick-btn[data-mine="assigned"]').click();
   await flush(200);
   expect(lastQuery().mine).toBe('assigned');
-  expect(rowKeys().sort()).toEqual(['ENG-137', 'ENG-139', 'ENG-142', 'ENG-151']);
+  expect(rowKeys()).toEqual(['#1']);
   expect(root.querySelector('.issues-reset')).not.toBeNull();
 });
 
@@ -147,25 +145,25 @@ test('search waits for the typing to stop, then queries once', async () => {
   await setup();
   const calls = api.issueTrackers.listIssues.mock.calls.length;
   const input = root.querySelector('.issues-search');
-  for (const text of ['p', 'pr', 'pru', 'pruner']) {
+  for (const text of ['c', 'cr', 'cra', 'crash']) {
     input.value = text;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     await flush(50);
   }
   await flush(300);
   expect(api.issueTrackers.listIssues.mock.calls.length).toBe(calls + 1);
-  expect(lastQuery().text).toBe('pruner');
-  expect(rowKeys()).toEqual(['ENG-139']);
+  expect(lastQuery().text).toBe('crash');
+  expect(rowKeys()).toEqual(['#1']);
 });
 
-test('a status picked in the menu is sent as the ids of every team that has it', async () => {
+test('a status picked in the menu is sent as its state id', async () => {
   await setup();
   root.querySelector('[data-menu="status"]').click();
-  const item = [...root.querySelectorAll('.issues-menu-item')].find((b) => b.dataset.value === 'state:done:Done');
+  const item = [...root.querySelectorAll('.issues-menu-item')].find((b) => b.dataset.value === 'state:done:Closed');
   item.click();
   await flush(200);
-  expect(lastQuery().stateIds.sort()).toEqual(['s-des-done', 's-eng-done', 's-ops-done']);
-  expect(rowKeys()).toEqual(expect.arrayContaining(['ENG-117', 'OPS-9']));
+  expect(lastQuery().stateIds).toEqual(['closed']);
+  expect(rowKeys()).toContain('#3');
   expect(root.querySelector('.issues-menu')).not.toBeNull(); // multi-select stays open
 });
 
@@ -178,6 +176,15 @@ test('grouping changes the groups without asking the tracker again', async () =>
   expect(api.issueTrackers.listIssues.mock.calls.length).toBe(calls);
   expect(root.querySelector('.issues-menu')).toBeNull();
   expect(root.querySelector('.issue-group-label').textContent).toBe('Ada Lovelace');
+});
+
+test('a tracker without priorities offers no priority filter or grouping', async () => {
+  await setup();
+  expect(root.querySelector('[data-menu="priority"]')).toBeNull();
+  root.querySelector('[data-menu="groupBy"]').click();
+  const options = [...root.querySelectorAll('.issues-menu-item')].map((b) => b.dataset.value);
+  expect(options).toContain('container');
+  expect(options).not.toContain('priority');
 });
 
 test('a slower, older answer never replaces a newer one', async () => {
@@ -193,21 +200,21 @@ test('a slower, older answer never replaces a newer one', async () => {
   await flush(200);
   releaseSlow();
   await flush();
-  expect(rowKeys().sort()).toEqual(['ENG-137', 'ENG-139', 'ENG-142', 'ENG-151']);
+  expect(rowKeys()).toEqual(['#1']);
 });
 
 test('a row opens its detail; Escape closes it', async () => {
   await setup();
-  root.querySelector('.issue-row[data-key="ENG-142"]').click();
+  root.querySelector('.issue-row[data-key="#1"]').click();
   await flush();
   const detail = root.querySelector('.issues-detail');
   expect(detail.hidden).toBe(false);
-  expect(detail.querySelector('.issue-detail-title').textContent).toBe('Session tickets tab');
-  expect(detail.querySelectorAll('.issue-comment')).toHaveLength(2);
-  expect(root.querySelector('.issue-row.selected').dataset.key).toBe('ENG-142');
+  expect(detail.querySelector('.issue-detail-title').textContent).toBe('Crash when the tab closes');
+  expect(detail.querySelector('.issue-detail-description').textContent).toContain('Body of #1');
+  expect(root.querySelector('.issue-row.selected').dataset.key).toBe('#1');
 
   detail.querySelector('[data-action="open"]').click();
-  expect(api.dialog.openExternal).toHaveBeenCalledWith(expect.stringMatching(/^https:\/\/linear\.app\/acme\/issue\/ENG-142\//));
+  expect(api.dialog.openExternal).toHaveBeenCalledWith('https://example.com/acme/app/issues/1');
 
   // In the app the redraw takes the focused row away, so Escape lands on <body>.
   document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -216,7 +223,7 @@ test('a row opens its detail; Escape closes it', async () => {
 
 test('a modal above the screen keeps its own Escape', async () => {
   await setup();
-  root.querySelector('.issue-row[data-key="ENG-142"]').click();
+  root.querySelector('.issue-row[data-key="#1"]').click();
   await flush();
   document.body.insertAdjacentHTML('beforeend', '<div id="modal-overlay" class="active"></div>');
   document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -225,38 +232,40 @@ test('a modal above the screen keeps its own Escape', async () => {
 
 test('Enter on a focused row opens it, and focus survives the redraw', async () => {
   await setup();
-  const row = root.querySelector('.issue-row[data-key="ENG-139"]');
+  const row = root.querySelector('.issue-row[data-key="#2"]');
   row.focus();
   row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   await flush();
-  expect(root.querySelector('.issue-detail-title').textContent).toBe('Transcript pruner loses its position on remount');
-  expect(document.activeElement.dataset.key).toBe('ENG-139');
+  expect(root.querySelector('.issue-detail-title').textContent).toBe('Document the adapter contract');
+  expect(document.activeElement.dataset.key).toBe('#2');
 });
 
 test('a sub-issue in the detail opens in its place', async () => {
   await setup();
-  root.querySelector('.issue-row[data-key="ENG-142"]').click();
+  root.querySelector('.issue-row[data-key="#1"]').click();
   await flush();
-  root.querySelector('.issue-detail-children .issue-row[data-key="ENG-151"]').click();
+  root.querySelector('.issue-detail-children .issue-row[data-key="#4"]').click();
   await flush();
-  expect(root.querySelector('.issue-detail-title').textContent).toBe('Persist ticket filters per screen');
+  expect(root.querySelector('.issue-detail-title').textContent).toBe('Sub-task of #1');
 });
 
 test('a parent shown for context opens like any ticket; a sub-issue\'s detail leads back to it', async () => {
   await setup();
-  const todo = [...root.querySelectorAll('.issue-group')].find((g) => g.querySelector('.issue-group-label')?.textContent === 'Todo');
-  const context = todo.querySelector('.issue-row.context[data-key="ENG-142"]');
-  expect(context.nextElementSibling.dataset).toMatchObject({ key: 'ENG-151', depth: '1' });
+  root.querySelector('[data-menu="groupBy"]').click();
+  [...root.querySelectorAll('.issues-menu-item')].find((b) => b.dataset.value === 'assignee').click();
+  await flush(200);
+  const unassigned = [...root.querySelectorAll('.issue-group')].find((g) => g.querySelector('.issue-group-label')?.textContent === t('tickets.groupBy.noAssignee'));
+  const context = unassigned.querySelector('.issue-row.context[data-key="#1"]');
+  expect(context.nextElementSibling.dataset).toMatchObject({ key: '#4', depth: '1', last: '' });
   context.click();
   await flush();
-  expect(root.querySelector('.issue-detail-title').textContent).toBe('Session tickets tab');
-  expect(root.querySelector('.issue-detail-parent')).toBeNull();
+  expect(root.querySelector('.issue-detail-title').textContent).toBe('Crash when the tab closes');
 
-  root.querySelector('.issue-detail-children .issue-row[data-key="ENG-151"]').click();
+  root.querySelector('.issue-detail-children .issue-row[data-key="#4"]').click();
   await flush();
   root.querySelector('.issue-detail-parent .issue-row').click();
   await flush();
-  expect(root.querySelector('.issue-detail-title').textContent).toBe('Session tickets tab');
+  expect(root.querySelector('.issue-detail-title').textContent).toBe('Crash when the tab closes');
 });
 
 test('a rejected key is explained, with the way to fix it', async () => {
@@ -265,7 +274,7 @@ test('a rejected key is explained, with the way to fix it', async () => {
   panel._reset();
   panel.init(deps);
   await panel.loadPanel(root);
-  expect(root.querySelector('.issues-state-error').textContent).toContain(t('tickets.errors.auth', { provider: 'Linear' }));
+  expect(root.querySelector('.issues-state-error').textContent).toContain(t('tickets.errors.auth', { provider: 'Fake Tracker' }));
   root.querySelector('.issues-open-settings').click();
   expect(deps.openSettings).toHaveBeenCalledWith('tickets');
 });
@@ -274,12 +283,12 @@ test('the view is remembered without the search text', async () => {
   await setup();
   root.querySelector('.issues-quick-btn[data-mine="assigned"]').click();
   const input = root.querySelector('.issues-search');
-  input.value = 'pruner';
+  input.value = 'crash';
   input.dispatchEvent(new Event('input', { bubbles: true }));
   await flush(1000);
   const saved = setSetting.mock.calls.at(-1);
   expect(saved[0]).toBe('ticketsView');
-  expect(saved[1]).toMatchObject({ mine: 'assigned', connectionId: expect.stringMatching(/^linear-/) });
+  expect(saved[1]).toMatchObject({ mine: 'assigned', connectionId: expect.stringMatching(/^fake-/) });
   expect(saved[1]).not.toHaveProperty('text');
 });
 
@@ -292,7 +301,7 @@ test('leaving the tab stops the refresh; coming back draws at once', async () =>
 
   root.innerHTML = '';
   const back = panel.loadPanel(root);
-  expect(rowKeys()).toHaveLength(13); // drawn from memory before the refresh lands
+  expect(rowKeys()).toHaveLength(3); // drawn from memory before the refresh lands
   await back;
 });
 
@@ -321,78 +330,69 @@ describe('board and writes', () => {
     await flush();
   }
 
-  test('the board shows one column per category when several teams are listed', async () => {
+  test('the board shows one column per category the tracker uses when its states belong to the whole workspace', async () => {
     await boardSetup();
-    expect([...root.querySelectorAll('.issues-board-column')].map((c) => c.dataset.column))
-      .toEqual(['cat:backlog', 'cat:todo', 'cat:started', 'cat:done', 'cat:canceled']);
+    expect([...root.querySelectorAll('.issues-board-column')].map((c) => c.dataset.column)).toEqual(['cat:todo', 'cat:done']);
     expect(root.querySelector('[data-menu="groupBy"]')).toBeNull();
     expect(mockSettings.ticketsView).toBeUndefined(); // saved after the debounce
     await flush(1000);
     expect(mockSettings.ticketsView.layout).toBe('board');
   });
 
-  test('dropping a card moves it at once and writes the state of its own team', async () => {
+  test('dropping a card moves it at once and writes the column\'s state', async () => {
     await boardSetup();
-    const over = drag(cardIn('cat:todo', 'ENG-151'), column('cat:done'));
+    const over = drag(cardIn('cat:todo', '#2'), column('cat:done'));
     expect(over.defaultPrevented).toBe(true); // the drop is allowed
-    expect(cardIn('cat:done', 'ENG-151')).not.toBeNull(); // optimistic
+    expect(cardIn('cat:done', '#2')).not.toBeNull(); // optimistic
     await flush();
-    expect(api.issueTrackers.updateIssue).toHaveBeenCalledWith(expect.stringMatching(/^linear-/), 'ENG-151', { stateId: 's-eng-done' });
-    expect(cardIn('cat:done', 'ENG-151')).not.toBeNull();
+    expect(api.issueTrackers.updateIssue).toHaveBeenCalledWith(expect.stringMatching(/^fake-/), '#2', { stateId: 'closed' });
+    expect(cardIn('cat:done', '#2')).not.toBeNull();
   });
 
   test('a refused write puts the card back and says why', async () => {
     await boardSetup();
     api.issueTrackers.updateIssue.mockResolvedValueOnce({ ok: false, code: 'PROVIDER', error: 'Forbidden' });
-    drag(cardIn('cat:todo', 'ENG-151'), column('cat:done'));
+    drag(cardIn('cat:todo', '#2'), column('cat:done'));
     await flush();
-    expect(cardIn('cat:todo', 'ENG-151')).not.toBeNull();
-    expect(deps.showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', title: t('tickets.errors.updateFailed', { key: 'ENG-151' }) }));
+    expect(cardIn('cat:todo', '#2')).not.toBeNull();
+    expect(deps.showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', title: t('tickets.errors.updateFailed', { key: '#2' }) }));
   });
 
   test('a moved card stays on the board through a background refresh, even outside the filters', async () => {
     await boardSetup();
-    drag(cardIn('cat:todo', 'ENG-151'), column('cat:done'));
+    drag(cardIn('cat:todo', '#2'), column('cat:done'));
     await flush();
     Object.defineProperty(root, 'offsetParent', { configurable: true, get: () => document.body });
     jest.spyOn(document, 'hasFocus').mockReturnValue(true);
     await flush(61_000);
     expect(api.issueTrackers.listIssues.mock.calls.at(-1)[1].stateCategories).toEqual(['backlog', 'todo', 'started']);
-    expect(cardIn('cat:done', 'ENG-151')).not.toBeNull();
+    expect(cardIn('cat:done', '#2')).not.toBeNull();
     document.hasFocus.mockRestore();
   });
 
   test('dropping on the column it is already in writes nothing', async () => {
     await boardSetup();
-    const over = drag(cardIn('cat:todo', 'ENG-151'), column('cat:todo'));
+    const over = drag(cardIn('cat:todo', '#2'), column('cat:todo'));
     await flush();
     expect(over.defaultPrevented).toBe(false);
     expect(api.issueTrackers.updateIssue).not.toHaveBeenCalled();
   });
 
-  test('the detail pane changes state, assignee and priority', async () => {
+  test('the detail pane changes the state, the one field this tracker writes', async () => {
     await setup();
-    root.querySelector('.issue-row[data-key="ENG-142"]').click();
+    root.querySelector('.issue-row[data-key="#1"]').click();
     await flush();
-    const pick = async (field, value) => {
-      root.querySelector(`.issue-prop-edit[data-edit="${field}"]`).click();
-      [...root.querySelectorAll('.issues-menu-item')].find((b) => b.dataset.value === String(value)).click();
-      await flush();
-    };
-    await pick('state', 's-eng-review');
-    await pick('assignee', 'u-grace');
-    await pick('priority', 2);
-    expect(api.issueTrackers.updateIssue.mock.calls.map((c) => c[2])).toEqual([
-      { stateId: 's-eng-review' }, { assigneeId: 'u-grace' }, { priority: 2 },
-    ]);
-    const props = root.querySelector('.issue-detail-props').textContent;
-    expect(props).toContain('In Review');
-    expect(props).toContain('Grace Hopper');
-    expect(root.querySelector('.issue-detail-description').textContent).toContain('Why'); // kept from the detail
+    expect([...root.querySelectorAll('.issue-prop-edit')].map((b) => b.dataset.edit)).toEqual(['state']);
+    root.querySelector('.issue-prop-edit[data-edit="state"]').click();
+    [...root.querySelectorAll('.issues-menu-item')].find((b) => b.dataset.value === 'closed').click();
+    await flush();
+    expect(api.issueTrackers.updateIssue.mock.calls.map((c) => c[2])).toEqual([{ stateId: 'closed' }]);
+    expect(root.querySelector('.issue-detail-props').textContent).toContain('Closed');
+    expect(root.querySelector('.issue-detail-description').textContent).toContain('Body of #1'); // kept from the detail
   });
 
   test('a tracker that cannot write gets no drag and no edit buttons', async () => {
-    const readOnly = { ...linear, capabilities: { ...linear.capabilities, write: [] } };
+    const readOnly = { ...fake, capabilities: { ...fake.capabilities, write: [] } };
     await setup();
     panel._reset();
     api.issueTrackers.providers = async () => ({ ok: true, providers: describeTrackers([readOnly]) });
@@ -401,7 +401,7 @@ describe('board and writes', () => {
     root.querySelector('.issues-layout-btn[data-layout="board"]').click();
     await flush();
     expect(root.querySelector('.issue-card[draggable="true"]')).toBeNull();
-    root.querySelector('.issue-card[data-key="ENG-142"]').click();
+    root.querySelector('.issue-card[data-key="#1"]').click();
     await flush();
     expect(root.querySelector('.issue-prop-edit')).toBeNull();
   });
@@ -413,68 +413,81 @@ describe('starting a session from a ticket', () => {
     { id: 'p-acme', name: 'acme-app', path: '/repo/acme' },
   ];
 
-  async function startSetup({ git = {} } = {}) {
+  async function startSetup({ branchName = null, branches = { local: [], remote: [] } } = {}) {
     await setup();
     panel._reset();
     api.git = {
+      branches: jest.fn(async () => branches),
       createBranch: jest.fn(async () => ({ success: true })),
       checkout: jest.fn(async () => ({ success: true })),
-      ...git,
     };
+    if (branchName) {
+      // The fake tracker names no branch: this one does.
+      const getIssue = api.issueTrackers.getIssue;
+      api.issueTrackers.getIssue = async (...args) => {
+        const res = await getIssue(...args);
+        return res.ok ? { ...res, issue: { ...res.issue, branchName } } : res;
+      };
+    }
     deps.getProjects = () => ({ projects: PROJECTS, openedProjectId: 'p-acme' });
     deps.startSession = jest.fn();
     panel.init(deps);
     await panel.loadPanel(root);
-    root.querySelector('.issue-row[data-key="ENG-151"]').click(); // Todo, so it can move to started
+    root.querySelector('.issue-row[data-key="#2"]').click();
     await flush();
     root.querySelector('[data-action="start-session"]').click();
   }
 
   test('the start button only exists when the app can open a session', async () => {
     await setup();
-    root.querySelector('.issue-row[data-key="ENG-151"]').click();
+    root.querySelector('.issue-row[data-key="#2"]').click();
     await flush();
     expect(root.querySelector('[data-action="start-session"]')).toBeNull();
   });
 
-  test('the options: the opened project first, the branch, the move to started', async () => {
+  test('the options: the opened project first, and no branch or move the tracker cannot back', async () => {
     await startSetup();
     const dialog = root.querySelector('.issues-start');
     expect([...dialog.querySelectorAll('option')].map((o) => o.value)).toEqual(['p-acme', 'p-other']);
-    expect(dialog.querySelector('code').textContent).toBe('ada/eng-151-persist-ticket-filters-per-screen');
-    expect(dialog.textContent).toContain(t('tickets.start.moveTo', { state: 'In Progress' }));
+    expect(dialog.querySelector('.issues-start-branch')).toBeNull(); // the tracker names no branch
+    expect(dialog.querySelector('.issues-start-move')).toBeNull(); // nor has an "in progress" state
   });
 
-  test('starting checks out the branch, moves the ticket and opens a linked chat with an unsent draft', async () => {
+  test('starting opens a chat linked to the ticket, with an unsent draft', async () => {
     await startSetup();
     root.querySelector('[data-action="start-confirm"]').click();
     await flush();
-    expect(api.git.createBranch).toHaveBeenCalledWith({ projectPath: '/repo/acme', branch: 'ada/eng-151-persist-ticket-filters-per-screen' });
-    expect(api.issueTrackers.updateIssue).toHaveBeenCalledWith(expect.any(String), 'ENG-151', { stateId: 's-eng-progress' });
+    expect(api.git.createBranch).not.toHaveBeenCalled();
+    expect(api.issueTrackers.updateIssue).not.toHaveBeenCalled();
     const [project, opts] = deps.startSession.mock.calls[0];
     expect(project.id).toBe('p-acme');
-    expect(opts.initialTickets).toEqual([{ ref: 'linear:ENG-151', connectionId: expect.stringMatching(/^linear-/), title: 'Persist ticket filters per screen' }]);
-    expect(opts.draftPrompt).toContain(t('tickets.start.draftIntro', { key: 'ENG-151' }));
-    expect(opts.draftPrompt).toContain('# ENG-151: Persist ticket filters per screen');
+    expect(opts.initialTickets).toEqual([{ ref: 'fake:#2', connectionId: expect.stringMatching(/^fake-/), title: 'Document the adapter contract' }]);
+    expect(opts.draftPrompt).toContain(t('tickets.start.draftIntro', { key: '#2' }));
+    expect(opts.draftPrompt).toContain('# #2: Document the adapter contract');
+    expect(opts.draftPrompt).toContain('Repository: acme/site');
+    expect(opts.draftPrompt).not.toContain('Team:'); // the repository is not called a team
     expect(root.querySelector('.issues-start')).toBeNull();
   });
 
-  test('an existing branch is checked out instead of created', async () => {
-    await startSetup({ git: { createBranch: jest.fn(async () => ({ success: false, error: "fatal: a branch named 'x' already exists" })) } });
+  test("the tracker's branch is created when git does not have it", async () => {
+    await startSetup({ branchName: 'ada/2-docs', branches: { local: ['main'], remote: ['main'] } });
     root.querySelector('[data-action="start-confirm"]').click();
     await flush();
-    expect(api.git.checkout).toHaveBeenCalledWith({ projectPath: '/repo/acme', branch: 'ada/eng-151-persist-ticket-filters-per-screen' });
-    expect(deps.startSession).toHaveBeenCalled();
+    expect(api.git.branches).toHaveBeenCalledWith({ projectPath: '/repo/acme' });
+    expect(api.git.createBranch).toHaveBeenCalledWith({ projectPath: '/repo/acme', branch: 'ada/2-docs' });
+    expect(api.git.checkout).not.toHaveBeenCalled();
+    expect(deps.showToast).not.toHaveBeenCalled();
   });
 
-  test('a branch that cannot be checked out is said, and the session still starts', async () => {
-    await startSetup({ git: { createBranch: jest.fn(async () => ({ success: false, error: 'local changes would be overwritten' })) } });
-    root.querySelector('.issues-start-move').checked = false;
-    root.querySelector('[data-action="start-confirm"]').click();
-    await flush();
-    expect(deps.showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning', title: t('tickets.start.branchFailed') }));
-    expect(api.issueTrackers.updateIssue).not.toHaveBeenCalled();
-    expect(deps.startSession).toHaveBeenCalled();
+  test('an existing branch, local or on the remote, is checked out, whatever language git speaks', async () => {
+    for (const branches of [{ local: ['main', 'ada/2-docs'], remote: [] }, { local: ['main'], remote: ['ada/2-docs'] }]) {
+      await startSetup({ branchName: 'ada/2-docs', branches });
+      root.querySelector('[data-action="start-confirm"]').click();
+      await flush();
+      expect(api.git.checkout).toHaveBeenCalledWith({ projectPath: '/repo/acme', branch: 'ada/2-docs' });
+      expect(api.git.createBranch).not.toHaveBeenCalled();
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
   });
 
   test('Escape closes the options without starting anything', async () => {

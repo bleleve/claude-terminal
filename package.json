@@ -22,12 +22,13 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test:e2e": "node tests/e2e/smoke.js",
-    "postinstall": "electron-rebuild -f -w node-pty,keytar,better-sqlite3",
+    "postinstall": "electron-rebuild -f -w node-pty,keytar || node scripts/rebuild-warning.cjs && node scripts/linux-desktop-entry.cjs",
     "lab": "node scripts/workflow-lab/run-lab.js",
     "lab:audit": "node scripts/workflow-lab/audit-slots.js",
     "test:coverage": "jest --coverage",
     "test:runtime": "node scripts/run-runtime-smoke.cjs",
-    "test:upgrade": "node scripts/run-runtime-smoke.cjs --upgrade"
+    "test:upgrade": "node scripts/run-runtime-smoke.cjs --upgrade",
+    "test:remote-live": "node scripts/remote-ssh-live.cjs"
   },
   "keywords": [
     "claude",
@@ -45,7 +46,7 @@
     "url": "https://github.com/Sterll/claude-terminal/issues"
   },
   "engines": {
-    "node": ">=24.15.0"
+    "node": ">=22.13.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
@@ -135,7 +136,6 @@
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
     "archiver": "^7.0.0",
-    "better-sqlite3": "^13.0.3",
     "chokidar": "^5.0.0",
     "dompurify": "^3.3.1",
     "electron-updater": "^6.1.7",
@@ -156,5 +156,8 @@
     "three": "^0.183.2",
     "ws": "^8.19.0",
     "yauzl": "^3.4.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^13.0.3"
   }
 }

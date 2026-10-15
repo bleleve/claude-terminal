@@ -20,6 +20,7 @@ const {
   countTerminalsForProject
 } = require('../state');
 const { getSetting } = require('../state');
+const { isRemoteProject } = require('../../shared/remote-capabilities');
 
 /**
  * Terminal theme configuration
@@ -59,9 +60,6 @@ async function createTerminal(project, { runClaude = true, resumeSessionId = nul
   const skipPermissions = getSetting('skipPermissions');
   const projectIndex = require('../state').getProjectIndex(project.id);
 
-  // Telemetry: track terminal creation
-  api.telemetry?.sendFeature({ feature: 'terminal:create', metadata: {} });
-
   // Create terminal on main process
   const id = await api.terminal.create({
     cwd: project.path,
@@ -69,7 +67,8 @@ async function createTerminal(project, { runClaude = true, resumeSessionId = nul
     skipPermissions,
     // Only an explicit binding is sent: unbound projects run against the
     // machine-wide login, which is what keeps `claude /login` capturable.
-    accountId: require('../state').getProjectAccount(project.id),
+    // A remote (SSH) project sends none: its host has its own login.
+    ...(isRemoteProject(project) ? {} : { accountId: require('../state').getProjectAccount(project.id) }),
     // Attribution for the output capture and the terminal_exit_code triggers.
     projectId: project.id,
     projectPath: project.path,

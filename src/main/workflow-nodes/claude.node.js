@@ -67,10 +67,19 @@ module.exports = {
     { name: 'result', type: 'any'    },
   ],
 
-  props: { mode: 'prompt', prompt: '', agentId: '', skillId: '', model: 'sonnet', effort: 'medium', outputSchema: null, cwd: '', maxTurns: 30, resumeFrom: '' },
+  // `account`: '' = default account, '__project__' = the target project's
+  // binding, anything else an account id (see resolveRunAccount).
+  // `maxUsage`: skip automatic runs while that account's session or weekly
+  // usage is at or above this percentage, 0 = always run. Enforced by
+  // WorkflowService before the run starts, not here.
+  props: { mode: 'prompt', prompt: '', agentId: '', skillId: '', model: 'sonnet', effort: 'medium', account: '', maxUsage: 0, outputSchema: null, cwd: '', maxTurns: 30, resumeFrom: '' },
 
   fields: [
     { type: 'claude-config', key: 'mode', label: 'wfn.claude.label' },
+    { type: 'account-picker', key: 'account', label: 'automation.form.account' },
+    { type: 'select', key: 'maxUsage', label: 'automation.form.maxUsage', hint: 'automation.form.maxUsageHint',
+      options: require('../../shared/simple-task').USAGE_THRESHOLDS
+        .map(n => ({ value: n, label: n ? `${n}%` : 'automation.form.maxUsageOff' })) },
     // The claude-config custom field already exposes `cwd`; it does NOT expose
     // maxTurns, so surface it here (backward-compatible, defaults to 30).
     { type: 'number', key: 'maxTurns', label: 'Max turns',
@@ -127,6 +136,14 @@ module.exports = {
       || resolveProjectPath(config.projectId || '', vars)
       || varCtx.project
       || '';
+    // A remote (SSH) project's URI never exists locally, so the fallback below
+    // would quietly run the step in the home directory instead.
+    const { assertLocalTargets, resolveRunAccount } = require('./_projects');
+    assertLocalTargets(cwd);
+    // Resolved from the directory the step was aimed at, before the home
+    // fallback below: a missing project folder must not make the step look
+    // like it belongs to no project, or to whatever project holds $HOME.
+    const accountId = resolveRunAccount(config.account, { projectRef: config.projectId || '', cwd, vars });
     if (!cwd || !fs.existsSync(cwd)) {
       console.warn(`[claude.node] cwd invalid or missing: "${cwd}", falling back to ${home}`);
       cwd = home;
@@ -144,7 +161,10 @@ module.exports = {
 
     if (signal?.aborted) throw new Error('Cancelled');
 
-    const opts = { cwd, prompt, model, effort, maxTurns, signal };
+    // `automation` lets runSinglePrompt record the account it ran on in the
+    // run, and price the step under this automation before its transcript is
+    // deleted. Null when the node is tested from the editor.
+    const opts = { cwd, prompt, model, effort, maxTurns, accountId, automation: ctx.automation || null, signal };
 
     // Continue an existing Claude conversation instead of starting cold — how
     // an automation inherits the context of the session that triggered it.

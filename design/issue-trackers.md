@@ -1,7 +1,7 @@
 # Issue trackers: a provider-neutral ticket layer
 
-**Status:** all eight steps under *Delivery* shipped. A workspace is connected in Settings → Tickets.
-**Scope:** `src/shared/issue-trackers.js`, `src/main/issue-trackers/`, and later the Tickets screen and the per-session Tickets and Git tabs.
+**Status:** all three steps under *Delivery* are in. Linear is the one provider registered; a workspace is connected in Settings → Tickets.
+**Scope:** `src/shared/issue-trackers.js`, `src/main/issue-trackers/`, the Tickets screen and the per-session Tickets tab.
 **Audience:** anyone writing an adapter for a new provider, and anyone about to change the contract.
 
 ---
@@ -14,7 +14,7 @@ Three surfaces, one data layer:
 2. **A Tickets tab in each session**, beside Conversation, Changes and Documents. Only the tickets linked to that session, with their live status.
 3. **A Git tab in each session**: branch, commits, pull request, checks and reviews. It sits next to Changes and does not replace it: Changes is what Claude edited, Git is where the branch stands.
 
-Linear is the provider the app ships with. The core does not know that: a provider is an **adapter**, one file, and adding Jira, GitHub Issues or GitLab means adding a file, not touching the screens.
+Linear is the first provider. The core does not know that: a provider is an **adapter**, one file, and adding Jira, GitHub Issues or GitLab means adding a file, not touching the screens.
 
 ---
 
@@ -104,7 +104,7 @@ Every method is async. Failures reject with an `Error` whose `code` is one of `A
 
 A **query** (`normalizeQuery()`) is the only thing an adapter receives: `text`, `mine` (`assigned`, `created`, `subscribed`), `stateCategories`, `stateIds`, `assigneeIds` (with the special values `me` and `none`), `priorities`, `labelIds`, `facets`, `updatedSince`, `sort` and `limit`. Unknown values are dropped rather than rejected, so a saved filter from an older build degrades to "no filter" instead of to an error.
 
-Clauses combine with AND, except `stateCategories` and `stateIds`: together they are the one "Status" filter, and a state matches if its category **or** its id is selected. The filter bar offers whole categories and individual states in a single menu, and "To do, plus In Review" must not come back empty. Adapters only have to honour `sort: 'updated'` and `'created'` on the server; `'priority'` and `'due'` may be applied to the returned page.
+Clauses combine with AND, except `stateCategories` and `stateIds`: together they are the one "Status" filter, and a state matches if its category **or** its id is selected. The filter bar offers whole categories and individual states in a single menu, and "To do, plus In Review" must not come back empty. Every sort must hold across pages: "Load more" appends the next page as it comes, so a `'priority'` or `'due'` order applied to each page alone would restart at the top of every page. An adapter whose tracker cannot order by those on the server has to page them itself, the way the Linear adapter asks for one priority at a time and orders due dates from a list of ids.
 
 ---
 
@@ -123,7 +123,7 @@ Where detection looks (`IssueDetectionService`):
 | Branch | the session's branch name contains a key |
 | Pull request | the title of the PR for the session's branch contains a key |
 
-Chat sessions are read from ChatService's event stream, terminal sessions from the `PostToolUse` and `UserPromptSubmit` hooks. A key is only suggested once the tracker confirms the ticket exists. Suggestions from one moment are gathered into one card, shown at the end of a turn, never in the middle of Claude's answer; a card left unanswered changes nothing, the suggestions stay listed in the session's Tickets tab.
+Chat sessions are read from ChatService's event stream, terminal sessions from the `PostToolUse` and `UserPromptSubmit` hooks. Chat sessions load the user's hooks too, so a hook event whose session ChatService runs is skipped (`ChatService.ownsCliSession`). Ticket content handed to Claude (an `@tickets` mention, the draft of a session started from a ticket) is fenced in a `<ticket key="...">` block that says it is tracker data, not instructions, and detection never reads inside that fence. A key is only suggested once the tracker confirms the ticket exists. Suggestions from one moment are gathered into one card, shown at the end of a turn, never in the middle of Claude's answer; a card left unanswered changes nothing, the suggestions stay listed in the session's Tickets tab.
 
 Two connections of the same provider that both have a ticket with the same key collide on one ref (`linear:ENG-142`); the first connection that confirms the ticket wins. Rare enough to leave for now.
 
@@ -152,13 +152,10 @@ Two connections of the same provider that both have a ticket with the same key c
 
 ## Delivery
 
-One pull request per step, each built on the previous one:
+Three pull requests, each built on the previous one:
 
-1. Core contract: this note, the shared model, the registry, the contract suite.
-2. Linear adapter, connection settings, key in the credential store.
-3. Tickets screen, read-only: list, filters, ticket detail.
-4. Kanban board and writes: drag to change state, assignee and priority in place.
-5. Git tab in each session.
-6. Tickets tab in each session: link store, Link button, `@` mention.
-7. Automatic detection and the confirmation card.
-8. Start a session from a ticket, post the session recap as a comment, terminal sessions.
+1. The Git tab in each session: branch, commits, pull request, checks and reviews (#237).
+2. This layer and every surface on it: the core contract, connection settings with the key in the credential store, the Tickets screen (list, filters, detail, board, writes), the Tickets tab in each session (links, `@` mention, automatic detection and its confirmation card), starting a session from a ticket, the recap comment, and terminal sessions. All of it is tested against `tests/issue-trackers/fake.tracker.js`, which ships nothing.
+3. The Linear adapter, its fixture, and the tests that need what only Linear has: priorities, teams with their own workflows, cycles, prefixed keys in branch names.
+
+On the fork the same work shipped earlier as eight smaller steps, each built on the previous one: the core contract; the Linear adapter with connection settings and the key in the credential store; the read-only Tickets screen; the Kanban board and writes; the Git tab in each session; the Tickets tab in each session; automatic detection and the confirmation card; starting a session from a ticket, the recap comment and terminal sessions.

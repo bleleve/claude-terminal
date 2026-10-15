@@ -26,12 +26,16 @@ function isTrusted(event) {
   return !!event?.senderFrame && event.senderFrame === event.sender?.mainFrame &&
     trusted.has(event.sender) && documentUrl(event.senderFrame.url) === trusted.get(event.sender);
 }
-function allowMicrophone(webContents, details = {}, origin) {
+function allowMainDocument(webContents, details = {}, origin) {
   const expected = trusted.get(webContents);
   if (!expected?.endsWith('/index.html') || documentUrl(webContents.getURL()) !== expected) return false;
   if (origin && origin !== 'file://' && documentUrl(origin) !== expected) return false;
   if (details.requestingUrl && documentUrl(details.requestingUrl) !== expected) return false;
   if (details.isMainFrame === false) return false;
+  return true;
+}
+function allowMicrophone(webContents, details = {}, origin) {
+  if (!allowMainDocument(webContents, details, origin)) return false;
   return details.mediaTypes ? details.mediaTypes.length > 0 && details.mediaTypes.every(type => type === 'audio') : details.mediaType === 'audio';
 }
 
@@ -54,12 +58,6 @@ const systemRoots = (process.platform === 'win32'
   ? [process.env.SystemRoot || 'C:\\Windows', process.env.ProgramFiles || 'C:\\Program Files', process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', process.env.ProgramData || 'C:\\ProgramData']
   : ['/etc', '/bin', '/sbin', '/usr', '/sys', '/proc', '/dev', ...(process.platform === 'darwin' ? ['/Library/System', '/System'] : ['/boot', '/lib', '/lib64'])])
   .map(root => { try { return canonical(root); } catch { return path.resolve(root); } });
-// The renderer has no legitimate reason to touch live credential material, and
-// ~/.claude is granted wholesale below for settings, skills and agents - so the
-// store sitting inside it has to be refused by name. Account switching reads
-// credentials in the main process, never through this bridge.
-const deniedFiles = [path.join(os.homedir(), '.claude', '.credentials.json')]
-  .map(file => { try { return canonical(file); } catch { return path.resolve(file); } });
 const inside = (file, root) => {
   if (process.platform === 'win32') { file = file.toLowerCase(); root = root.toLowerCase(); }
   return file === root || file.startsWith(root + path.sep);
@@ -74,14 +72,60 @@ function permitted(file, write = false) {
   try {
     const target = canonical(file);
     if (process.platform === 'win32' && file.startsWith('\\\\')) return false;
-    if (deniedFiles.some(denied => inside(target, denied))) return false;
     // Keep the system-directory protection; packaged application resources are
     // the only read exception (e.g. an installation under Program Files).
     if (systemRoots.some(root => inside(target, root)) && (write || !applicationRoots.some(root => inside(target, root)))) return false;
+    // Keep upstream's credential/startup guards when moving I/O into main.
+    // A project or dialog grant must not override these boundaries.
+    const home = os.homedir();
+    // remote-hosts.json is main-process only: its `sshBinary` names the program
+    // spawned for every SSH connection, so a renderer able to write it would
+    // choose what runs here. The data directory grant must not reach it.
+    const blocked = ['.ssh', '.aws', '.gnupg', '.claude/.credentials.json', '.claude-terminal/remote-hosts.json'].map(name => path.join(home, name));
+    if (write) {
+      blocked.push(...['.bashrc', '.bash_profile', '.zshrc', '.zshenv', '.profile', '.claude.json'].map(name => path.join(home, name)));
+      if (process.platform === 'win32' && process.env.APPDATA) blocked.push(path.join(process.env.APPDATA, 'Microsoft/Windows/Start Menu/Programs/Startup'));
+      else if (process.platform === 'darwin') blocked.push(path.join(home, 'Library/LaunchAgents'));
+      else blocked.push(path.join(home, '.config/autostart'));
+    }
+    if (blocked.some(file => inside(target, canonical(file)))) return false;
     return grants.some(item => (!write || item.write) && (target === item.root || item.directory && target.startsWith(item.root + path.sep)));
   } catch { return false; }
 }
+/**
+ * The local folders projects.json asks to grant: every project path and its
+ * worktrees, in file order.
+ *
+ * A remote (SSH) project is skipped explicitly. Its path is an `ssh-remote://`
+ * URI, which `grant()` already ignores because it is not absolute, but the
+ * skip does not lean on that: a remote project whose path was hand-edited into
+ * a bare POSIX path would otherwise grant a local folder, since on Windows
+ * `path.resolve('/home/x')` lands on the current drive, and a remote `/` would
+ * be the whole drive (design/remote-ssh.md section 7.1). Its worktrees are
+ * remote too, so they are skipped with it.
+ */
+function projectGrantPaths(data) {
+  const out = [];
+  for (const project of (data && data.projects) || []) {
+    if (project.remote || (typeof project.path === 'string' && project.path.startsWith('ssh-remote://'))) continue;
+    out.push(project.path);
+    for (const worktree of project.worktrees || []) out.push(worktree.path);
+  }
+  return out;
+}
 function install(ipcMain) {
+  // Deliberate: `ipcMain.handle` and `ipcMain.on` are wrapped once, here, so
+  // every one of the app's handlers is gated without any of them opting in.
+  // Adding the check to each registration site instead would mean a new
+  // handler is unguarded by default, which is the wrong way round for a
+  // privilege boundary.
+  //
+  // The cost is that this one function decides reachability for all of them,
+  // and a handler that legitimately needs a different sender will fail with a
+  // confusing "Untrusted IPC sender" far from its own code. There is no opt-out
+  // flag on purpose: if you hit that, register the extra frame through
+  // `guardWindow()` so it becomes a trusted document, rather than punching a
+  // hole through here.
   if (installed) return; installed = true;
   const wrappers = new WeakMap();
   for (const method of ['handle', 'on']) {
@@ -111,10 +155,7 @@ function install(ipcMain) {
   if (process.resourcesPath) { grant(process.resourcesPath, { write: false }); applicationRoots.push(canonical(process.resourcesPath)); }
   try {
     const projects = JSON.parse(fs.readFileSync(path.join(data, 'projects.json'), 'utf8'));
-    for (const project of projects.projects || []) {
-      grant(project.path);
-      for (const worktree of project.worktrees || []) grant(worktree.path);
-    }
+    for (const file of projectGrantPaths(projects)) grant(file);
   } catch { /* New installations have no projects yet. */ }
   require('./rendererFiles').install(ipcMain, permitted);
   ipcMain.on('fs-authorize', (event, file, write) => { event.returnValue = permitted(file, !!write); });
@@ -124,4 +165,4 @@ function install(ipcMain) {
     catch { event.returnValue = null; }
   });
 }
-module.exports = { install, guardWindow, isTrusted, allowMicrophone, grant, permitted };
+module.exports = { install, guardWindow, isTrusted, allowMainDocument, allowMicrophone, grant, permitted, projectGrantPaths };

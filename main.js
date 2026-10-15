@@ -3,7 +3,7 @@
  * Minimal entry point that bootstraps the modular architecture
  */
 
-const { app, globalShortcut, session, ipcMain } = require('electron');
+const { app, globalShortcut, session, ipcMain, powerMonitor } = require('electron');
 const rendererSecurity = require('./src/main/utils/rendererSecurity');
 rendererSecurity.install(ipcMain);
 
@@ -68,7 +68,7 @@ function bootstrapApp() {
 
   const fs = require('fs');
   const { loadAccentColor, settingsFile } = require('./src/main/utils/paths');
-  const { resolveGlobalShortcuts } = require('./src/shared/global-shortcuts');
+  const { resolveGlobalShortcuts, matchesAccelerator } = require('./src/shared/global-shortcuts');
   const { initializeServices, cleanupServices, hookEventServer } = require('./src/main/services');
   const { registerAllHandlers } = require('./src/main/ipc');
   const {
@@ -96,7 +96,23 @@ function bootstrapApp() {
   const telemetryService = require('./src/main/services/TelemetryService');
 
   // Handle second instance attempt - show existing window
-  app.on('second-instance', () => {
+  //
+  // A launch flag runs the matching global shortcut action instead. That is
+  // how a global shortcut is reached where the OS grab cannot be: on GNOME
+  // before 48 under Wayland, bind a custom system shortcut to
+  // `<launcher> --new-terminal` and this instance does the rest.
+  const SECOND_INSTANCE_ACTIONS = {
+    '--new-terminal': 'globalNewTerminal',
+    '--quick-picker': 'globalQuickPicker',
+    '--new-worktree': 'globalNewWorktree',
+    '--push-to-talk': 'globalPushToTalk'
+  };
+  app.on('second-instance', (_event, argv) => {
+    const flag = (argv || []).find(a => Object.prototype.hasOwnProperty.call(SECOND_INSTANCE_ACTIONS, a));
+    if (flag) {
+      runGlobalShortcutAction(SECOND_INSTANCE_ACTIONS[flag]);
+      return;
+    }
     const mainWindow = getMainWindow();
     if (mainWindow) {
       if (mainWindow.isMinimized()) {
@@ -126,6 +142,7 @@ function bootstrapApp() {
     registerNotificationHandlers();
     createTray(accentColor);
     registerGlobalShortcuts();
+    attachInWindowShortcuts(mainWindow);
 
     // Start hook event server if hooks are enabled
     try {
@@ -133,6 +150,11 @@ function bootstrapApp() {
         const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
         if (settings.hooksEnabled) {
           hookEventServer.start(mainWindow);
+        } else {
+          // Enabled hooks are repaired by the renderer's verify; disabled ones
+          // are never looked at again, so drop any left pointing at a removed install.
+          const pruneResult = require('./src/main/services/HooksService').pruneDeadHooks();
+          if (pruneResult.pruned > 0) console.log(`[Hooks] Pruned ${pruneResult.pruned} hooks pointing at a removed install`);
         }
       }
     } catch (e) {
@@ -216,6 +238,7 @@ function bootstrapApp() {
       let mainWindow = getMainWindow();
       if (!mainWindow) {
         mainWindow = createMainWindow({ isDev: process.argv.includes('--dev') });
+        attachInWindowShortcuts(mainWindow);
       }
       showMainWindow();
       setTimeout(() => {
@@ -254,6 +277,48 @@ function bootstrapApp() {
   /** Currently registered accelerators (for selective unregister) */
   const registeredAccelerators = new Set();
 
+  /** The resolved bindings, also matched inside the window (see attachInWindowShortcuts) */
+  let activeShortcuts = [];
+
+  /** Last time each action ran, so an OS grab and the in-window match cannot both fire it */
+  const lastShortcutRun = new Map();
+
+  function runGlobalShortcutAction(id) {
+    const action = GLOBAL_SHORTCUT_ACTIONS[id];
+    if (!action) return;
+    const now = Date.now();
+    if (now - (lastShortcutRun.get(id) || 0) < 300) return;
+    lastShortcutRun.set(id, now);
+    action();
+  }
+
+  /**
+   * Answer the global accelerators while the window itself has focus.
+   *
+   * `globalShortcut.register()` cannot be trusted to report whether the
+   * shortcut will ever fire: on native Wayland it returns true with no
+   * GlobalShortcuts portal behind it (GNOME < 48, i.e. Ubuntu 24.04), and the
+   * key is then delivered to the page, which has no handler for it. Where the
+   * OS grab works it consumes the key before this sees it.
+   *
+   * Linux only. On Windows and macOS the grab is reliable, and answering here
+   * as well would add a second matcher that has to agree with the OS on every
+   * layout, for no shortcut that does not already fire.
+   */
+  function attachInWindowShortcuts(win) {
+    if (process.platform !== 'linux') return;
+    if (!win || win.isDestroyed()) return;
+    win.webContents.on('before-input-event', (event, input) => {
+      for (const { id, accelerator } of activeShortcuts) {
+        if (matchesAccelerator(accelerator, input)) {
+          event.preventDefault();
+          runGlobalShortcutAction(id);
+          return;
+        }
+      }
+    });
+  }
+
   /**
    * Register global keyboard shortcuts (reads config from settings or IPC payload)
    */
@@ -271,11 +336,11 @@ function bootstrapApp() {
       console.warn(`[GlobalShortcuts] Refusing to register ${id} (${accelerator}): ${reason}`);
     }
 
-    for (const { id, accelerator } of resolved) {
-      const action = GLOBAL_SHORTCUT_ACTIONS[id];
-      if (!action) continue;
+    activeShortcuts = resolved.filter(({ id }) => GLOBAL_SHORTCUT_ACTIONS[id]);
+
+    for (const { id, accelerator } of activeShortcuts) {
       try {
-        globalShortcut.register(accelerator, action);
+        globalShortcut.register(accelerator, () => runGlobalShortcutAction(id));
         registeredAccelerators.add(accelerator);
       } catch (e) {
         console.error(`[GlobalShortcuts] Failed to register ${id} (${accelerator}):`, e);
@@ -318,22 +383,24 @@ function bootstrapApp() {
     // model-authored content and must not be able to ask for geolocation,
     // notifications or anything else on its own.
     //
-    // 'clipboard-sanitized-write' is allowed outright because leaving it off
-    // broke every copy button in the app: navigator.clipboard.writeText() runs
-    // this check and its promise rejects when it is denied, silently. Writing
-    // text the user just clicked "copy" on is not a capability worth
-    // withholding - reading the clipboard still is, so it stays denied.
+    // 'clipboard-sanitized-write' is granted to the main application document
+    // because leaving it off broke every copy button in the app:
+    // navigator.clipboard.writeText() runs this check and its promise rejects
+    // when it is denied, silently. Writing text the user just clicked "copy" on
+    // is not a capability worth withholding - reading the clipboard still is,
+    // so it stays denied.
     //
     // 'media' is narrower than a name on a list: allowMicrophone() also checks
     // the requesting frame and origin against the window this app trusts, and
-    // audio-only at that.
+    // audio-only at that. allowMainDocument() applies the same frame and origin
+    // check to the clipboard write.
     session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
-      if (permission === 'clipboard-sanitized-write') return callback(true);
-      callback(permission === 'media' && rendererSecurity.allowMicrophone(contents, details));
+      callback(permission === 'media' && rendererSecurity.allowMicrophone(contents, details) ||
+        permission === 'clipboard-sanitized-write' && rendererSecurity.allowMainDocument(contents, details));
     });
     session.defaultSession.setPermissionCheckHandler((contents, permission, origin, details) => {
-      if (permission === 'clipboard-sanitized-write') return true;
-      return permission === 'media' && rendererSecurity.allowMicrophone(contents, details, origin);
+      return permission === 'media' && rendererSecurity.allowMicrophone(contents, details, origin) ||
+        permission === 'clipboard-sanitized-write' && rendererSecurity.allowMainDocument(contents, details, origin);
     });
 
     // Content Security Policy - allow only local file:// resources
@@ -359,6 +426,15 @@ function bootstrapApp() {
 
     // Serve ```html markdown previews over ct-preview://
     require('./src/main/ipc/preview.ipc').registerPreviewProtocol();
+
+    // Back from sleep: SSH hosts waiting out a reconnect backoff retry now,
+    // and connected ones are pinged, since a suspended TCP connection is
+    // usually dead without anyone having noticed yet.
+    powerMonitor.on('resume', () => {
+      try { require('./src/main/services/SshHostService').onResume(); } catch (e) {
+        console.warn('[SSH] resume retry failed:', e.message);
+      }
+    });
 
     initializeApp();
   });

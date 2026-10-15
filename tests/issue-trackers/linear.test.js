@@ -15,6 +15,7 @@ const linear = require('../../src/main/issue-trackers/linear.tracker');
 const fixture = require('./fixtures/linear.fixture');
 const { normalizeQuery } = require('../../src/shared/issue-trackers');
 
+const NOW_ISO = '2026-10-09T09:00:00.000Z';
 const client = () => linear.createClient({ secret: fixture.secret, fetch: fixture.fetch });
 const keysOf = async (raw) => (await client().listIssues(normalizeQuery({ limit: 100, ...raw }), null)).issues.map((i) => i.key).sort();
 
@@ -23,6 +24,11 @@ beforeEach(() => fixture.reset());
 describe('queries reach Linear with the right meaning', () => {
   test('an identifier finds that issue, whatever its case', async () => {
     expect(await keysOf({ text: 'eng-142' })).toEqual(['ENG-142']);
+  });
+
+  test('text shaped like a key is still searched as text', async () => {
+    expect(await keysOf({ text: 'utf-8' })).toEqual(['ENG-139']);
+    expect(await keysOf({ text: 'UTF-8' })).toEqual(['ENG-139']);
   });
 
   test('free text searches titles and descriptions', async () => {
@@ -76,16 +82,86 @@ describe('queries reach Linear with the right meaning', () => {
     expect(second.issues.some((i) => seen.has(i.key))).toBe(false);
   });
 
-  test('priority sort puts urgent first and "no priority" last', async () => {
-    const { issues } = await client().listIssues(normalizeQuery({ sort: 'priority', limit: 100 }), null);
-    const priorities = issues.map((i) => i.priority);
-    expect(priorities[0]).toBe(1);
-    expect(priorities.slice(-2)).toEqual([0, 0]);
+});
+
+describe('priority and due sorts hold across pages', () => {
+  /** Every page of a query, `limit` at a time, with the requests they took. */
+  async function walk(raw, limit) {
+    const sent = [];
+    const spy = (url, init) => { sent.push(JSON.parse(init.body)); return fixture.fetch(url, init); };
+    const c = linear.createClient({ secret: fixture.secret, fetch: spy });
+    const pages = [];
+    let cursor = null;
+    do {
+      const page = await c.listIssues(normalizeQuery({ ...raw, limit }), cursor);
+      pages.push(page.issues);
+      cursor = page.next;
+    } while (cursor && pages.length < 50);
+    return { pages, keys: pages.flat().map((i) => i.key), sent };
+  }
+
+  const newestFirst = async (raw = {}) => (await client().listIssues(normalizeQuery({ limit: 100, ...raw }), null)).issues;
+  const rank = (p) => (p ? p : 5);
+
+  test('priority: urgent first, "no priority" last, each priority newest first, whatever the page size', async () => {
+    const all = await newestFirst();
+    const expected = all.slice().sort((a, b) => rank(a.priority) - rank(b.priority)).map((i) => i.key);
+    expect(expected[0]).toBe('ENG-142');
+    for (const limit of [1, 3, 4, 100]) {
+      const { keys, pages } = await walk({ sort: 'priority' }, limit);
+      expect(keys).toEqual(expected);
+      // Only the last page may be short: a page that empties one priority goes on with the next.
+      expect(pages.slice(0, -1).every((p) => p.length === limit)).toBe(true);
+    }
   });
 
-  test('due sort puts dated issues first', async () => {
-    const { issues } = await client().listIssues(normalizeQuery({ sort: 'due', limit: 100 }), null);
-    expect(issues.slice(0, 2).map((i) => i.key)).toEqual(['OPS-12', 'DES-31']);
+  test('priority: a priority filter only asks for the priorities it keeps', async () => {
+    const { keys, sent } = await walk({ sort: 'priority', priorities: [3, 1] }, 100);
+    expect(keys).toEqual(['ENG-142', 'ENG-117', 'ENG-148', 'ENG-128', 'ENG-121', 'OPS-9', 'DES-31']);
+    expect(sent.filter((r) => r.operationName === 'Issues').map((r) => r.variables.filter.and.at(-1))).toEqual([
+      { priority: { eq: 1 } },
+      { priority: { eq: 3 } },
+    ]);
+  });
+
+  test('due: dated issues earliest first, then the rest newest first, whatever the page size', async () => {
+    const undated = (await newestFirst()).filter((i) => !i.dueDate).map((i) => i.key);
+    const expected = ['DES-28', 'OPS-12', 'DES-31', ...undated];
+    for (const limit of [1, 2, 3, 4, 100]) {
+      const { keys, pages } = await walk({ sort: 'due' }, limit);
+      expect(keys).toEqual(expected);
+      expect(pages.slice(0, -1).every((p) => p.length === limit)).toBe(true);
+    }
+  });
+
+  test('due: filters apply to the dated and the undated issues alike', async () => {
+    const { keys } = await walk({ sort: 'due', facets: { team: ['t-des'] } }, 1);
+    expect(keys).toEqual(['DES-28', 'DES-31']);
+  });
+
+  test('due: too many dated issues to rank is refused, not ranked from a sample', async () => {
+    const fetch = (url, init) => {
+      const { operationName, variables } = JSON.parse(init.body);
+      if (operationName !== 'DueDates') return fixture.fetch(url, init);
+      const n = variables.after ? Number(variables.after) : 0;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => ({
+          data: { issues: { nodes: [{ id: `i-${n}`, dueDate: '2026-10-10', updatedAt: NOW_ISO }], pageInfo: { hasNextPage: true, endCursor: String(n + 1) } } },
+        }),
+      });
+    };
+    const c = linear.createClient({ secret: fixture.secret, fetch });
+    await expect(c.listIssues(normalizeQuery({ sort: 'due' }), null)).rejects.toMatchObject({ code: 'PROVIDER' });
+  });
+
+  test('a cursor from another sort is refused rather than read as the first page', async () => {
+    const c = client();
+    const first = await c.listIssues(normalizeQuery({ sort: 'priority', limit: 2 }), null);
+    await expect(c.listIssues(normalizeQuery({ sort: 'due', limit: 2 }), first.next)).rejects.toMatchObject({ code: 'PROVIDER' });
+    await expect(c.listIssues(normalizeQuery({ sort: 'priority', limit: 2 }), 'not json')).rejects.toMatchObject({ code: 'PROVIDER' });
   });
 });
 
@@ -147,6 +223,66 @@ describe('mapping', () => {
     expect(issues.find((i) => i.key === 'ENG-151').parent.key).toBe('ENG-142');
   });
 
+  describe('sub-issue counts are exact or absent', () => {
+    // Answers SubIssues with one done child of ENG-142 per page, paged as pageInfoFor says; the rest goes to the fixture.
+    const subIssuesFetch = (pageInfoFor) => {
+      const sent = [];
+      const fetch = (url, init) => {
+        const body = JSON.parse(init.body);
+        if (body.operationName !== 'SubIssues') return fixture.fetch(url, init);
+        sent.push(body.variables);
+        const pageNo = body.variables.after ? Number(body.variables.after) : 0;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => ({
+            data: { issues: { nodes: [{ parent: { id: 'i-eng-142' }, state: { type: 'completed' } }], pageInfo: pageInfoFor(pageNo) } },
+          }),
+        });
+      };
+      return { fetch, sent };
+    };
+    const list = async (fetch) => {
+      const { issues } = await linear.createClient({ secret: fixture.secret, fetch }).listIssues(normalizeQuery({ limit: 100 }), null);
+      return issues;
+    };
+
+    test('every page is counted', async () => {
+      const { fetch, sent } = subIssuesFetch((n) => ({ hasNextPage: n < 2, endCursor: n < 2 ? String(n + 1) : null }));
+      const issues = await list(fetch);
+      expect(sent).toHaveLength(3);
+      expect(issues.find((i) => i.key === 'ENG-142').subIssues).toEqual({ total: 3, done: 3 });
+    });
+
+    test('more children than the page budget leaves every count out', async () => {
+      const { fetch, sent } = subIssuesFetch((n) => ({ hasNextPage: true, endCursor: String(n + 1) }));
+      const issues = await list(fetch);
+      expect(sent).toHaveLength(4);
+      expect(issues.length).toBeGreaterThan(10);
+      expect(issues.every((i) => i.subIssues === null)).toBe(true);
+    });
+
+    test('a next page without a cursor is not read again from the start', async () => {
+      const { fetch, sent } = subIssuesFetch(() => ({ hasNextPage: true, endCursor: null }));
+      const issues = await list(fetch);
+      expect(sent.map((v) => v.after)).toEqual([null]);
+      expect(issues.every((i) => i.subIssues === null)).toBe(true);
+    });
+
+    test('the detail leaves out a count it only has the first page of', async () => {
+      const fetch = async (url, init) => {
+        const res = await fixture.fetch(url, init);
+        const body = await res.json();
+        if (body.data?.issue) body.data.issue.children.pageInfo = { hasNextPage: true };
+        return { ...res, json: async () => body };
+      };
+      const issue = await linear.createClient({ secret: fixture.secret, fetch }).getIssue('ENG-142');
+      expect(issue.children).toHaveLength(3);
+      expect(issue.subIssues).toBeNull();
+    });
+  });
+
   test('the detail counts its own sub-issues and its parent\'s', async () => {
     const parent = await client().getIssue('ENG-142');
     expect(parent.subIssues).toEqual({ total: 3, done: 1 });
@@ -198,11 +334,68 @@ describe('transport', () => {
     ['HTTP 401 with an HTML body', respond(401, undefined), 'AUTH'],
     ['an authentication error', respond(400, { errors: [{ message: 'x', extensions: { type: 'authentication error' } }] }), 'AUTH'],
     ['a forbidden error', respond(400, { errors: [{ message: 'Forbidden', extensions: { type: 'forbidden' } }] }), 'PROVIDER'],
-    ['an entity not found', respond(200, { data: null, errors: [{ message: 'Entity not found: Issue', extensions: { type: 'invalid input' } }] }), 'NOT_FOUND'],
+    // whoAmI is about no one entity: a "not found" there is a failure, not a missing ticket.
+    ['an entity not found', respond(200, { data: null, errors: [{ message: 'Entity not found: Issue', extensions: { type: 'invalid input' } }] }), 'PROVIDER'],
     ['HTTP 500 without JSON', respond(500, undefined), 'PROVIDER'],
     ['a 200 without data', respond(200, {}), 'PROVIDER'],
   ])('maps %s', async (_label, fetch, code) => {
     await expect(call(fetch)).rejects.toMatchObject({ code });
+  });
+
+  test.each([
+    ['a newline', 'lin_api_secret0000\nextra'],
+    ['a NUL', 'lin_api_secret0000\0'],
+    ['an inner space', 'lin_api_secret0000 extra'],
+    ['a non-ASCII character', 'lin_api_secret0000é'],
+    ['an empty string', ''],
+  ])('a key with %s is refused before any request, without being quoted', async (_label, secret) => {
+    const fetch = jest.fn();
+    const err = await linear.createClient({ secret, fetch }).whoAmI().catch((e) => e);
+    expect(err).toMatchObject({ code: 'AUTH', message: 'The API key is malformed' });
+    if (secret) expect(err.message).not.toContain('secret0000');
+    expect(err.cause).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test('a thrown fetch is reported without quoting what it was given', async () => {
+    const secret = 'lin_api_secret0000';
+    const fetch = jest.fn(async () => {
+      throw new TypeError(`Headers.append: "${secret}" is an invalid header value.`);
+    });
+    const err = await linear.createClient({ secret, fetch }).whoAmI().catch((e) => e);
+    expect(err).toMatchObject({ code: 'NETWORK', message: 'Linear is unreachable' });
+    expect(err.cause).toBeUndefined();
+    expect(JSON.stringify(err, Object.getOwnPropertyNames(err))).not.toContain(secret);
+  });
+
+  test('a network failure keeps its system code', async () => {
+    const fetch = jest.fn(async () => {
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND api.linear.app'), { code: 'ENOTFOUND' }) });
+    });
+    await expect(call(fetch)).rejects.toMatchObject({ code: 'NETWORK', message: 'Linear is unreachable (ENOTFOUND)' });
+  });
+
+  describe('NOT_FOUND only means the issue asked for is missing', () => {
+    const notFound = (message) => respond(200, { data: null, errors: [{ message, extensions: { type: 'invalid input' } }] });
+    const clientWith = (fetch) => linear.createClient({ secret: 'lin_api_x', fetch });
+
+    test('a missing issue, read, updated or commented on', async () => {
+      const fetch = notFound('Entity not found: Issue');
+      await expect(clientWith(fetch).getIssue('ENG-1')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      await expect(clientWith(fetch).updateIssue('ENG-1', { priority: 1 })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      await expect(clientWith(fetch).addComment('ENG-1', 'x')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    });
+
+    test('another entity missing from an update is a provider failure', async () => {
+      const fetch = notFound('Entity not found: WorkflowState');
+      await expect(clientWith(fetch).updateIssue('ENG-1', { stateId: 's-gone' })).rejects.toMatchObject({ code: 'PROVIDER' });
+    });
+
+    test('a list that fails with "not found" is a provider failure', async () => {
+      const fetch = notFound('Entity not found: Team');
+      await expect(clientWith(fetch).listIssues(normalizeQuery({}), null)).rejects.toMatchObject({ code: 'PROVIDER' });
+      await expect(clientWith(fetch).metadata()).rejects.toMatchObject({ code: 'PROVIDER' });
+    });
   });
 
   test('a rate limit carries how long to wait, from Retry-After', async () => {

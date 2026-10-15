@@ -16,6 +16,9 @@ const { t } = require('../i18n');
 const registry = require('../../project-types/registry');
 const KanbanPanel = require('../ui/panels/KanbanPanel');
 const Timeline = require('./ProjectTimeline');
+const Brief = require('./dashboard/briefing');
+const { isRemoteProject, can } = require('../../shared/remote-capabilities');
+const remotePathLib = require('../../shared/remote-path');
 
 // Per-project active view: 'overview' | 'kanban' | 'timeline'
 const _dashViews = new Map();
@@ -85,6 +88,14 @@ let _cacheCleanupInterval = setInterval(evictCache, 60000);
  * @returns {string}
  */
 function getDiskCachePath(projectPath) {
+  // A remote (SSH) project's cache stays on this machine, under
+  // ~/.claude-terminal/remote-cache/<projectId>/: the app never writes its own
+  // files into a repository on someone's host (design/remote-ssh.md 5.5).
+  if (remotePathLib.isRemotePath(projectPath)) {
+    const project = (projectsState.get().projects || []).find(p => p.path === projectPath);
+    if (!project || typeof project.id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(project.id)) return null;
+    return path.join(window.electron_nodeModules.os.homedir(), '.claude-terminal', 'remote-cache', project.id, 'dashboard.json');
+  }
   return path.join(projectPath, DISK_CACHE_FILE);
 }
 
@@ -98,6 +109,7 @@ function getDiskCachePath(projectPath) {
 async function readDiskCache(projectPath) {
   try {
     const filePath = getDiskCachePath(projectPath);
+    if (!filePath) return null;
     const raw = await fs.promises.readFile(filePath, 'utf-8');
     const parsed = JSON.parse(raw);
     if (!parsed || !parsed.dashboard) return null;
@@ -132,8 +144,12 @@ async function _flushDiskWrites() {
   _pendingDiskWrites.clear();
   await Promise.all(writes.map(async ([projectPath, data]) => {
     const filePath = getDiskCachePath(projectPath);
+    if (!filePath) return;
     const payload = { _version: 1, _updatedAt: new Date().toISOString(), dashboard: data };
-    try { await fs.promises.writeFile(filePath, JSON.stringify(payload), 'utf-8'); } catch (_) {}
+    try {
+      if (remotePathLib.isRemotePath(projectPath)) await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.promises.writeFile(filePath, JSON.stringify(payload), 'utf-8');
+    } catch (_) {}
   }));
 }
 
@@ -201,6 +217,9 @@ async function getPackageDeps(projectPath) {
  * @returns {Promise<{ type: string, label: string, color: string }|null>}
  */
 async function detectProjectType(projectPath) {
+  // A remote project's files are on its host: its type comes from the listing
+  // that comes back with its stats (detectRemoteProjectType), never from fs.
+  if (remotePathLib.isRemotePath(projectPath)) return null;
   try {
     // Read directory listing once (covers all *.ext glob patterns + exact filenames)
     let dirEntries = null;
@@ -250,6 +269,40 @@ async function detectProjectType(projectPath) {
   } catch (e) {
     return null;
   }
+}
+
+/**
+ * Project type of a remote project, from the root listing and package.json
+ * dependencies its stats request brings back. The same markers, in the same
+ * order, as detectProjectType().
+ * @param {{ rootEntries?: string[], packageDeps?: string[] }|null} stats
+ * @returns {{ type: string, label: string, color: string }|null}
+ */
+function detectRemoteProjectType(stats) {
+  if (!stats || !Array.isArray(stats.rootEntries)) return null;
+  const entries = stats.rootEntries;
+  const deps = new Set(Array.isArray(stats.packageDeps) ? stats.packageDeps : []);
+  for (const marker of PROJECT_TYPE_MARKERS) {
+    if (marker.files) {
+      const hasFile = marker.files.some(f => (f.startsWith('*.') ? entries.some(e => e.endsWith(f.slice(1))) : entries.includes(f)));
+      if (hasFile) {
+        if (!marker.deps) return { type: marker.type, label: marker.label, color: marker.color };
+      } else if (!marker.deps) {
+        continue;
+      }
+    }
+    if (marker.deps) {
+      if (deps.size === 0) continue;
+      if (marker.deps.some(dep => deps.has(dep))) return { type: marker.type, label: marker.label, color: marker.color };
+    }
+  }
+  return null;
+}
+
+/** The host of a remote project (state, label), or null for a local one. */
+function _remoteHost(project) {
+  if (!isRemoteProject(project)) return null;
+  return require('../state/remoteHosts.state').getProjectHost(project);
 }
 
 /**
@@ -576,7 +629,15 @@ function loadProjectDashboard(project) {
     workflowRuns: { runs: [] }, pullRequests: { pullRequests: [] },
     ...getCachedData(project.id)
   };
+  const remote = isRemoteProject(project);
   load.git = Promise.all([getGitInfoFull(project.path), detectProjectType(project.path)]).then(([gitInfo, projectType]) => {
+    if (remote) {
+      // A host that dropped mid-load says nothing about the repository: keep
+      // the last known answer rather than repaint it as "not a git repo". The
+      // type comes with the stats, below.
+      if (gitInfo && gitInfo.disconnected && data.gitInfo && data.gitInfo.isGitRepo) gitInfo = data.gitInfo;
+      projectType = data.projectType || null;
+    }
     Object.assign(data, { gitInfo, projectType, commitHistory30d: null });
     // Keep partial data usable while GitHub responds, without marking it fresh.
     if (isCurrent()) dashboardCache.set(project.id, { data, timestamp: 0, loading: true });
@@ -584,13 +645,19 @@ function loadProjectDashboard(project) {
   });
   // Counting lines reads every source file; it must not hold up the Git panel.
   load.stats = getProjectStats(project.path).then(stats => {
+    if (remote) {
+      // Same rule as git: a failed remote count keeps the last known figures.
+      if (stats && stats.reason && data.stats) return data;
+      const type = detectRemoteProjectType(stats);
+      if (type || !data.projectType) data.projectType = type;
+    }
     data.stats = stats;
     return data;
   });
-  const remote = load.git.then(async () => {
+  const github = load.git.then(async () => {
     Object.assign(data, await loadRemoteDashboardData(data.gitInfo));
   });
-  load.complete = Promise.all([load.git, load.stats, remote]).then(() => {
+  load.complete = Promise.all([load.git, load.stats, github]).then(() => {
     if (isCurrent()) setCacheData(project.id, data);
     return data;
   }).finally(() => {
@@ -921,11 +988,18 @@ function buildTimelineToolbarHtml(projectId, counts, days, activeKinds) {
  * @param {string[]} failed - sources that could not be read
  * @param {number} now - injected so the day headings agree with the grouping
  */
-function buildTimelineListHtml(groups, failed, now) {
-  const warning = failed.length ? `
+function buildTimelineListHtml(groups, failed, now, unavailable = []) {
+  const failedNote = failed.length ? `
     <div class="timeline-warning">
       ${escapeHtml(t('timeline.sourcesFailed', { sources: failed.map(Timeline.kindLabel).join(', ') }))}
     </div>` : '';
+  // A remote project's sessions while its host is away: where they are,
+  // rather than a timeline that silently has none.
+  const hostNotes = (unavailable || []).map(u => `
+    <div class="timeline-warning">
+      ${escapeHtml(t('ssh.terminal.historyOnHost', { host: u.host || t('ssh.unknownHost') }))}
+    </div>`).join('');
+  const warning = failedNote + hostNotes;
 
   if (!groups.length) {
     return `${warning}
@@ -1803,7 +1877,7 @@ async function renderTimelineView(container, project, data, options, isRefreshin
   const now = Date.now();
   paint(
     buildTimelineToolbarHtml(project.id, counts, days, activeKinds) +
-    buildTimelineListHtml(groups, cached.failed, now)
+    buildTimelineListHtml(groups, cached.failed, now, cached.unavailable)
   );
 
   const rerender = () => renderTimelineView(container, project, data, options, isRefreshing, isCurrent);
@@ -1843,6 +1917,207 @@ async function renderTimelineView(container, project, data, options, isRefreshin
       showError(e.message);
     }
   });
+}
+
+// ==================== BRIEFING (top of the project view) ====================
+
+const BRANCH_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 2a3 3 0 0 0-3 3c0 1.28.81 2.38 1.94 2.81A4 4 0 0 0 9 12H6a3 3 0 0 0 0 6 3 3 0 0 0 2.94-2.41A4 4 0 0 0 13 12v-1.17A3 3 0 0 0 15 8a3 3 0 0 0-3-3 3 3 0 0 0-2.24 1.01A4 4 0 0 0 6 2z"/></svg>';
+
+/** Branch, sync state and pending changes, on one line under the title. */
+function buildBranchLineHtml(gitInfo = {}, { trailingSep = true } = {}) {
+  const tail = trailingSep ? '<span class="dash-sub-sep">·</span>' : '';
+  if (!gitInfo.isGitRepo) {
+    return gitInfo.isGitRepo === false
+      ? `<span class="dash-sub-item">${escapeHtml(t('dashboard.brief.noGit'))}</span>${tail}`
+      : '';
+  }
+  const parts = [`<span class="dash-sub-item dash-branch">${BRANCH_ICON}${escapeHtml(gitInfo.branch || '')}</span>`];
+  const ab = gitInfo.aheadBehind || {};
+  if (ab.hasRemote && !ab.notTracking) {
+    if (!ab.ahead && !ab.behind) {
+      parts.push(`<span class="dash-sub-item tone-success">${escapeHtml(t('dashboard.brief.synced'))}</span>`);
+    } else {
+      const sync = [ab.ahead ? `↑${ab.ahead}` : '', ab.behind ? `↓${ab.behind}` : ''].filter(Boolean).join(' ');
+      parts.push(`<span class="dash-sub-item tone-info">${sync}</span>`);
+    }
+  }
+  const files = gitInfo.files || {};
+  const changed = (files.staged?.length || 0) + (files.unstaged?.length || 0) + (files.untracked?.length || 0);
+  if (changed) parts.push(`<span class="dash-sub-item tone-warning">${escapeHtml(t('dashboard.filesChanged', { count: changed }))}</span>`);
+  return parts.join('<span class="dash-sub-sep">·</span>') + tail;
+}
+
+// ── Remote (SSH) projects in the briefing ──
+//
+// The briefing reads three things a remote project keeps elsewhere. Its
+// sessions and TODO count are on the host, and are asked for (with the URI,
+// through the same claude-sessions and scan-todos handlers) only while the
+// host is connected: a read on a host that is not would connect it, which is
+// the user's call, and the page already says it shows last known data. Its
+// cost is priced from this machine's transcripts, which a remote CLI never
+// writes, so it is withheld with the reason (the `costReport` row) rather
+// than shown as $0. Time tracking is keyed by project id and is unaffected.
+
+/** Cost figures are this machine's transcripts: none for a remote project. */
+function _costWithheld(project) {
+  return !can(project, 'costReport').ok;
+}
+
+/** The reason a remote project shows no cost, for a tooltip. */
+function _costWithheldReason(project) {
+  return t(can(project, 'costReport').reasonKey || 'ssh.disabled.costReport');
+}
+
+/**
+ * Whether the briefing may ask the project's host for its sessions and TODOs:
+ * always for a local project, only while the host is connected for a remote one.
+ */
+function _briefMayAskHost(project, data) {
+  if (!isRemoteProject(project)) return true;
+  if (data && data.remoteOffline) return false;
+  const host = _remoteHost(project);
+  return !!host && host.state === 'connected';
+}
+
+/** The project's cost load, or null when its cost is not this machine's to report. */
+function _projectCost(project) {
+  return _costWithheld(project) ? null : Brief.loadProjectCost(project.id).value;
+}
+
+/** The body of the Resume card. */
+function buildResumeBodyHtml(project, data) {
+  if (!_briefMayAskHost(project, data)) {
+    const host = (data && data.remoteOffline && data.remoteOffline.hostLabel)
+      || (_remoteHost(project) || {}).hostLabel
+      || (project.remote && project.remote.hostLabel)
+      || t('ssh.unknownHost');
+    return `<div class="dash-empty-line">${escapeHtml(t('ssh.terminal.historyOnHost', { host }))}</div>`;
+  }
+  return Brief.buildResumeHtml(Brief.loadSessions(project).value ?? null, Brief.loadLatestRecap(project.id).value);
+}
+
+function buildProjectMetricsHtml(project, data) {
+  const withheld = _costWithheld(project);
+  const cost = _projectCost(project);
+  const week = Brief.weekStart();
+  const time = Brief.timeSince(getProjectSessions(project.id), getProjectTimes(project.id), week);
+  const commits = Brief.commitsSince(data.commitHistory30d, week);
+  return Brief.buildMetricsHtml([
+    withheld ? {
+      key: 'cost',
+      value: '-',
+      label: t('dashboard.brief.metrics.costWeek'),
+      title: _costWithheldReason(project),
+    } : {
+      key: 'cost',
+      value: cost ? Brief.formatUsd(cost.weekCost) : cost === null ? '-' : '…',
+      pending: cost === undefined,
+      label: t('dashboard.brief.metrics.costWeek'),
+    },
+    { key: 'time', value: formatDuration(time), label: t('dashboard.brief.metrics.timeWeek') },
+    {
+      key: 'commits',
+      value: commits === null ? '…' : String(commits),
+      pending: commits === null,
+      label: t('dashboard.brief.metrics.commitsWeek'),
+    },
+    Brief.ciMetric(data.workflowRuns, data.pullRequests),
+  ]);
+}
+
+function projectTodoItems(project, data, gitOps) {
+  return Brief.todoItems({
+    gitInfo: data.gitInfo || {},
+    workflowRuns: data.workflowRuns,
+    pullRequests: data.pullRequests,
+    conflicts: gitOps?.mergeInProgress ? (gitOps.conflicts || []) : [],
+    todoCount: _briefMayAskHost(project, data) ? Brief.loadTodoCount(project).value : null,
+  });
+}
+
+function projectActivityDays(project, data) {
+  const cost = _projectCost(project);
+  const commits = Brief.commitsByDay(data.commitHistory30d);
+  return Brief.lastDays(Brief.ACTIVITY_DAYS).map(date => ({
+    date,
+    cost: cost ? (cost.byDay[date] || 0) : null,
+    commits: commits[date] || 0,
+  }));
+}
+
+function replaceSlot(root, selector, html) {
+  const el = root.querySelector(selector);
+  if (!el) return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html.trim();
+  if (tmp.firstElementChild) el.replaceWith(tmp.firstElementChild);
+}
+
+/**
+ * Fill the briefing as its sources arrive: cost and sessions come from the
+ * transcripts, the TODO count from a scan of the tree. Each lands on its own,
+ * and the blocks repaint from the shared cache rather than one by one.
+ */
+function wireBriefing(container, project, data, options, gitOps, isCurrent) {
+  const brief = container.querySelector('.dash-brief');
+  if (!brief) return;
+
+  brief.addEventListener('click', (e) => {
+    const resume = e.target.closest('[data-resume]');
+    if (resume) {
+      options.onTaskSessionOpen?.(project, resume.dataset.resume);
+      return;
+    }
+    const link = e.target.closest('.dash-todo-item[data-url]');
+    if (link) api.dialog.openExternal(link.dataset.url);
+  });
+
+  const repaint = () => {
+    if (!isCurrent() || !brief.isConnected) return;
+    replaceSlot(brief, '.dash-metrics', buildProjectMetricsHtml(project, data));
+    replaceSlot(brief, '[data-dash="resume"]', Brief.cardHtml('resume', t('dashboard.brief.resume.title'),
+      buildResumeBodyHtml(project, data), 'dash-resume'));
+    replaceSlot(brief, '[data-dash="todo"]', Brief.cardHtml('todo', t('dashboard.brief.todo.title'),
+      Brief.buildTodoHtml(projectTodoItems(project, data, gitOps))));
+    replaceSlot(brief, '[data-dash="activity"]', Brief.cardHtml('activity', t('dashboard.brief.activity.title', { days: Brief.ACTIVITY_DAYS }),
+      Brief.buildActivityHtml(projectActivityDays(project, data))));
+  };
+
+  const loads = [Brief.loadLatestRecap(project.id)];
+  if (!_costWithheld(project)) loads.push(Brief.loadProjectCost(project.id));
+  if (_briefMayAskHost(project, data)) loads.push(Brief.loadSessions(project), Brief.loadTodoCount(project));
+  for (const load of loads) {
+    if (load.pending) load.ready.then(repaint, () => {});
+  }
+}
+
+/** "<host> is not connected: last known figures" above a remote project's dashboard. */
+function buildRemoteOfflineNoteHtml(project, offline) {
+  const label = offline.hostLabel || (project.remote && project.remote.hostLabel) || t('ssh.unknownHost');
+  const state = String(offline.state || 'idle');
+  return `<div class="dashboard-remote-note" role="status"><span class="ssh-state-dot state-${escapeHtml(state)}" aria-hidden="true"></span><span>${escapeHtml(t('ssh.git.dashboardOffline', { host: label }))}</span></div>`;
+}
+
+/**
+ * The path the dashboard header shows and copies: the project path for a local
+ * project, `user@host:/remote/path` for a remote one.
+ */
+function _projectPathLabel(project) {
+  if (!isRemoteProject(project)) return project.path;
+  return require('../ui/components/RemoteHostBadge').projectLocation(project) || project.path;
+}
+
+/**
+ * A remote project whose record names another type than general (synced from
+ * another machine, or edited by hand): its type dashboard is hidden
+ * (registry.forProject), and this says why rather than leaving the type's
+ * section silently missing. '' for every local project and every general one.
+ */
+function buildRemoteTypeNoteHtml(project) {
+  if (!isRemoteProject(project)) return '';
+  if (!project.type || project.type === 'general' || project.type === 'standalone') return '';
+  const reason = t(can(project, 'typeDashboards').reasonKey || 'ssh.disabled.typeDashboards');
+  return `<div class="dashboard-remote-note dashboard-remote-type-note" role="note" title="${escapeHtml(reason)}"><span>${escapeHtml(reason)}</span></div>`;
 }
 
 function renderDashboardHtml(container, project, data, options, isRefreshing = false, isCurrent = () => true) {
@@ -1886,15 +2161,22 @@ function renderDashboardHtml(container, project, data, options, isRefreshing = f
   }
 
   const { gitInfo = {}, stats, workflowRuns, pullRequests } = data;
-  const typeHandler = registry.get(project.type);
+  const typeHandler = registry.forProject(project);
   const dashboardBadge = typeHandler.getDashboardBadge(project);
   const gitOps = getGitOperation(project.id);
   const hasMergeConflict = gitOps.mergeInProgress && gitOps.conflicts.length > 0;
   const projectTimes = getProjectTimes(project.id);
+  const typeStatsHtml = typeHandler.getDashboardStats({ fivemStatus, projectIndex: projectsState.get().projects.findIndex(p => p.id === project.id), project, t }) || '';
+  // A remote project's path is an ssh-remote:// URI naming a profile id: show
+  // and copy where it lives (user@host:/path) instead. Its folder has no local
+  // window to open, so that button says why rather than looking available.
+  const pathLabel = _projectPathLabel(project);
+  const openFolderCap = can(project, 'openInExplorer');
 
   // Build HTML
   container.innerHTML = `
     ${buildViewTabsHtml(project.id)}
+    ${data.remoteOffline ? buildRemoteOfflineNoteHtml(project, data.remoteOffline) : ''}${buildRemoteTypeNoteHtml(project)}
     ${isRefreshing ? `<div class="dashboard-refresh-indicator"><span class="refresh-spinner"></span> ${t('dashboard.refreshing')}</div>` : ''}
     ${hasMergeConflict ? `
     <div class="dashboard-merge-alert">
@@ -1909,13 +2191,22 @@ function renderDashboardHtml(container, project, data, options, isRefreshing = f
       <div class="merge-alert-hint">${t('git.resolveConflicts')}</div>
     </div>
     ` : ''}
-    <div class="dashboard-project-header" data-animate="0">
+    <div class="dashboard-project-header dash-header" data-animate="0">
       <div class="dashboard-project-title">
-        <h2>${escapeHtml(project.name)}</h2>
-        <span class="dashboard-project-type ${dashboardBadge ? dashboardBadge.cssClass : ''}">${dashboardBadge ? dashboardBadge.text : t('dashboard.standalone')}</span>
+        <div class="dash-title-row">
+          <h2>${escapeHtml(project.name)}</h2>
+          ${dashboardBadge ? `<span class="dashboard-project-type ${dashboardBadge.cssClass}">${escapeHtml(dashboardBadge.text)}</span>` : ''}
+        </div>
+        <div class="dash-subline">
+          ${buildBranchLineHtml(gitInfo)}
+          <button class="dash-path btn-copy-path" title="${t('dashboard.copyPath')}">
+            <code>${escapeHtml(pathLabel)}</code>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+          </button>
+        </div>
       </div>
       <div class="dashboard-project-actions">
-        <button class="btn-secondary" id="dash-btn-open-folder">
+        <button class="btn-secondary${openFolderCap.ok ? '' : ' is-disabled'}" id="dash-btn-open-folder"${openFolderCap.ok ? '' : ` aria-disabled="true" title="${escapeHtml(t(openFolderCap.reasonKey))}"`}>
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 19H5V5h7l2 2h5v12zm0-12h-5l-2-2H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V9c0-1.1-.9-2-2-2z"/></svg>
           ${t('dashboard.openFolder')}
         </button>
@@ -1942,48 +2233,54 @@ function renderDashboardHtml(container, project, data, options, isRefreshing = f
       </div>
     </div>
 
-    <div class="dashboard-quick-stats" data-animate="1">
-      <div class="quick-stat">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.89 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10z"/></svg>
-        <span>${terminalCount} ${t('dashboard.terminals')}</span>
+    ${typeStatsHtml.trim() ? `<div class="dashboard-quick-stats dash-type-stats" data-animate="1">${typeStatsHtml}</div>` : ''}
+
+    <div class="dash-brief" data-animate="1">
+      ${buildProjectMetricsHtml(project, data)}
+      <div class="dash-row">
+        ${Brief.cardHtml('resume', t('dashboard.brief.resume.title'), buildResumeBodyHtml(project, data), 'dash-resume')}
+        ${Brief.cardHtml('todo', t('dashboard.brief.todo.title'), Brief.buildTodoHtml(projectTodoItems(project, data, gitOps)))}
       </div>
-      <div class="quick-stat time-stat">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
-        <span class="time-today">${formatDuration(projectTimes.today)}</span>
-        <span class="time-sep">/</span>
-        <span class="time-total">${formatDuration(projectTimes.total)}</span>
-      </div>
-      ${typeHandler.getDashboardStats({ fivemStatus, projectIndex: projectsState.get().projects.findIndex(p => p.id === project.id), project, t })}
-      ${gitInfo.isGitRepo && gitInfo.remoteUrl ? `
-      <div class="quick-stat">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
-        <span class="remote-url">${escapeHtml(redactUrlCredentials(gitInfo.remoteUrl).replace(/^https?:\/\//, '').replace(/\.git$/, '').substring(0, 40))}</span>
-      </div>
-      ` : ''}
+      ${Brief.cardHtml('activity', t('dashboard.brief.activity.title', { days: Brief.ACTIVITY_DAYS }), Brief.buildActivityHtml(projectActivityDays(project, data)))}
     </div>
 
-    <div class="dashboard-path-bar" data-animate="2">
-      <code>${escapeHtml(project.path)}</code>
-      <button class="btn-icon-small btn-copy-path" title="${t('dashboard.copyPath')}">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-      </button>
-    </div>
-
-    <div class="dashboard-grid" data-animate="3">
-      <div class="dashboard-col">
-        ${gitInfo.isGitRepo === undefined ? '' : buildGitStatusHtml(gitInfo)}
-        ${buildWorkflowRunsHtml(workflowRuns)}
-        ${buildPullRequestsHtml(pullRequests)}
+    <details class="dash-more" data-animate="2">
+      <summary>${t('dashboard.brief.more')}</summary>
+      <div class="dashboard-quick-stats">
+        <div class="quick-stat">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.89 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10z"/></svg>
+          <span>${terminalCount} ${t('dashboard.terminals')}</span>
+        </div>
+        <div class="quick-stat time-stat">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+          <span class="time-today">${formatDuration(projectTimes.today)}</span>
+          <span class="time-sep">/</span>
+          <span class="time-total">${formatDuration(projectTimes.total)}</span>
+        </div>
+        ${gitInfo.isGitRepo && gitInfo.remoteUrl ? `
+        <div class="quick-stat">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+          <span class="remote-url">${escapeHtml(redactUrlCredentials(gitInfo.remoteUrl).replace(/^https?:\/\//, '').replace(/\.git$/, '').substring(0, 40))}</span>
+        </div>
+        ` : ''}
       </div>
-      <div class="dashboard-col">
-        <div class="dashboard-session-recaps" hidden></div>
-        ${buildStatsHtml(stats, gitInfo)}
-        ${buildClaudeActivityHtml()}
-        ${gitInfo.isGitRepo ? buildContributorsHtml(gitInfo.contributors) : ''}
-      </div>
-    </div>
 
-    ${buildProjectInsightsHtml(data, project.id)}
+      <div class="dashboard-grid">
+        <div class="dashboard-col">
+          ${gitInfo.isGitRepo === undefined ? '' : buildGitStatusHtml(gitInfo)}
+          ${buildWorkflowRunsHtml(workflowRuns)}
+          ${buildPullRequestsHtml(pullRequests)}
+        </div>
+        <div class="dashboard-col">
+          <div class="dashboard-session-recaps" hidden></div>
+          ${buildStatsHtml(stats, gitInfo)}
+          ${buildClaudeActivityHtml()}
+          ${gitInfo.isGitRepo ? buildContributorsHtml(gitInfo.contributors) : ''}
+        </div>
+      </div>
+
+      ${buildProjectInsightsHtml(data, project.id)}
+    </details>
   `;
 
   // A refresh must display final values too (entrance animations only run once).
@@ -2007,6 +2304,8 @@ function renderDashboardHtml(container, project, data, options, isRefreshing = f
   };
   window.addEventListener('session-recap-updated', _sessionRecapHandler);
   void updateRecaps();
+
+  wireBriefing(container, project, data, options, gitOps, isCurrent);
 
   // Attach click handlers for workflow runs
   container.querySelectorAll('.workflow-run-item').forEach(item => {
@@ -2092,8 +2391,8 @@ function renderDashboardHtml(container, project, data, options, isRefreshing = f
   });
 
   container.querySelector('.btn-copy-path')?.addEventListener('click', () => {
-    copyText(project.path);
-    if (onCopyPath) onCopyPath(project.path);
+    copyText(pathLabel);
+    if (onCopyPath) onCopyPath(pathLabel);
   });
 
   // View tab switcher
@@ -2191,6 +2490,23 @@ async function renderDashboard(container, project, options = {}) {
   stopWorkflowPolling();
 
   let data = getCachedData(project.id) || {};
+
+  // A remote (SSH) project whose host is not connected: show what was last
+  // known (memory, else the local remote-cache file) with a note, ask the host
+  // nothing, and render again once it connects.
+  const remoteHost = _remoteHost(project);
+  if (remoteHost && remoteHost.state !== 'connected') {
+    if (!data.gitInfo) {
+      const disk = await readDiskCache(project.path);
+      if (!isCurrent()) return;
+      if (disk) data = { ...disk.data, ...data };
+    }
+    renderDashboardHtml(container, project, { ...data, remoteOffline: { hostLabel: remoteHost.hostLabel, state: remoteHost.state } }, options, false, isCurrent);
+    animateDashboardIn(container);
+    _renderWhenHostConnects(container, project, options, isCurrent);
+    return;
+  }
+
   const cacheValid = isCacheValid(project.id) && !!data.gitInfo && !!data.stats && !_dashboardLoads.has(project.id);
   let pending = cacheValid ? (Array.isArray(data.commitHistory30d) ? 0 : 1) : 3;
   let painted = false;
@@ -2253,6 +2569,18 @@ async function renderDashboard(container, project, options = {}) {
       renderDashboard(container, project, options);
     });
   }
+}
+
+/** Re-render a remote project's dashboard once its host is connected, if it is still the one shown. */
+function _renderWhenHostConnects(container, project, options, isCurrent) {
+  const { remoteHostsState, getProjectHost } = require('../state/remoteHosts.state');
+  const off = remoteHostsState.subscribe(() => {
+    if (!isCurrent()) { off(); return; }
+    const host = getProjectHost(project);
+    if (!host || host.state !== 'connected') return;
+    off();
+    renderDashboard(container, project, options);
+  });
 }
 
 /** Leave the view while allowing in-flight requests to finish warming the cache. */
@@ -2323,6 +2651,11 @@ async function _preloadAllProjectsInner() {
       // Skip if already cached
       if (isCacheValid(project.id)) return;
 
+      // Remote (SSH) projects are not preloaded: their host connects only when
+      // the user opens one, and a synchronous existsSync on a URI would be a
+      // pointless round trip that can only answer false.
+      if (isRemoteProject(project)) return;
+
       // Skip projects whose path doesn't exist (e.g. synced from another machine)
       const { fs: nodeFs } = window.electron_nodeModules;
       if (project.path && !nodeFs.existsSync(project.path)) return;
@@ -2354,121 +2687,89 @@ async function _preloadAllProjectsInner() {
  */
 function buildOverviewCardHtml(project, dataMap, timesMap) {
   const data = dataMap[project.id];
-  const times = timesMap[project.id] || { today: 0 };
   const hasData = !!data;
-
   const gitInfo = data?.gitInfo || {};
-  const branch = gitInfo.branch || '';
-  const aheadBehind = gitInfo.aheadBehind || {};
-  const files = gitInfo.files || {};
-  const workflowRuns = data?.workflowRuns || {};
-  const pullRequests = data?.pullRequests || {};
   const projectType = data?.projectType || null;
 
-  const stagedCount = files?.staged?.length || 0;
-  const unstagedCount = files?.unstaged?.length || 0;
-  const untrackedCount = files?.untracked?.length || 0;
-  const totalChanges = stagedCount + unstagedCount + untrackedCount;
+  const ci = Brief.ciState(data?.workflowRuns);
+  const ciHtml = ci
+    ? `<span class="overview-ci ${ci}" title="CI: ${ci}">${ci === 'success' ? '✓' : ci === 'failure' ? '✗' : '⟳'}</span>`
+    : '';
+  const typeBadgeHtml = projectType
+    ? `<span class="overview-type-badge" style="--type-color: ${sanitizeColor(projectType.color) || '#888'}">${escapeHtml(projectType.label)}</span>`
+    : '';
 
-  const latestRun = workflowRuns?.runs?.[0];
-  let ciHtml = '';
-  if (latestRun) {
-    let ciClass = 'skipped';
-    let ciSymbol = '?';
-    if (latestRun.status === 'in_progress' || latestRun.status === 'queued') {
-      ciClass = 'running';
-      ciSymbol = '⟳';
-    } else if (latestRun.conclusion === 'success') {
-      ciClass = 'success';
-      ciSymbol = '✓';
-    } else if (latestRun.conclusion === 'failure') {
-      ciClass = 'failure';
-      ciSymbol = '✗';
-    }
-    ciHtml = `<span class="overview-ci ${ciClass}" title="CI: ${latestRun.conclusion || latestRun.status}">${ciSymbol}</span>`;
-  }
+  const costs = Brief.loadAllProjectsCost().value;
+  const costWithheld = _costWithheld(project);
+  const projectCost = costWithheld ? null : costs?.byProject?.[project.id];
+  const costValue = costWithheld ? '-' : costs === undefined ? '…' : Brief.formatUsd(projectCost?.weekCost || 0);
+  const week = Brief.weekStart();
+  const time = Brief.timeSince(getProjectSessions(project.id), timesMap[project.id] || getProjectTimes(project.id), week);
+  const spark = Brief.lastDays(7).map(day => projectCost?.byDay?.[day] || 0);
 
-  let typeBadgeHtml = '';
-  if (projectType) {
-    typeBadgeHtml = `<span class="overview-type-badge" style="--type-color: ${sanitizeColor(projectType.color) || '#888'}">${escapeHtml(projectType.label)}</span>`;
-  }
-
-  const openPrs = (pullRequests?.pullRequests || []).filter(pr => pr.state === 'open').length;
   const lastCommit = gitInfo.recentCommits?.[0] || null;
-
-  let syncHtml = '';
-  if (aheadBehind.hasRemote && !aheadBehind.notTracking) {
-    const parts = [];
-    if (aheadBehind.behind > 0) parts.push(`↓${aheadBehind.behind}`);
-    if (aheadBehind.ahead > 0) parts.push(`↑${aheadBehind.ahead}`);
-    if (parts.length > 0) {
-      syncHtml = `<span class="overview-sync">${parts.join(' ')}</span>`;
-    }
-  }
-
-  let statsHtml = '';
-  if (!hasData && !projectType) {
-    statsHtml = `<div class="overview-stat overview-no-data"><span>${t('dashboard.noData')}</span></div>`;
-  } else {
-    if (branch) {
-      statsHtml += `<div class="overview-stat">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 2a3 3 0 0 0-3 3c0 1.28.81 2.38 1.94 2.81A4 4 0 0 0 9 12H6a3 3 0 0 0 0 6 3 3 0 0 0 2.94-2.41A4 4 0 0 0 13 12v-1.17A3 3 0 0 0 15 8a3 3 0 0 0-3-3 3 3 0 0 0-2.24 1.01A4 4 0 0 0 6 2z"/></svg>
-        <span>${escapeHtml(branch)}</span>
-        ${syncHtml}
-      </div>`;
-    }
-
-    if (lastCommit) {
-      const commitMsg = (lastCommit.message || '').length > 40
-        ? lastCommit.message.substring(0, 40) + '...'
-        : (lastCommit.message || '');
-      statsHtml += `<div class="overview-stat overview-commit">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3c-.46-4.17-3.77-7.48-7.94-7.94V1h-2v2.06C6.83 3.52 3.52 6.83 3.06 11H1v2h2.06c.46 4.17 3.77 7.48 7.94 7.94V23h2v-2.06c4.17-.46 7.48-3.77 7.94-7.94H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>
-        <span class="overview-commit-hash">${lastCommit.hash || ''}</span>
-        <span class="overview-commit-msg">${escapeHtml(commitMsg)}</span>
-        ${lastCommit.date ? `<span class="overview-commit-date">${lastCommit.date}</span>` : ''}
-      </div>`;
-    }
-
-    if (openPrs > 0) {
-      statsHtml += `<div class="overview-stat">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM6 7a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm0 4v6.76a3 3 0 1 0 2 0V11H6zm1 9a1 1 0 1 1 0-2 1 1 0 0 1 0 2zM18 7a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm0 4v6.76a3 3 0 1 0 2 0V11h-2zm1 9a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/></svg>
-        <span>${t('dashboard.openPrs', { count: openPrs })}</span>
-      </div>`;
-    }
-
-    if (totalChanges > 0) {
-      statsHtml += `<div class="overview-stat">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zM6 20V4h7v5h5v11H6z"/></svg>
-        <span>${t('dashboard.filesChanged', { count: totalChanges })}</span>
-      </div>`;
-    }
-
-    if (times.today > 0) {
-      statsHtml += `<div class="overview-stat">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
-        <span>${formatDuration(times.today)} ${t('dashboard.todayTime')}</span>
-      </div>`;
-    }
-
-    if (!statsHtml && projectType) {
-      statsHtml = `<div class="overview-stat overview-no-data"><span>${t('dashboard.noData')}</span></div>`;
-    }
-  }
+  const foot = lastCommit
+    ? `<span class="dash-card-commit">${escapeHtml(lastCommit.message || '')}</span>${lastCommit.date ? `<span class="dash-card-date">${escapeHtml(lastCommit.date)}</span>` : ''}`
+    : `<span class="dash-card-commit muted">${escapeHtml(hasData || projectType ? t('dashboard.brief.overview.noCommit') : t('dashboard.noData'))}</span>`;
 
   const projectIndex = projectsState.get().projects.findIndex(p => p.id === project.id);
   return `
-    <div class="overview-card ${!hasData && !projectType ? 'loading' : ''}" data-project-index="${projectIndex}">
+    <div class="overview-card dash-project-card ${!hasData && !projectType ? 'loading' : ''}" data-project-index="${projectIndex}">
       <div class="overview-card-header">
         <span class="overview-project-name">${escapeHtml(project.name)}</span>
-        <div class="overview-header-badges">
-          ${typeBadgeHtml}
-          ${ciHtml}
-        </div>
+        <div class="overview-header-badges">${typeBadgeHtml}${ciHtml}</div>
       </div>
-      <div class="overview-card-stats">
-        ${statsHtml}
+      <div class="dash-subline dash-card-sub">${buildBranchLineHtml(gitInfo, { trailingSep: false })}</div>
+      <div class="dash-card-stats">
+        <div${costWithheld ? ` title="${escapeHtml(_costWithheldReason(project))}"` : ''}><div class="dash-card-value${costs === undefined && !costWithheld ? ' pending' : ''}">${escapeHtml(costValue)}</div><div class="dash-card-label">${escapeHtml(t('dashboard.brief.metrics.costWeek'))}</div></div>
+        <div><div class="dash-card-value">${escapeHtml(formatDuration(time))}</div><div class="dash-card-label">${escapeHtml(t('dashboard.brief.metrics.timeWeek'))}</div></div>
+        ${Brief.sparklineHtml(spark)}
       </div>
+      <div class="dash-card-foot">${foot}</div>
+    </div>
+  `;
+}
+
+const TONE_ORDER = { danger: 0, warning: 1, purple: 2, info: 3, muted: 4 };
+
+/** The week across every project: what it cost, what it took, what waits. */
+function buildOverviewTopHtml(projects, dataMap, timesMap) {
+  const week = Brief.weekStart();
+  const costs = Brief.loadAllProjectsCost().value;
+  let timeTotal = 0;
+  let active = 0;
+  const items = [];
+  projects.forEach((project) => {
+    const time = Brief.timeSince(getProjectSessions(project.id), timesMap[project.id] || getProjectTimes(project.id), week);
+    timeTotal += time;
+    if (time > 0 || costs?.byProject?.[project.id]?.weekCost > 0) active++;
+    const data = dataMap[project.id];
+    if (!data) return;
+    const projectIndex = projectsState.get().projects.findIndex(p => p.id === project.id);
+    for (const item of Brief.todoItems({ gitInfo: data.gitInfo || {}, workflowRuns: data.workflowRuns, pullRequests: data.pullRequests })) {
+      items.push({ ...item, project: project.name, projectIndex, url: undefined });
+    }
+  });
+  items.sort((a, b) => (TONE_ORDER[a.tone] ?? 9) - (TONE_ORDER[b.tone] ?? 9));
+  const shown = items.slice(0, 8);
+  const more = items.length - shown.length;
+
+  const weekLabel = new Date(week).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+  return `
+    <div class="dash-overview-head">
+      <h2>${escapeHtml(t('dashboard.overview'))}</h2>
+      <span class="dash-muted">${escapeHtml(t('dashboard.brief.overview.week', { date: weekLabel }))}</span>
+    </div>
+    <div class="dash-brief">
+      ${Brief.buildMetricsHtml([
+        { key: 'cost', value: costs === undefined ? '…' : Brief.formatUsd(costs?.weekTotal || 0), pending: costs === undefined, label: t('dashboard.brief.metrics.costWeek') },
+        { key: 'time', value: formatDuration(timeTotal), label: t('dashboard.brief.metrics.timeWeek') },
+        { key: 'active', value: `${active} / ${projects.length}`, label: t('dashboard.brief.overview.activeProjects') },
+        { key: 'todo', value: String(items.length), label: t('dashboard.brief.overview.toHandle'), tone: items.some(i => i.tone === 'danger') ? 'danger' : items.length ? 'warning' : 'success' },
+      ])}
+      ${Brief.cardHtml('todo', t('dashboard.brief.todo.title'),
+        Brief.buildTodoHtml(shown, { withProject: true })
+        + (more > 0 ? `<div class="dash-muted dash-more-line">${escapeHtml(t('dashboard.brief.overview.more', { count: more }))}</div>` : ''))}
     </div>
   `;
 }
@@ -2570,11 +2871,32 @@ function buildOverviewHtml(projects, options = {}) {
  * @param {Array} projects - All projects
  * @param {Object} options - { dataMap, timesMap, onCardClick }
  */
+const _overviewRenders = new WeakMap();
+
 function renderOverview(container, projects, options = {}) {
   cancelRender(container);
-  const { onCardClick } = options;
+  const { onCardClick, dataMap = {}, timesMap = {} } = options;
+  const token = {};
+  const firstPaint = !container.querySelector('.dash-overview');
+  _overviewRenders.set(container, token);
 
-  container.innerHTML = buildOverviewHtml(projects, options);
+  container.innerHTML = projects.length
+    ? `<div class="dash-overview">${buildOverviewTopHtml(projects, dataMap, timesMap)}${buildOverviewHtml(projects, options)}</div>`
+    : buildOverviewHtml(projects, options);
+
+  container.querySelectorAll('.dash-todo-item[data-project-index]').forEach(item => {
+    item.addEventListener('click', () => onCardClick?.(parseInt(item.dataset.projectIndex, 10)));
+  });
+
+  // Costs come from the transcripts and land after the first paint.
+  const costs = Brief.loadAllProjectsCost();
+  if (costs.pending) {
+    costs.ready.then(() => {
+      if (_overviewRenders.get(container) === token && container.querySelector('.dash-overview')) {
+        renderOverview(container, projects, options);
+      }
+    }, () => {});
+  }
 
   // Attach click handlers
   container.querySelectorAll('.overview-card').forEach(card => {
@@ -2584,6 +2906,7 @@ function renderOverview(container, projects, options = {}) {
     });
   });
 
+  if (!firstPaint) return;
   // Animate cards in
   const cards = container.querySelectorAll('.overview-card');
   cards.forEach((card, i) => {
@@ -2796,6 +3119,9 @@ module.exports = {
   clearAllCache,
   loadAllDiskCaches,
   preloadAllProjects,
+  // Remote (SSH) projects
+  detectRemoteProjectType,
+  getDiskCachePath,
   cleanup() {
     if (_cacheCleanupInterval) {
       clearInterval(_cacheCleanupInterval);

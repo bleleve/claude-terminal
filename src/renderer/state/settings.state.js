@@ -19,6 +19,11 @@ const defaultSettings = {
   executionMode: 'safe', // 'safe' (default), 'auto' (SDK classifier), 'dangerous' (bypassPermissions)
   accentColor: '#d97706',
   terminalFontSize: 14, // Terminal font size in px (10-24)
+  // GPU-accelerated terminal rendering. On by default; off falls back to the
+  // DOM renderer, which is slower but immune to the driver-specific glyph
+  // atlas faults behind #207 (ghost characters, caret a column off). There is
+  // no way to detect those, so this stays a user decision.
+  terminalWebglRenderer: true,
   notificationsEnabled: true,
   closeAction: 'ask', // 'ask', 'minimize', 'quit'
   shortcuts: {}, // Custom keyboard shortcuts overrides
@@ -98,7 +103,7 @@ const defaultSettings = {
   chromeBridgeEnabled: false, // Opt-in: let chat sessions drive Chrome via the Claude browser extension
   // Every tab is pinned by default: the grouped sidebar fits without overflow,
   // so the More menu is now opt-in rather than the default state.
-  pinnedTabs: ['claude', 'dashboard', 'files', 'git', 'tickets', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'],
+  pinnedTabs: ['claude', 'dashboard', 'files', 'git', 'tickets', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'cost', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'],
   // Last filters of the Tickets screen (connection, status, people, grouping...). Never a key.
   ticketsView: null,
   activeTab: 'claude', // Last active sidebar tab (restored on restart)
@@ -194,6 +199,12 @@ function _migrateSettings(saved) {
       const after = saved.pinnedTabs.indexOf('dashboard');
       saved.pinnedTabs.splice(after === -1 ? saved.pinnedTabs.length : after + 1, 0, 'files');
     }
+    // Cost is new as well: slot it under Time Tracking, its neighbour in the
+    // All projects group.
+    if (!saved.pinnedTabs.includes('cost')) {
+      const after = saved.pinnedTabs.indexOf('timetracking');
+      saved.pinnedTabs.splice(after === -1 ? saved.pinnedTabs.length : after + 1, 0, 'cost');
+    }
     // Tickets is new too, and belongs under Git.
     if (!saved.pinnedTabs.includes('tickets')) {
       const after = saved.pinnedTabs.indexOf('git');
@@ -208,6 +219,10 @@ function _migrateSettings(saved) {
   if (Array.isArray(saved.tabsOrder) && saved.tabsOrder.length && !saved.tabsOrder.includes('files')) {
     const after = saved.tabsOrder.indexOf('dashboard');
     saved.tabsOrder.splice(after === -1 ? saved.tabsOrder.length : after + 1, 0, 'files');
+  }
+  if (Array.isArray(saved.tabsOrder) && saved.tabsOrder.length && !saved.tabsOrder.includes('cost')) {
+    const after = saved.tabsOrder.indexOf('timetracking');
+    saved.tabsOrder.splice(after === -1 ? saved.tabsOrder.length : after + 1, 0, 'cost');
   }
   if (Array.isArray(saved.tabsOrder) && saved.tabsOrder.length && !saved.tabsOrder.includes('tickets')) {
     const after = saved.tabsOrder.indexOf('git');

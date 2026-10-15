@@ -15,14 +15,16 @@
 const { escapeHtml } = require('../../utils');
 const { t, getCurrentLanguage } = require('../../i18n');
 const { projectsState } = require('../../state/projects.state');
+const { can } = require('../../../shared/remote-capabilities');
 const { showContextMenu } = require('../components/ContextMenu');
 const { upgradeSelectsToDropdowns } = require('./WorkflowHelpers');
 const { MODEL_OPTIONS, EFFORT_OPTIONS } = require('../../../shared/model-options');
+const { accountChoices, hasAccountChoice, accountBadge } = require('../../utils/accountChoices');
 const {
   TASK_PRESETS, MAX_MONTH_DAY, DEFAULT_SIMPLE,
   normalizeSimple, compileTask, describeSchedule, nextRunForTask,
   isSimpleTask, validateTask, scheduleToCron, splitTime, isEventKind, EVENT_KINDS,
-  ANY_PROJECT, TRIGGER_PROJECT,
+  ANY_PROJECT, TRIGGER_PROJECT, USAGE_THRESHOLDS,
 } = require('../../../shared/simple-task');
 
 const { nextRunAt } = require('../../../shared/cron');
@@ -123,6 +125,7 @@ function taskCardHtml(wf, runs) {
   const next     = formatNextRun(nextRunForTask(wf));
   const proj     = projectName(simple.projectId);
   const watches  = watchLabel(simple);
+  const account  = accountBadge(simple.account, simple.projectId === TRIGGER_PROJECT ? '' : simple.projectId);
   const isRunning = lastRun?.status === 'running';
 
   const statusClass = lastRun ? `auto-card-status--${escapeHtml(lastRun.status)}` : '';
@@ -139,6 +142,9 @@ function taskCardHtml(wf, runs) {
           <span class="auto-chip auto-chip--schedule">${icon('clock', 11)} ${escapeHtml(scheduleLabel(simple))}</span>
           ${watches ? `<span class="auto-chip">${escapeHtml(watches)}</span>` : ''}
           ${proj ? `<span class="auto-chip">${escapeHtml(proj)}</span>` : ''}
+          ${account ? `<span class="auto-chip auto-chip--account${account.missing ? ' auto-chip--danger' : ''}" title="${escapeHtml(account.title)}">
+               <span class="auto-account-dot" style="background:${account.color}"></span>${escapeHtml(account.name)}</span>` : ''}
+          ${simple.maxUsage ? `<span class="auto-chip" title="${escapeHtml(t('automation.form.maxUsageHint'))}">${escapeHtml(t('automation.card.maxUsage', { percent: simple.maxUsage }))}</span>` : ''}
           ${simple.useContext ? `<span class="auto-chip">${escapeHtml(t('automation.card.withContext'))}</span>` : ''}
           ${wf.enabled && next
             ? `<span class="auto-chip auto-chip--next">${escapeHtml(next)}</span>`
@@ -362,9 +368,19 @@ function eventProjectHtml(kind, selected) {
     `<button type="button" class="auto-pchip${active ? ' active' : ''}" data-pid="${escapeHtml(value)}"
       aria-pressed="${active}">${escapeHtml(label)}</button>`;
 
+  // git and file_change watch a local folder: a remote (SSH) project is shown
+  // disabled with the reason (WorkflowScheduler would skip it anyway).
+  const watchesLocally = kind === 'git' || kind === 'file_change';
+  const projectChip = (p) => {
+    const cap = watchesLocally ? can(p, 'workflowTriggers') : { ok: true };
+    if (cap.ok) return chip(p.id, p.name, !anyActive && ids.includes(p.id));
+    return `<button type="button" class="auto-pchip is-disabled" data-pid="${escapeHtml(p.id)}" aria-disabled="true"
+      data-reason-key="${escapeHtml(cap.reasonKey)}" title="${escapeHtml(t(cap.reasonKey))}">${escapeHtml(p.name)}</button>`;
+  };
+
   const chips = [
     anyAllowed ? chip(ANY_PROJECT, t('automation.event.anyProject'), anyActive) : '',
-    ...list.map(p => chip(p.id, p.name, !anyActive && ids.includes(p.id))),
+    ...list.map(projectChip),
   ].join('');
 
   const hint = anyAllowed
@@ -580,7 +596,15 @@ function projectOptionsHtml(selectedId, allowTrigger) {
     allowTrigger
       ? `<option value="${TRIGGER_PROJECT}"${selectedId === TRIGGER_PROJECT ? ' selected' : ''}>${escapeHtml(t('automation.form.triggerProject'))}</option>`
       : '',
-    ...list.map(p => `<option value="${escapeHtml(p.id)}"${selectedId === p.id ? ' selected' : ''}>${escapeHtml(p.name)}</option>`),
+    // A task runs Claude on this machine (the claude node), so a remote (SSH)
+    // project is listed disabled with the reason.
+    ...list.map(p => {
+      const cap = can(p, 'workflowNodes');
+      if (!cap.ok) {
+        return `<option value="${escapeHtml(p.id)}" disabled data-remote-disabled="true"${selectedId === p.id ? ' selected' : ''} title="${escapeHtml(t(cap.reasonKey))}">${escapeHtml(t('ssh.workflow.remoteOption', { name: p.name }))}</option>`;
+      }
+      return `<option value="${escapeHtml(p.id)}"${selectedId === p.id ? ' selected' : ''}>${escapeHtml(p.name)}</option>`;
+    }),
   ].join('');
 }
 
@@ -685,9 +709,24 @@ function openTaskModal(deps, existing, preset = null) {
           </label>
         </div>
 
-        <details class="auto-advanced"${simple.model !== DEFAULT_SIMPLE.model || simple.effort !== DEFAULT_SIMPLE.effort ? ' open' : ''}>
+        <details class="auto-advanced"${simple.model !== DEFAULT_SIMPLE.model || simple.effort !== DEFAULT_SIMPLE.effort || simple.account !== DEFAULT_SIMPLE.account || simple.maxUsage !== DEFAULT_SIMPLE.maxUsage ? ' open' : ''}>
           <summary class="auto-advanced-summary">${escapeHtml(t('automation.form.advanced'))}</summary>
           <div class="auto-advanced-body">
+            ${hasAccountChoice(simple.account) ? `
+            <div class="auto-field auto-field--inline">
+              <span class="auto-field-label">${escapeHtml(t('automation.form.account'))}</span>
+              <select class="auto-input" data-dropdown id="auto-account">
+                ${accountChoices(simple.account).map(o =>
+                  `<option value="${escapeHtml(o.value)}"${simple.account === o.value ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
+              </select>
+            </div>` : ''}
+            <div class="auto-field auto-field--inline">
+              <span class="auto-field-label" title="${escapeHtml(t('automation.form.maxUsageHint'))}">${escapeHtml(t('automation.form.maxUsage'))}</span>
+              <select class="auto-input" data-dropdown id="auto-max-usage" title="${escapeHtml(t('automation.form.maxUsageHint'))}">
+                ${USAGE_THRESHOLDS.map(n =>
+                  `<option value="${n}"${simple.maxUsage === n ? ' selected' : ''}>${escapeHtml(n ? `${n}%` : t('automation.form.maxUsageOff'))}</option>`).join('')}
+              </select>
+            </div>
             <div class="auto-field auto-field--inline">
               <span class="auto-field-label">${escapeHtml(t('automation.form.model'))}</span>
               <select class="auto-input" data-dropdown id="auto-model">
@@ -820,6 +859,11 @@ function openTaskModal(deps, existing, preset = null) {
   fieldsEl.addEventListener('click', (e) => {
     const chip = e.target.closest('.auto-pchip');
     if (!chip || !fieldsEl.contains(chip)) return;
+    // A remote project on a trigger that watches a local folder: say why.
+    if (chip.dataset.reasonKey) {
+      require('../components/Toast').showToast({ type: 'info', message: t(chip.dataset.reasonKey) });
+      return;
+    }
 
     const pid     = chip.dataset.pid;
     const current = simple.when.projectIds || [];
@@ -933,6 +977,9 @@ function openTaskModal(deps, existing, preset = null) {
         cwd: project?.path || '',
         model:  $('#auto-model').value,
         effort: $('#auto-effort').value,
+        // Absent when no account is captured: keep whatever was stored.
+        account: $('#auto-account') ? $('#auto-account').value : simple.account,
+        maxUsage: parseInt($('#auto-max-usage').value, 10) || 0,
         notify: {
           desktop:       $('#auto-notify-desktop').checked,
           includeResult: $('#auto-notify-result').checked,

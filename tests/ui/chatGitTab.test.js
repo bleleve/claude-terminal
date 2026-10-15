@@ -105,7 +105,7 @@ describe('gitTabHtml', () => {
     expect(merged.querySelector('[data-action="fix-check"]')).toBeNull();
   });
 
-  test('the PR title can be decorated (ticket chips) without losing escaping elsewhere', () => {
+  test('the PR title can be decorated (chips) without losing escaping elsewhere', () => {
     const el = render(summary(), { decoratePrTitle: (title) => `<span class="chip">${title.slice(0, 7)}</span>` });
     expect(el.querySelector('.session-git-pr-text .chip').textContent).toBe('ENG-142');
   });
@@ -391,12 +391,87 @@ describe('createGitTab', () => {
       tab.destroy();
     });
 
+    test('a Git tab left open in a chat off screen reads nothing', async () => {
+      api.git.sessionSummary.mockResolvedValue(running());
+      const tab = createGitTab({ ...deps, isOnScreen: () => onScreen });
+      await tab.probe();
+      tab.show();
+      onScreen = false; // another terminal tab, or another project
+      await jest.advanceTimersByTimeAsync(120_000);
+      tab.markStale();
+      await jest.advanceTimersByTimeAsync(5_000);
+      expect(api.git.sessionSummary).toHaveBeenCalledTimes(1);
+      onScreen = true;
+      await jest.advanceTimersByTimeAsync(15_000);
+      expect(api.git.sessionSummary).toHaveBeenCalledTimes(2);
+      tab.destroy();
+    });
+
     test('an unfocused window reads nothing', async () => {
       api.git.sessionSummary.mockResolvedValue(running());
       document.hasFocus.mockReturnValue(false);
       const tab = createGitTab({ ...deps, isOnScreen: () => true });
       await tab.probe();
       await jest.advanceTimersByTimeAsync(60_000);
+      expect(api.git.sessionSummary).toHaveBeenCalledTimes(1);
+      tab.destroy();
+    });
+  });
+
+  describe('the first read waits for the chat to be on screen', () => {
+    let observers;
+    const shown = async (isIntersecting) => {
+      for (const o of observers) o.callback([{ isIntersecting }]);
+      await flush();
+    };
+
+    beforeEach(() => {
+      observers = [];
+      global.IntersectionObserver = class {
+        constructor(callback) {
+          this.callback = callback;
+          this.disconnect = jest.fn();
+          observers.push(this);
+        }
+
+        observe() {}
+      };
+    });
+    afterEach(() => {
+      delete global.IntersectionObserver;
+    });
+
+    test('a tab restored in the background reads nothing until it is looked at', async () => {
+      const tab = createGitTab(deps);
+      tab.probeWhenOnScreen(document.body);
+      await shown(false);
+      expect(api.git.sessionSummary).not.toHaveBeenCalled();
+      await shown(true);
+      expect(api.git.sessionSummary).toHaveBeenCalledTimes(1);
+      expect(deps.onAvailable).toHaveBeenCalledTimes(1);
+      await shown(true); // just read
+      expect(api.git.sessionSummary).toHaveBeenCalledTimes(1);
+      tab.destroy();
+      expect(observers[0].disconnect).toHaveBeenCalled();
+    });
+
+    test('back on screen, what changed while away is read at once', async () => {
+      const tab = createGitTab(deps);
+      tab.probeWhenOnScreen(document.body);
+      await shown(true);
+      tab.show();
+      await shown(false);
+      tab.markStale(); // the tool ran while another tab was shown
+      await shown(true);
+      expect(api.git.sessionSummary).toHaveBeenCalledTimes(2);
+      tab.destroy();
+    });
+
+    test('without IntersectionObserver, the probe at once', async () => {
+      delete global.IntersectionObserver;
+      const tab = createGitTab(deps);
+      tab.probeWhenOnScreen(document.body);
+      await flush();
       expect(api.git.sessionSummary).toHaveBeenCalledTimes(1);
       tab.destroy();
     });
@@ -647,7 +722,7 @@ describe('a session that worked in its own worktrees', () => {
       tab.destroy();
     });
 
-    test('ticket detection sees every branch and pull request; the recap reads the latest worktree', async () => {
+    test('the summary hook sees every branch and pull request; getSummary reads the latest worktree', async () => {
       const tab = createGitTab(deps);
       await tab.probe();
       const seen = deps.onSummary.mock.calls.map(([s]) => [s.branch, s.pr?.pullRequest?.number || null]);

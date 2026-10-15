@@ -57,6 +57,32 @@ function notifyQuickActionChanged(projectId, mutation, actionName) {
   }), 'utf8');
 }
 
+/**
+ * Tell a running Claude Terminal that the project list changed.
+ *
+ * projects.json is the source of truth and the renderer polls it every few
+ * seconds, so this is purely about latency: without the trigger a project
+ * created here only appears at the next sweep, and the app looks stuck.
+ * Never fatal — the poll is still the safety net, and the data is already
+ * saved by the time we get here.
+ */
+function notifyProjectsChanged(mutation, project) {
+  try {
+    const triggerDir = path.join(getDataDir(), 'projects', 'triggers');
+    if (!fs.existsSync(triggerDir)) fs.mkdirSync(triggerDir, { recursive: true });
+    const triggerFile = path.join(triggerDir, `changed_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.json`);
+    fs.writeFileSync(triggerFile, JSON.stringify({
+      action: 'changed',
+      mutation,
+      projectId: project && project.id ? project.id : null,
+      projectName: project && project.name ? project.name : null,
+      timestamp: new Date().toISOString(),
+    }), 'utf8');
+  } catch (e) {
+    log('Could not write projects trigger:', e.message);
+  }
+}
+
 /** Every name a project answers to. The id comes first: it is never fuzzy-matched. */
 function projectNames(p) {
   return [p.id, p.name, path.basename(p.path || '')];
@@ -106,6 +132,33 @@ function findProjectInData(data, nameOrId) {
     (p.name || '').toLowerCase() === nameOrId.toLowerCase() ||
     path.basename(p.path || '').toLowerCase() === nameOrId.toLowerCase()
   );
+}
+
+// -- Remote (SSH) projects -----------------------------------------------------
+//
+// A remote project's path is an `ssh-remote://<profileId>/<posix path>` URI
+// (design/remote-ssh.md section 3.2). Its files live on another machine that
+// only the app reaches, over its own SSH connection; this MCP server runs
+// separately and reads local disk. So the tools that read a project's files
+// say so instead of answering "path not found".
+
+const REMOTE_SCHEME = 'ssh-remote://';
+
+function isRemoteProject(p) {
+  return !!p && (!!(p.remote && p.remote.profileId) || (typeof p.path === 'string' && p.path.startsWith(REMOTE_SCHEME)));
+}
+
+/** "yanis@build.example.com:/home/yanis/api", or the URI when the cache is empty. */
+function remoteLocation(p) {
+  const host = (p.remote && p.remote.hostLabel) || 'an SSH host';
+  const remotePath = p.remote && p.remote.path;
+  return remotePath ? `${host}:${remotePath}` : `${host} (${p.path})`;
+}
+
+function remoteUnreadable(p) {
+  return `"${p.name || path.basename(p.path || '?')}" is a remote project on ${remoteLocation(p)}. `
+    + 'Its files live on that host and are not readable from the MCP server. '
+    + 'Open the project in Claude Terminal to work on it.';
 }
 
 // -- Tool definitions ---------------------------------------------------------
@@ -472,6 +525,12 @@ async function handle(name, args) {
         }
       }
 
+      if (isRemoteProject(p)) {
+        output += `Remote: ${remoteLocation(p)}\n`;
+        output += `\n${remoteUnreadable(p)}\n`;
+        return ok(output);
+      }
+
       // Check if path exists and show basic stats
       if (p.path && fs.existsSync(p.path)) {
         try {
@@ -492,6 +551,7 @@ async function handle(name, args) {
       if (!args.project) return fail('Missing required parameter: project');
       const p = findProject(args.project);
       if (!p) return fail(`Project "${args.project}" not found.`);
+      if (isRemoteProject(p)) return fail(remoteUnreadable(p));
       if (!p.path || !fs.existsSync(p.path)) return fail(`Project path not found: ${p.path}`);
 
       const patternStr = args.pattern || 'TODO|FIXME|HACK|XXX';
@@ -690,6 +750,12 @@ async function handle(name, args) {
     // ── project_create ────────────────────────────────────────────────────
     if (name === 'project_create') {
       if (!args.path) return fail('Missing required parameter: path');
+      // A remote project needs an SSH host profile, which only the app holds
+      // and no MCP tool may write; it is created from the app's Open Remote
+      // Project dialog.
+      if (typeof args.path === 'string' && args.path.trim().toLowerCase().startsWith(REMOTE_SCHEME)) {
+        return fail('Remote projects cannot be created from the MCP server. Use "Open remote project" in Claude Terminal, which owns the SSH host profiles.');
+      }
 
       const projectPath = path.resolve(args.path);
       if (!fs.existsSync(projectPath)) return fail(`Path does not exist: ${projectPath}`);
@@ -727,6 +793,7 @@ async function handle(name, args) {
       data.projects.push(project);
       data.rootOrder.push(project.id);
       saveProjects(data);
+      notifyProjectsChanged('create', project);
 
       return ok(`Project created:\n  Name: ${project.name}\n  Path: ${project.path}\n  Type: ${project.type}\n  ID: ${project.id}`);
     }
@@ -753,6 +820,7 @@ async function handle(name, args) {
       }
 
       saveProjects(data);
+      notifyProjectsChanged('delete', p);
 
       return ok(`Project removed from Claude Terminal:\n  Name: ${projectName}\n  Path: ${projectPath}\n\nNote: No files were deleted on disk.`);
     }
@@ -784,6 +852,9 @@ async function handle(name, args) {
         if (!validTypes.includes(args.type)) {
           return fail(`Invalid type "${args.type}". Valid types: ${validTypes.join(', ')}`);
         }
+        if (isRemoteProject(p) && args.type !== 'general') {
+          return fail(`"${p.name || '?'}" is a remote project on ${remoteLocation(p)}; remote projects are always of type general.`);
+        }
         p.type = args.type;
         updates.push(`type → ${p.type}`);
       }
@@ -795,6 +866,7 @@ async function handle(name, args) {
       if (!updates.length) return fail('No updates provided. Specify name, color, icon, type, or editor.');
 
       saveProjects(data);
+      notifyProjectsChanged('update', p);
 
       const projectName = p.name || path.basename(p.path || '?');
       return ok(`Project "${projectName}" updated:\n  ${updates.join('\n  ')}`);
@@ -806,6 +878,7 @@ async function handle(name, args) {
 
       const p = findProject(args.project);
       if (!p) return fail(describeProjectLookupFailure(args.project));
+      if (isRemoteProject(p)) return fail(remoteUnreadable(p));
       if (!p.path || !fs.existsSync(p.path)) return fail(`Project path not found: ${p.path}`);
 
       const stats = { fileCount: 0, totalLines: 0, languages: {} };

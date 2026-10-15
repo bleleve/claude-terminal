@@ -10,6 +10,8 @@ const { sanitizeColor } = require('../utils/color');
 const { t } = require('../i18n');
 const Toast = require('../ui/components/Toast');
 const { showConfirm, createModal, showModal, closeModal } = require('../ui/components/Modal');
+const { isRemoteProject } = require('../../shared/remote-capabilities');
+const remotePathLib = require('../../shared/remote-path');
 
 // ========== GIT ERROR MAPPER ==========
 
@@ -716,9 +718,15 @@ async function handleCreateWorktree() {
   const availableBranches = (branchesData.local || [])
     .filter(b => !checkedOutBranches.includes(b));
 
-  const repoName = selectedProject.path.replace(/\\/g, '/').split('/').pop();
-  const parentDir = window.electron_nodeModules.path.dirname(selectedProject.path);
-  const defaultPath = (parentDir + '/' + repoName + '-').replace(/\\/g, '/');
+  // A remote project's worktree lives on its host: the field holds a POSIX path
+  // there (shown without the URI), turned back into a URI on that host when
+  // submitted. The local folder picker has nothing to offer for it.
+  const remote = isRemoteProject(selectedProject) ? remotePathLib.parse(selectedProject.path) : null;
+  const repoName = remote ? remotePathLib.basename(remote.path) : selectedProject.path.replace(/\\/g, '/').split('/').pop();
+  const parentDir = remote ? remotePathLib.dirname(remote.path) : window.electron_nodeModules.path.dirname(selectedProject.path);
+  const defaultPath = remote
+    ? `${parentDir === '/' ? '' : parentDir}/${repoName}-`
+    : (parentDir + '/' + repoName + '-').replace(/\\/g, '/');
 
   const modalBody = `
     <div class="git-wt-create-form">
@@ -782,7 +790,17 @@ async function handleCreateWorktree() {
             return;
           }
 
-          let params = { projectPath: selectedProject.path, worktreePath: wtPath };
+          let worktreePath = wtPath;
+          if (remote) {
+            let uri;
+            try { uri = wtPath.startsWith('/') ? remotePathLib.format(remote.profileId, wtPath) : null; } catch (_) { uri = null; }
+            if (!uri) {
+              showToast(t('ssh.git.worktreePathInvalid'), 'error');
+              return;
+            }
+            worktreePath = uri;
+          }
+          let params = { projectPath: selectedProject.path, worktreePath };
 
           if (mode === 'existing') {
             const branch = m.querySelector('#wt-branch-select')?.value;
@@ -867,7 +885,13 @@ async function handleCreateWorktree() {
     };
   }
 
-  // Browse button
+  // Browse button: a local folder picker, meaningless for a path on a host.
+  if (remote) {
+    const browseBtn = modal.querySelector('#wt-browse-btn');
+    if (browseBtn) browseBtn.hidden = true;
+    const pathInput = modal.querySelector('#wt-path-input');
+    if (pathInput) pathInput.title = t('ssh.git.worktreePathOnHost', { host: require('../state/remoteHosts.state').getProjectHost(selectedProject)?.hostLabel || t('ssh.unknownHost') });
+  }
   modal.querySelector('#wt-browse-btn')?.addEventListener('click', async () => {
     const result = await api.dialog.selectFolder();
     if (result) {
@@ -888,13 +912,17 @@ function handleQuickSwitchWorktree(wtPath) {
     // Not yet a project — add it first
     const name = normalizedPath.split('/').pop();
     const wt = worktreesData.find(w => w.path === wtPath);
+    // A remote worktree becomes a remote project on the same host, carrying
+    // the parent's host label for machines that lack the profile.
+    const remoteTree = remotePathLib.tryParse(wtPath);
     existing = addProject({
       name,
       path: wtPath,
       type: 'standalone',
       isWorktree: true,
       parentRepoProjectId: selectedProjectId,
-      worktreeBranch: wt?.branch || null
+      worktreeBranch: wt?.branch || null,
+      ...(remoteTree ? { remote: { profileId: remoteTree.profileId, path: remoteTree.path, hostLabel: selectedProject?.remote?.hostLabel || '' } } : {})
     });
   }
 
@@ -1422,6 +1450,16 @@ function bindChangesEvents(container) {
     } else if (btn.classList.contains('diff-btn') && fileItem) {
       handleViewDiff(fileItem.dataset.path, fileItem.dataset.staged === 'true');
     } else if (btn.classList.contains('open-editor-btn') && fileItem) {
+      // A remote project's files are joined with POSIX rules onto its URI, and
+      // the capability table decides whether an editor can open them.
+      if (isRemoteProject(selectedProject)) {
+        // The VS Code family opens it on the host over Remote-SSH; any other
+        // editor is refused with the reason.
+        const editor = require('../state/settings.state').getSetting('editor') || 'code';
+        if (require('../ui/components/RemoteHostBadge').refuseForRemote(selectedProject, 'openInEditor', { editor })) return;
+        require('../utils/editor').openInEditor(remotePathLib.join(selectedProject.path, fileItem.dataset.path), { editor });
+        return;
+      }
       const fullPath = window.electron_nodeModules.path.join(selectedProject.path, fileItem.dataset.path);
       require('../utils/editor').openInEditor(fullPath);
     } else if (btn.classList.contains('resolve-btn') && fileItem) {
@@ -2217,7 +2255,6 @@ async function handleCommit() {
   await withLock(async () => {
     const result = await api.git.commit({ projectPath: selectedProject.path, message });
     if (result.success) {
-      api.telemetry?.sendFeature({ feature: 'git:commit', metadata: {} });
       showToast(t('gitTab.commitCreated'), 'success');
       if (msgEl) msgEl.value = '';
       await refreshChanges();
@@ -2548,7 +2585,6 @@ async function handlePull() {
     try {
       const result = await api.git.pull({ projectPath: selectedProject.path });
       if (result.success) {
-        api.telemetry?.sendFeature({ feature: 'git:pull', metadata: {} });
         const isUpToDate = result.output && result.output.includes('Already up to date');
         if (isUpToDate) {
           showToast(t('git.pullUpToDate'), 'info');
@@ -2578,7 +2614,6 @@ async function handlePush() {
     try {
       const result = await api.git.push({ projectPath: selectedProject.path });
       if (result.success) {
-        api.telemetry?.sendFeature({ feature: 'git:push', metadata: {} });
         showToast(t('git.pushSuccess'), 'success');
         await loadAllData(selectedProject);
         renderGitTab();

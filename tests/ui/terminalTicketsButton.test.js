@@ -2,7 +2,7 @@
  * Tickets for terminal-mode Claude sessions: one button in the session bar,
  * serving the active tab, and a toast for what detection finds in any
  * terminal session. Wired to the real link and tracker services over the
- * Linear fixture.
+ * fake test adapter.
  */
 
 'use strict';
@@ -17,8 +17,8 @@ const { t } = require('../../src/renderer/i18n');
 const { createIssueTrackerService } = require('../../src/main/services/IssueTrackerService');
 const { createIssueLinkService } = require('../../src/main/services/IssueLinkService');
 const { describeTrackers } = require('../../src/main/issue-trackers/_registry');
-const linear = require('../../src/main/issue-trackers/linear.tracker');
-const fixture = require('../issue-trackers/fixtures/linear.fixture');
+const fake = require('../issue-trackers/fake.tracker');
+const fixture = require('../issue-trackers/fixtures/fake.fixture');
 
 async function waitFor(check) {
   const end = Date.now() + 2000;
@@ -60,18 +60,17 @@ let changed;
 let button;
 
 beforeEach(async () => {
-  fixture.reset();
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-term-tickets-'));
   const secrets = new Map();
   const trackers = createIssueTrackerService({
     storePath: path.join(dir, 'issue-trackers.json'),
     secrets: { get: async (a) => secrets.get(a) ?? null, set: async (a, v) => { secrets.set(a, v); }, delete: async (a) => secrets.delete(a) },
-    registry: { get: (id) => (id === 'linear' ? linear : null), describe: () => describeTrackers([linear]) },
+    registry: { get: (id) => (id === 'fake' ? fake : null), describe: () => describeTrackers([fake]) },
     fetch: fixture.fetch,
   });
   changed = new Set();
   links = createIssueLinkService({ storePath: path.join(dir, 'issue-links.json'), broadcast: (sessionKey) => changed.forEach((fn) => fn({ sessionKey })) });
-  conn = await trackers.connect('linear', fixture.secret);
+  conn = await trackers.connect('fake', fixture.secret);
   api = {
     dialog: { openExternal: jest.fn() },
     issueTrackers: {
@@ -132,22 +131,22 @@ test.each([
 });
 
 test('the popover lists the session\'s tickets and follows the active tab', async () => {
-  await links.link('cli-1', { ref: 'linear:ENG-142', connectionId: conn.id, title: 'Session tickets tab' });
-  await links.link('cli-4', { ref: 'linear:OPS-12', connectionId: conn.id, title: 'Rotate' });
+  await links.link('cli-1', { ref: 'fake:#1', connectionId: conn.id, title: 'Crash when the tab closes' });
+  await links.link('cli-4', { ref: 'fake:#2', connectionId: conn.id, title: 'Document the adapter contract' });
   const { btn, popover, state } = mount(1);
   await waitFor(() => !btn.hidden && btn.querySelector('.chat-tab-badge').textContent === '1');
   btn.click();
   expect(popover.hidden).toBe(false);
   expect(btn.getAttribute('aria-expanded')).toBe('true');
   await waitFor(() => popover.querySelector('.session-tickets-row'));
-  expect(popover.querySelector('.session-tickets-row').dataset.ref).toBe('linear:ENG-142');
+  expect(popover.querySelector('.session-tickets-row').dataset.ref).toBe('fake:#1');
 
   state.set({ activeTerminal: 4 });
   expect(popover.hidden).toBe(true); // switching tabs closes it
   await waitFor(() => !btn.hidden);
   btn.click();
-  await waitFor(() => popover.querySelector('.session-tickets-row')?.dataset.ref === 'linear:OPS-12');
-  expect(popover.querySelector('.session-tickets-row').dataset.ref).toBe('linear:OPS-12');
+  await waitFor(() => popover.querySelector('.session-tickets-row')?.dataset.ref === 'fake:#2');
+  expect(popover.querySelector('.session-tickets-row').dataset.ref).toBe('fake:#2');
 
   document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   expect(popover.hidden).toBe(true);
@@ -155,13 +154,13 @@ test('the popover lists the session\'s tickets and follows the active tab', asyn
 
 test('a detection in a background terminal session is toasted once, and Review brings it forward', async () => {
   const { deps, popover } = mount(1);
-  await links.suggest('cli-4', { ref: 'linear:ENG-155', connectionId: conn.id, title: 'x', source: 'tool' });
+  await links.suggest('cli-4', { ref: 'fake:#3', connectionId: conn.id, title: 'x', source: 'tool' });
   await waitFor(() => deps.showToast.mock.calls.length === 1);
   const toast = deps.showToast.mock.calls[0][0];
-  expect(toast.title).toBe(t('chat.tickets.detectedInTerminal', { keys: 'ENG-155', tab: 'background' }));
+  expect(toast.title).toBe(t('chat.tickets.detectedInTerminal', { keys: '#3', tab: 'background' }));
   expect(toast.action).toBe(t('chat.tickets.review'));
 
-  await links.link('cli-4', { ref: 'linear:OPS-12', connectionId: conn.id, title: 'Rotate' }); // another change, same suggestion
+  await links.link('cli-4', { ref: 'fake:#2', connectionId: conn.id, title: 'Document the adapter contract' }); // another change, same suggestion
   await new Promise((r) => setTimeout(r, 50));
   expect(deps.showToast).toHaveBeenCalledTimes(1);
 
@@ -169,12 +168,12 @@ test('a detection in a background terminal session is toasted once, and Review b
   expect(deps.activateTerminal).toHaveBeenCalledWith(4);
   expect(popover.hidden).toBe(false);
   await waitFor(() => popover.querySelector('.session-tickets-row.suggested'));
-  expect(popover.querySelector('.session-tickets-row.suggested').dataset.ref).toBe('linear:ENG-155');
+  expect(popover.querySelector('.session-tickets-row.suggested').dataset.ref).toBe('fake:#3');
 });
 
 test('a chat session\'s detections are left to its own card', async () => {
   const { deps } = mount(1);
-  await links.suggest('sdk-3', { ref: 'linear:ENG-155', connectionId: conn.id, title: 'x', source: 'tool' });
+  await links.suggest('sdk-3', { ref: 'fake:#3', connectionId: conn.id, title: 'x', source: 'tool' });
   await new Promise((r) => setTimeout(r, 50));
   expect(deps.showToast).not.toHaveBeenCalled();
 });

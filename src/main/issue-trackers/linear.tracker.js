@@ -7,8 +7,11 @@
  * answer it without parsing GraphQL.
  *
  * Linear's `issues(sort:)` argument is marked internal in its schema, so only
- * `createdAt` and `updatedAt` are ordered by the server. The `priority` and
- * `due` sorts are applied to the page that came back.
+ * `createdAt` and `updatedAt` are ordered by the server (`orderBy`). The
+ * `priority` and `due` sorts are still exact across pages, never a reordered
+ * page: priority walks one priority at a time, each newest first, and due
+ * ranks every dated issue from a light scan before fetching a page of them.
+ * Those two carry their own cursor, a small JSON object.
  */
 
 'use strict';
@@ -44,6 +47,16 @@ const METADATA_MAX_PAGES = 8;
 /** Cycles that ended more than this long ago are not offered as a filter. */
 const CYCLE_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** Linear's "no priority" is 0 and sorts last, as it does in Linear itself. */
+const PRIORITY_ORDER = [1, 2, 3, 4, 0];
+
+/**
+ * The due sort ranks every matching issue that has a due date, this many
+ * pages of METADATA_PAGE at most. Past that it refuses rather than rank a
+ * sample of them.
+ */
+const DUE_SCAN_MAX_PAGES = 8;
+
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9]{0,9}-\d{1,7}$/;
 
 const ISSUE_FIELDS = `
@@ -58,8 +71,10 @@ const ISSUE_FIELDS = `
     parent { id identifier title url state { id name color type } }
   }`;
 
-/** Sub-issue counts come 250 to a request, and stop there: 1000 children is plenty for one page. */
-const PROGRESS_PAGE = 250;
+/**
+ * Sub-issue counts come METADATA_PAGE to a request, for at most this many
+ * requests: past 1000 children on one page of issues, the counts are left out.
+ */
 const PROGRESS_MAX_PAGES = 4;
 
 const USER_FIELDS = 'id name avatarUrl';
@@ -75,11 +90,39 @@ function retryAfterMs(headers) {
 }
 
 /**
+ * A key that can travel as a header value: printable ASCII, no whitespace.
+ * Anything else makes `fetch` throw an error that quotes the whole value, so
+ * a key pasted with a stray newline would end up in the log and the toast.
+ */
+const WELL_FORMED_KEY = /^[\x21-\x7E]+$/;
+
+/** A system error code such as ENOTFOUND, never free text that could quote the request. */
+function networkCode(err) {
+  const code = err?.cause?.code ?? err?.code;
+  return typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,39}$/.test(code) ? code : null;
+}
+
+/** A "not found" about `entity`: Linear words it "Entity not found: Issue". */
+function isNotFound(text, entity) {
+  if (!/not found|could not find/i.test(text)) return false;
+  const named = [...text.matchAll(/(?:entity not found:|could not find referenced)\s+([A-Za-z]+)/gi)].map((m) => m[1].toLowerCase());
+  return named.every((n) => n === entity.toLowerCase());
+}
+
+/**
  * One GraphQL round trip, with Linear's failures mapped onto ERROR_CODES.
  * Linear reports most errors as HTTP 400 with `extensions.type`, the strings
  * its own SDK switches on ("authentication error", "ratelimited", ...).
+ *
+ * `notFound` names the one entity the request is about ("Issue"). Only then
+ * is a "not found" error NOT_FOUND, and only when it does not name another
+ * entity: a list that fails, or an update whose state no longer exists, is
+ * not a missing issue.
  */
-async function request(ctx, operationName, query, variables = {}) {
+async function request(ctx, operationName, query, variables = {}, { notFound = null } = {}) {
+  if (typeof ctx.secret !== 'string' || !WELL_FORMED_KEY.test(ctx.secret)) {
+    throw trackerError('AUTH', 'The API key is malformed');
+  }
   let res;
   try {
     res = await ctx.fetch(ENDPOINT, {
@@ -88,7 +131,10 @@ async function request(ctx, operationName, query, variables = {}) {
       body: JSON.stringify({ operationName, query, variables }),
     });
   } catch (err) {
-    throw trackerError('NETWORK', `Linear is unreachable: ${err.message}`, { cause: err });
+    // Not err.message, and not err as the cause: a fetch error can quote the
+    // headers it was given, the key among them.
+    const code = networkCode(err);
+    throw trackerError('NETWORK', code ? `Linear is unreachable (${code})` : 'Linear is unreachable');
   }
 
   let body = null;
@@ -110,7 +156,7 @@ async function request(ctx, operationName, query, variables = {}) {
     throw trackerError('RATE_LIMITED', 'Linear rate limit reached', { retryAfterMs: retryAfterMs(res.headers) });
   }
   if (first) {
-    if (/not found|could not find/i.test(`${message} ${first.message || ''}`)) {
+    if (notFound && isNotFound(`${message} ${first.message || ''}`, notFound)) {
       throw trackerError('NOT_FOUND', message || 'Not found in Linear');
     }
     throw trackerError('PROVIDER', `Linear: ${message || type || 'request failed'}`);
@@ -121,8 +167,12 @@ async function request(ctx, operationName, query, variables = {}) {
   return body.data;
 }
 
-/** Every node of a paged collection, up to METADATA_MAX_PAGES pages. */
-async function collect(ctx, operationName, field, nodeFields, filter) {
+/**
+ * Every node of a paged collection, up to `maxPages` pages. `complete` is
+ * false when the collection goes on past that, or when Linear says there is
+ * a next page without a cursor to reach it.
+ */
+async function collectPages(ctx, operationName, field, nodeFields, filter, maxPages = METADATA_MAX_PAGES) {
   // GraphQL rejects a declared variable that is never used, so $filter only
   // exists when there is one.
   const query = `query ${operationName}($first: Int!, $after: String${filter ? `, $filter: ${filter.type}` : ''}) {
@@ -133,16 +183,22 @@ async function collect(ctx, operationName, field, nodeFields, filter) {
   }`;
   const nodes = [];
   let after = null;
-  for (let page = 0; page < METADATA_MAX_PAGES; page++) {
+  for (let page = 0; page < maxPages; page++) {
     const variables = { first: METADATA_PAGE, after };
     if (filter) variables.filter = filter.value;
     const data = await request(ctx, operationName, query, variables);
     const conn = data[field] || {};
     nodes.push(...(conn.nodes || []));
-    if (!conn.pageInfo?.hasNextPage || !conn.pageInfo.endCursor) break;
+    if (!conn.pageInfo?.hasNextPage) return { nodes, complete: true };
+    if (!conn.pageInfo.endCursor) break;
     after = conn.pageInfo.endCursor;
   }
-  return nodes;
+  return { nodes, complete: false };
+}
+
+/** Every node of a paged collection, as far as METADATA_MAX_PAGES pages reach. */
+async function collect(ctx, operationName, field, nodeFields, filter) {
+  return (await collectPages(ctx, operationName, field, nodeFields, filter)).nodes;
 }
 
 // ── Mapping ──────────────────────────────────────────────────────────────────
@@ -166,9 +222,13 @@ function toState(state) {
 
 const isClosed = (type) => ['done', 'canceled'].includes(CATEGORY_BY_TYPE[type]);
 
-/** `{ total, done }` from a list of sub-issue nodes, null when there are none. */
-function progressOf(nodes) {
-  if (!nodes?.length) return null;
+/**
+ * `{ total, done }` from a connection of sub-issues, null when there are none,
+ * or when it holds only the first page of them: a partial count is not one.
+ */
+function progressOf(conn) {
+  const nodes = conn?.nodes;
+  if (!nodes?.length || conn.pageInfo?.hasNextPage) return null;
   return { total: nodes.length, done: nodes.filter((n) => isClosed(n.state?.type)).length };
 }
 
@@ -217,15 +277,14 @@ function buildIssueFilter(q) {
   const and = [];
 
   if (q.text) {
+    const text = [{ title: { containsIgnoreCase: q.text } }, { description: { containsIgnoreCase: q.text } }];
+    // Something shaped like a key finds that issue, and still searches the
+    // text: "utf-8" and "covid-19" are words before they are keys.
     const key = /^([A-Za-z][A-Za-z0-9]{0,9})-(\d{1,7})$/.exec(q.text);
-    if (key) {
-      and.push({ team: { key: { eqIgnoreCase: key[1] } }, number: { eq: Number(key[2]) } });
-    } else {
-      const text = [{ title: { containsIgnoreCase: q.text } }, { description: { containsIgnoreCase: q.text } }];
-      // "4504" is how people say XCP-4504 out loud: the number, in any team.
-      if (/^\d{1,7}$/.test(q.text)) text.unshift({ number: { eq: Number(q.text) } });
-      and.push({ or: text });
-    }
+    if (key) text.unshift({ team: { key: { eqIgnoreCase: key[1] } }, number: { eq: Number(key[2]) } });
+    // "4504" is how people say XCP-4504 out loud: the number, in any team.
+    else if (/^\d{1,7}$/.test(q.text)) text.unshift({ number: { eq: Number(q.text) } });
+    and.push({ or: text });
   }
 
   if (q.mine === 'assigned') and.push({ assignee: { isMe: { eq: true } } });
@@ -259,16 +318,33 @@ function buildIssueFilter(q) {
   return and.length ? { and } : null;
 }
 
-/** Linear's "no priority" is 0 and sorts last, as it does in Linear itself. */
-function sortPage(issues, sort) {
-  if (sort === 'priority') {
-    const rank = (p) => (p ? p : 5);
-    return issues.slice().sort((a, b) => rank(a.priority) - rank(b.priority));
+/** `filter` with one more clause, combined with AND like the rest. */
+function withClause(filter, clause) {
+  return { and: [...(filter?.and || []), clause] };
+}
+
+/** Earliest due date first; the same date, most recently updated first. */
+function byDueDate(a, b) {
+  return a.dueDate.localeCompare(b.dueDate)
+    || String(b.updatedAt).localeCompare(String(a.updatedAt))
+    || String(a.id).localeCompare(String(b.id));
+}
+
+/**
+ * The cursor of a `priority` or `due` page, which the adapter wrote itself.
+ * Anything else is refused rather than read as the first page, which would
+ * hand the same issues back a second time.
+ */
+function readCursor(cursor, sort) {
+  if (!cursor) return null;
+  let value = null;
+  try {
+    value = JSON.parse(cursor);
+  } catch {
+    // Falls through to the refusal below.
   }
-  if (sort === 'due') {
-    return issues.slice().sort((a, b) => (a.dueDate || '9999').localeCompare(b.dueDate || '9999'));
-  }
-  return issues;
+  if (!value || typeof value !== 'object' || value.s !== sort) throw trackerError('PROVIDER', 'Invalid page cursor');
+  return value;
 }
 
 // ── Client ───────────────────────────────────────────────────────────────────
@@ -281,36 +357,100 @@ function createClient({ secret, fetch }) {
    * and how many are closed: all of them, not only the listed ones. Linear has
    * no count field, so this asks for the children themselves, which costs
    * a few points per child rather than a nested connection per listed issue.
-   * Decoration only: a failure leaves the counts out and the list stands.
+   * Decoration only: a failure, or more children than PROGRESS_MAX_PAGES
+   * reach, leaves the counts out and the list stands.
    */
   async function subIssueCounts(nodes) {
-    const counts = new Map();
     const ids = [...new Set(nodes.flatMap((n) => [n.id, n.parent?.id]).filter(Boolean))];
-    if (!ids.length) return counts;
+    if (!ids.length) return new Map();
+    let children;
     try {
-      let after = null;
-      for (let page = 0; page < PROGRESS_MAX_PAGES; page++) {
-        const data = await request(ctx, 'SubIssues', `query SubIssues($first: Int!, $after: String, $filter: IssueFilter) {
-          issues(first: $first, after: $after, filter: $filter) {
-            nodes { parent { id } state { type } }
-            pageInfo { hasNextPage endCursor }
-          }
-        }`, { first: PROGRESS_PAGE, after, filter: { parent: { id: { in: ids } } } });
-        for (const child of data.issues?.nodes || []) {
-          const id = child.parent?.id;
-          if (!id) continue;
-          const c = counts.get(id) || { total: 0, done: 0 };
-          c.total++;
-          if (isClosed(child.state?.type)) c.done++;
-          counts.set(id, c);
-        }
-        if (!data.issues?.pageInfo?.hasNextPage) break;
-        after = data.issues.pageInfo.endCursor;
-      }
+      const res = await collectPages(ctx, 'SubIssues', 'issues', 'parent { id } state { type }', {
+        type: 'IssueFilter', value: { parent: { id: { in: ids } } },
+      }, PROGRESS_MAX_PAGES);
+      // A partial count would be shown as the real one: none is better.
+      if (!res.complete) return new Map();
+      children = res.nodes;
     } catch {
       return new Map();
     }
+    const counts = new Map();
+    for (const child of children) {
+      const id = child.parent?.id;
+      if (!id) continue;
+      const c = counts.get(id) || { total: 0, done: 0 };
+      c.total++;
+      if (isClosed(child.state?.type)) c.done++;
+      counts.set(id, c);
+    }
     return counts;
+  }
+
+  /** One page of full issues, as Linear orders them. */
+  async function issuePage(filter, first, after, orderBy = 'updatedAt') {
+    const data = await request(ctx, 'Issues', `query Issues($first: Int!, $after: String, $filter: IssueFilter, $orderBy: PaginationOrderBy) {
+      issues(first: $first, after: $after, filter: $filter, orderBy: $orderBy) {
+        nodes { ...IssueFields }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    ${ISSUE_FIELDS}`, { first, after: after || null, filter, orderBy });
+    const conn = data.issues || {};
+    return { nodes: conn.nodes || [], next: conn.pageInfo?.hasNextPage ? conn.pageInfo.endCursor || null : null };
+  }
+
+  /**
+   * Priority order across pages: every urgent issue, then every high one,
+   * and so on, each priority newest first. A page that empties one priority
+   * goes on with the next, so it is only short at the very end.
+   */
+  async function priorityPage(query, cursor) {
+    const base = buildIssueFilter(query);
+    const order = PRIORITY_ORDER.filter((p) => !query.priorities.length || query.priorities.includes(p));
+    let at = cursor ? order.indexOf(cursor.p) : 0;
+    if (at < 0) throw trackerError('PROVIDER', 'Invalid page cursor');
+    let after = cursor?.a || null;
+    const nodes = [];
+    while (at < order.length && nodes.length < query.limit) {
+      const page = await issuePage(withClause(base, { priority: { eq: order[at] } }), query.limit - nodes.length, after);
+      nodes.push(...page.nodes);
+      if (page.next) return { nodes, next: { s: 'priority', p: order[at], a: page.next } };
+      at++;
+      after = null;
+    }
+    return { nodes, next: at < order.length ? { s: 'priority', p: order[at], a: null } : null };
+  }
+
+  /**
+   * Due date order across pages: every dated issue, earliest first, then the
+   * undated ones, newest first. Linear cannot order by due date, so the dated
+   * ones are ranked from a scan of their ids and dates, and a page fetches
+   * its slice of that ranking.
+   */
+  async function duePage(query, cursor) {
+    const base = buildIssueFilter(query);
+    const nodes = [];
+    if (!cursor || cursor.d !== undefined) {
+      const offset = Number.isInteger(cursor?.d) && cursor.d >= 0 ? cursor.d : 0;
+      const scan = await collectPages(ctx, 'DueDates', 'issues', 'id dueDate updatedAt', {
+        type: 'IssueFilter', value: withClause(base, { dueDate: { null: false } }),
+      }, DUE_SCAN_MAX_PAGES);
+      if (!scan.complete) {
+        throw trackerError('PROVIDER', `More than ${DUE_SCAN_MAX_PAGES * METADATA_PAGE} issues with a due date match: narrow the filters to sort by due date`);
+      }
+      const ranked = scan.nodes.filter((n) => n.dueDate).sort(byDueDate);
+      const ids = ranked.slice(offset, offset + query.limit).map((n) => n.id);
+      if (ids.length) {
+        const page = await issuePage({ id: { in: ids } }, ids.length, null);
+        const byId = new Map(page.nodes.map((n) => [n.id, n]));
+        nodes.push(...ids.map((id) => byId.get(id)).filter(Boolean));
+      }
+      if (offset + query.limit < ranked.length) return { nodes, next: { s: 'due', d: offset + query.limit } };
+      if (ids.length >= query.limit) return { nodes, next: { s: 'due', u: null } };
+    }
+    const page = await issuePage(withClause(base, { dueDate: { null: true } }), query.limit - nodes.length, cursor?.u || null);
+    nodes.push(...page.nodes);
+    return { nodes, next: page.next ? { s: 'due', u: page.next } : null };
   }
 
   return {
@@ -372,24 +512,14 @@ function createClient({ secret, fetch }) {
     },
 
     async listIssues(query, cursor) {
-      const data = await request(ctx, 'Issues', `query Issues($first: Int!, $after: String, $filter: IssueFilter, $orderBy: PaginationOrderBy) {
-        issues(first: $first, after: $after, filter: $filter, orderBy: $orderBy) {
-          nodes { ...IssueFields }
-          pageInfo { hasNextPage endCursor }
-        }
-      }
-      ${ISSUE_FIELDS}`, {
-        first: query.limit,
-        after: cursor || null,
-        filter: buildIssueFilter(query),
-        orderBy: query.sort === 'created' ? 'createdAt' : 'updatedAt',
-      });
-      const conn = data.issues || {};
-      const nodes = conn.nodes || [];
-      const counts = await subIssueCounts(nodes);
+      let page;
+      if (query.sort === 'priority') page = await priorityPage(query, readCursor(cursor, 'priority'));
+      else if (query.sort === 'due') page = await duePage(query, readCursor(cursor, 'due'));
+      else page = await issuePage(buildIssueFilter(query), query.limit, cursor, query.sort === 'created' ? 'createdAt' : 'updatedAt');
+      const counts = await subIssueCounts(page.nodes);
       return {
-        issues: sortPage(nodes.map((n) => withProgress(toIssue(n), n, counts)), query.sort),
-        next: conn.pageInfo?.hasNextPage ? conn.pageInfo.endCursor || null : null,
+        issues: page.nodes.map((n) => withProgress(toIssue(n), n, counts)),
+        next: page.next && typeof page.next === 'object' ? JSON.stringify(page.next) : page.next,
       };
     },
 
@@ -399,19 +529,19 @@ function createClient({ secret, fetch }) {
           ...IssueFields
           description
           comments(first: 100) { nodes { id body createdAt user { ${USER_FIELDS} } } }
-          children(first: 100) { nodes { ...IssueFields } }
-          parent { children(first: 100) { nodes { state { type } } } }
+          children(first: 100) { nodes { ...IssueFields } pageInfo { hasNextPage } }
+          parent { children(first: 100) { nodes { state { type } } pageInfo { hasNextPage } } }
         }
       }
-      ${ISSUE_FIELDS}`, { id: key });
+      ${ISSUE_FIELDS}`, { id: key }, { notFound: 'Issue' });
       const node = data.issue;
       if (!node) throw trackerError('NOT_FOUND', `No Linear issue ${key}`);
       const comments = (node.comments?.nodes || [])
         .map((c) => ({ id: c.id, body: c.body, createdAt: c.createdAt, author: toPerson(c.user) }))
         .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
       const issue = toIssue(node);
-      issue.subIssues = progressOf(node.children?.nodes);
-      if (issue.parent) issue.parent.subIssues = progressOf(node.parent.children?.nodes);
+      issue.subIssues = progressOf(node.children);
+      if (issue.parent) issue.parent.subIssues = progressOf(node.parent.children);
       return {
         ...issue,
         description: node.description || null,
@@ -429,7 +559,7 @@ function createClient({ secret, fetch }) {
       const data = await request(ctx, 'IssueUpdate', `mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
         issueUpdate(id: $id, input: $input) { success issue { ...IssueFields } }
       }
-      ${ISSUE_FIELDS}`, { id: key, input });
+      ${ISSUE_FIELDS}`, { id: key, input }, { notFound: 'Issue' });
       if (!data.issueUpdate?.success || !data.issueUpdate.issue) throw trackerError('PROVIDER', `Linear did not update ${key}`);
       const node = data.issueUpdate.issue;
       return withProgress(toIssue(node), node, await subIssueCounts([node]));
@@ -438,7 +568,7 @@ function createClient({ secret, fetch }) {
     async addComment(key, body) {
       const data = await request(ctx, 'CommentCreate', `mutation CommentCreate($input: CommentCreateInput!) {
         commentCreate(input: $input) { success comment { id body createdAt user { ${USER_FIELDS} } } }
-      }`, { input: { issueId: key, body } });
+      }`, { input: { issueId: key, body } }, { notFound: 'Issue' });
       const comment = data.commentCreate?.comment;
       if (!data.commentCreate?.success || !comment) throw trackerError('PROVIDER', `Linear did not add the comment to ${key}`);
       return { id: comment.id, body: comment.body, createdAt: comment.createdAt, author: toPerson(comment.user) };
@@ -520,5 +650,5 @@ module.exports = {
     fromToolCall,
   },
   // Exposed for the adapter's own tests, not part of the contract.
-  _internals: { buildIssueFilter, toIssue, sortPage, CATEGORY_BY_TYPE },
+  _internals: { buildIssueFilter, toIssue, CATEGORY_BY_TYPE },
 };

@@ -20,16 +20,14 @@ const QUERY_TIMEOUT = 30 * 1000; // 30 seconds
 
 const DESTRUCTIVE_SQL_RE = /^\s*(DROP|DELETE\s+FROM|TRUNCATE|ALTER)\b/i;
 
-const REDIS_ALLOWED_COMMANDS = new Set([
-  'get', 'set', 'del', 'keys', 'type', 'info', 'scan', 'select', 'ping',
-  'hget', 'hgetall', 'hset', 'hdel', 'hkeys', 'hvals', 'hlen', 'hexists',
-  'lrange', 'llen', 'lindex', 'lpush', 'rpush', 'lpop', 'rpop',
-  'smembers', 'scard', 'sismember', 'sadd', 'srem',
-  'zrange', 'zcard', 'zscore', 'zadd', 'zrem', 'zrangebyscore',
-  'exists', 'expire', 'ttl', 'pttl', 'persist', 'rename',
-  'dbsize', 'randomkey', 'mget', 'strlen', 'append', 'incr', 'decr',
-  'getrange', 'setex', 'setnx', 'mset'
-]);
+// Key names the Redis browser loads before it says the list is partial
+const REDIS_KEY_LIMIT = 10000;
+const REDIS_KEY_LIMIT_MAX = 100000;
+// Items of a hash, list, set or sorted set read for the detail pane
+const REDIS_ITEM_LIMIT = 500;
+const REDIS_STREAM_LIMIT = 100;
+
+const { isRedisCommandAllowed, tokenizeRedisCommand, REDIS_SUBCOMMANDS } = require('../../shared/redis-commands');
 
 class DatabaseService {
   constructor() {
@@ -214,6 +212,245 @@ class DatabaseService {
     } catch (error) {
       return { success: false, error: error.message, duration: Date.now() - start };
     }
+  }
+
+  /**
+   * Structured entry point for the Redis browser.
+   *
+   * Arguments travel as values rather than inside a command string, so a key
+   * holding spaces or a newline reaches Redis exactly as written - the old
+   * `_REDIS_KEY_INFO {db} {key}` line trimmed the first and could not carry
+   * the second at all.
+   *
+   * @param {string} id - Connection ID
+   * @param {{ action: string, db?: number, key?: string, pattern?: string, limit?: number }} request
+   */
+  async redis(id, request = {}) {
+    const conn = this.connections.get(id);
+    if (!conn) return { success: false, error: 'Not connected' };
+    if (conn.config.type !== 'redis') return { success: false, error: 'Not a Redis connection' };
+    this._touch(id);
+
+    const dbIndex = Number.isInteger(request.db) && request.db >= 0 ? request.db : this._redisDbIndex(conn.config);
+    try {
+      const db = await this._redisDbClient(conn.client, dbIndex);
+      switch (request.action) {
+        case 'keys': return { success: true, ...(await this._redisListKeys(db, request)) };
+        case 'info': return { success: true, info: await this._redisKeyInfo(db, this._redisKeyArg(request.key)) };
+        case 'delete': return { success: true, deleted: await this._redisDelete(db, this._redisKeyArg(request.key)) };
+        case 'expire': return { success: true, info: await this._redisExpire(db, this._redisKeyArg(request.key), request.seconds) };
+        case 'rename': return { success: true, info: await this._redisRename(db, this._redisKeyArg(request.key), this._redisKeyArg(request.newKey)) };
+        case 'setString': return { success: true, info: await this._redisSetString(db, this._redisKeyArg(request.key), request.value) };
+        case 'server': return { success: true, server: this._redisServerSummary(await db.info()) };
+        default: throw new Error(`Unknown Redis action: ${request.action}`);
+      }
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  _redisKeyArg(key) {
+    if (typeof key !== 'string' || key === '') throw new Error('A key is required');
+    return key;
+  }
+
+  /**
+   * Key names for the tree, capped. Walking the whole keyspace and shipping it
+   * to the renderer is fine at a few hundred keys and freezes both processes at
+   * a few million, so past `limit` the answer says it is partial and the
+   * browser moves its filter to the server.
+   */
+  async _redisListKeys(db, { pattern = '', limit = REDIS_KEY_LIMIT, withTypes = false } = {}) {
+    const cap = Math.min(Math.max(parseInt(limit, 10) || REDIS_KEY_LIMIT, 1), REDIS_KEY_LIMIT_MAX);
+    const match = pattern ? `*${this._redisCaselessGlob(pattern)}*` : '*';
+    // SCAN may return a key twice when the keyspace is rehashed mid-walk
+    const keys = new Set();
+    let truncated = false;
+    let cursor = '0';
+    do {
+      const [next, batch] = await db.scan(cursor, 'MATCH', match, 'COUNT', 1000);
+      cursor = next;
+      for (const key of batch) {
+        if (keys.has(key)) continue;
+        if (keys.size >= cap) { truncated = true; break; }
+        keys.add(key);
+      }
+    } while (!truncated && cursor !== '0');
+    const total = await db.dbsize().catch(() => null);
+    const sorted = [...keys].sort();
+    const types = withTypes ? await this._redisTypes(db, sorted).catch(() => null) : null;
+    return { keys: sorted, truncated, total, ...(types ? { types } : {}) };
+  }
+
+  /**
+   * One key, with at most REDIS_ITEM_LIMIT items of a collection. HGETALL and
+   * SMEMBERS used to read the whole value, which for a hash of a million
+   * fields is a multi-megabyte reply blocking the server and the IPC alike;
+   * collections are now read in pages and `shown` says how many came back.
+   */
+  async _redisKeyInfo(db, key) {
+    const type = await db.type(key);
+    if (type === 'none') throw new Error(`Key "${key}" does not exist`);
+    const ttl = await db.ttl(key);
+    const pttl = await db.pttl(key);
+    let size = null, length = null, value = null, shown = null;
+    try {
+      if (type === 'string') {
+        value = await db.get(key);
+        size = await db.strlen(key);
+      } else if (type === 'hash') {
+        length = await db.hlen(key);
+        const pairs = await this._redisScanItems(db, 'hscan', key, REDIS_ITEM_LIMIT * 2);
+        const fields = {};
+        for (let i = 0; i < pairs.length; i += 2) fields[pairs[i]] = pairs[i + 1];
+        value = JSON.stringify(fields);
+        shown = Object.keys(fields).length;
+      } else if (type === 'list') {
+        length = await db.llen(key);
+        const items = await db.lrange(key, 0, REDIS_ITEM_LIMIT - 1);
+        value = JSON.stringify(items);
+        shown = items.length;
+      } else if (type === 'set') {
+        length = await db.scard(key);
+        const members = [...new Set(await this._redisScanItems(db, 'sscan', key, REDIS_ITEM_LIMIT))].sort();
+        value = JSON.stringify(members);
+        shown = members.length;
+      } else if (type === 'zset') {
+        length = await db.zcard(key);
+        const flat = await db.zrange(key, 0, REDIS_ITEM_LIMIT - 1, 'WITHSCORES');
+        value = JSON.stringify(flat);
+        shown = flat.length / 2;
+      } else if (type === 'stream') {
+        length = await db.xlen(key);
+        // Newest first: the end of a stream is what someone opening it is after
+        const entries = await db.xrevrange(key, '+', '-', 'COUNT', REDIS_STREAM_LIMIT);
+        value = JSON.stringify(entries.map(([id, flat]) => {
+          const fields = {};
+          for (let i = 0; i < flat.length; i += 2) fields[flat[i]] = flat[i + 1];
+          return { id, fields };
+        }));
+        shown = entries.length;
+      } else if (type === 'ReJSON-RL') {
+        // RedisJSON: the value is a document, read whole like a string
+        value = await db.call('JSON.GET', key);
+        size = value == null ? null : Buffer.byteLength(value);
+      } else {
+        value = `(${type})`;
+      }
+    } catch { /* leave what was read; the type is still worth showing */ }
+    return { key, type, ttl: ttl < 0 ? null : ttl, pttl: pttl < 0 ? null : pttl, size, length, shown, value };
+  }
+
+  /** Walk HSCAN/SSCAN until `max` flat items came back; the cursor order is Redis's, not sorted. */
+  async _redisScanItems(db, command, key, max) {
+    const items = [];
+    let cursor = '0';
+    do {
+      const [next, batch] = await db[command](key, cursor, 'COUNT', 500);
+      cursor = next;
+      items.push(...batch);
+    } while (cursor !== '0' && items.length < max);
+    return items.slice(0, max);
+  }
+
+  /**
+   * TYPE of every listed key, pipelined in batches, for the tree's type marks.
+   * One round trip per thousand keys rather than per key.
+   */
+  async _redisTypes(db, keys) {
+    const types = [];
+    for (let i = 0; i < keys.length; i += 1000) {
+      const pipeline = db.pipeline();
+      for (const key of keys.slice(i, i + 1000)) pipeline.type(key);
+      const replies = await pipeline.exec();
+      for (const [error, type] of replies) types.push(error ? null : type);
+    }
+    return types;
+  }
+
+  /** INFO as { field: value }, sections flattened: field names do not repeat across sections. */
+  _parseRedisInfo(text) {
+    const fields = {};
+    for (const line of String(text).split(/\r?\n/)) {
+      if (!line || line.startsWith('#')) continue;
+      const at = line.indexOf(':');
+      if (at > 0) fields[line.slice(0, at)] = line.slice(at + 1);
+    }
+    return fields;
+  }
+
+  /**
+   * The handful of INFO fields that say whether a server is healthy, as
+   * numbers the renderer can compare: memory against its limit, hit rate,
+   * evictions. Missing fields stay null - managed services strip some.
+   */
+  _redisServerSummary(text) {
+    const f = this._parseRedisInfo(text);
+    const num = (name) => (f[name] !== undefined && f[name] !== '' && !Number.isNaN(Number(f[name])) ? Number(f[name]) : null);
+    const hits = num('keyspace_hits'), misses = num('keyspace_misses');
+    const keyspace = Object.keys(f).filter(k => /^db\d+$/.test(k)).map(k => {
+      const m = /keys=(\d+),expires=(\d+)/.exec(f[k]) || [];
+      return { db: parseInt(k.slice(2), 10), keys: Number(m[1] || 0), expires: Number(m[2] || 0) };
+    }).sort((a, b) => a.db - b.db);
+    return {
+      version: f.redis_version || f.valkey_version || null,
+      mode: f.redis_mode || null,
+      role: f.role || null,
+      connectedReplicas: num('connected_slaves'),
+      uptimeSeconds: num('uptime_in_seconds'),
+      clients: num('connected_clients'),
+      blockedClients: num('blocked_clients'),
+      usedMemory: num('used_memory'),
+      peakMemory: num('used_memory_peak'),
+      // 0 means no limit
+      maxMemory: num('maxmemory') || null,
+      maxMemoryPolicy: f.maxmemory_policy || null,
+      fragmentation: num('mem_fragmentation_ratio'),
+      opsPerSec: num('instantaneous_ops_per_sec'),
+      hitRate: hits !== null && misses !== null && hits + misses > 0 ? hits / (hits + misses) : null,
+      evictedKeys: num('evicted_keys'),
+      expiredKeys: num('expired_keys'),
+      rdbLastSave: num('rdb_last_save_time'),
+      aofEnabled: f.aof_enabled === undefined ? null : f.aof_enabled === '1',
+      keyspace,
+    };
+  }
+
+  /** UNLINK frees a large value off the main thread; DEL for servers older than 4.0. */
+  async _redisDelete(db, key) {
+    try {
+      return (await db.unlink(key)) > 0;
+    } catch (error) {
+      if (!/unknown command/i.test(error.message)) throw error;
+      return (await db.del(key)) > 0;
+    }
+  }
+
+  /** A positive number of seconds sets the expiry; anything else removes it. */
+  async _redisExpire(db, key, seconds) {
+    const ttl = parseInt(seconds, 10);
+    const applied = Number.isInteger(ttl) && ttl > 0 ? await db.expire(key, ttl) : await db.persist(key);
+    // PERSIST answers 0 for a key that already had no expiry, which is not a failure
+    if (!applied && (await db.exists(key)) === 0) throw new Error(`Key "${key}" does not exist`);
+    return this._redisKeyInfo(db, key);
+  }
+
+  /** RENAMENX, not RENAME: renaming onto an existing key would silently destroy it. */
+  async _redisRename(db, key, newKey) {
+    if (newKey === key) return this._redisKeyInfo(db, key);
+    if (!(await db.renamenx(key, newKey))) throw new Error(`Key "${newKey}" already exists`);
+    return this._redisKeyInfo(db, newKey);
+  }
+
+  /** Replace a string value, keeping the expiry it had: a plain SET would drop it. */
+  async _redisSetString(db, key, value) {
+    if (typeof value !== 'string') throw new Error('A string value is required');
+    const type = await db.type(key);
+    if (type !== 'string') throw new Error(type === 'none' ? `Key "${key}" does not exist` : `Key "${key}" holds a ${type}, not a string`);
+    const pttl = await db.pttl(key);
+    if (pttl > 0) await db.set(key, value, 'PX', pttl);
+    else await db.set(key, value);
+    return this._redisKeyInfo(db, key);
   }
 
   /**
@@ -466,7 +703,18 @@ class DatabaseService {
   }
 
   _createSqliteClient(config) {
-    const Database = require('better-sqlite3');
+    // better-sqlite3 is an optional dependency, so this require can legitimately
+    // fail on a machine that installed without a native toolchain: npm runs a
+    // node-gyp build for it even though its bundled NAPI prebuild is all we
+    // need, and drops the package when that build fails. Say so, rather than
+    // letting a raw MODULE_NOT_FOUND surface in the connection dialog.
+    let Database;
+    try {
+      Database = require('better-sqlite3');
+    } catch (error) {
+      if (error.code !== 'MODULE_NOT_FOUND') throw error;
+      throw new Error('The SQLite driver is not installed. Run `npm run postinstall` on a machine with a native toolchain, or reinstall dependencies there. The other database drivers are unaffected.');
+    }
     const dbPath = config.filePath;
     if (!dbPath || !fs.existsSync(dbPath)) {
       throw new Error(`SQLite file not found: ${dbPath}`);
@@ -518,18 +766,93 @@ class DatabaseService {
     return client;
   }
 
+  /** The DB index a Redis connection was configured for (stored as a number or a string). */
+  _redisDbIndex(config) {
+    const index = parseInt(config && config.database, 10);
+    return Number.isInteger(index) && index >= 0 ? index : 0;
+  }
+
   async _createRedisClient(config) {
     const Redis = require('ioredis');
+    const host = config.host || 'localhost';
     const client = new Redis({
-      host: config.host || 'localhost',
+      host,
       port: config.port || 6379,
+      // Redis 6 ACL user; without it AUTH goes to the `default` user, as before
+      username: config.username || undefined,
       password: config.password || undefined,
-      db: config.database || 0,
+      db: this._redisDbIndex(config),
+      // Managed Redis (Upstash, ElastiCache, Azure Cache) only answers over TLS.
+      // Certificates are verified unless the connection opts out for a self-signed one.
+      tls: config.tls ? { servername: host, rejectUnauthorized: !config.tlsInsecure } : undefined,
       connectTimeout: 10000,
       lazyConnect: true
     });
-    await client.connect();
+    // Without a listener ioredis prints every socket error as "Unhandled error
+    // event", and a failed connect() only says "Connection is closed."
+    let lastError = null;
+    client.on('error', (error) => { lastError = error; });
+    try {
+      await client.connect();
+    } catch (error) {
+      client.disconnect();
+      throw new Error(this._redisConnectError(lastError || error, config), { cause: error });
+    }
     return client;
+  }
+
+  /**
+   * The socket error behind a failed connect, with the likely cause when TLS
+   * is on one side only: a TLS client against a plain port waits out the
+   * handshake and times out, a plain client against a TLS port is reset.
+   */
+  _redisConnectError(error, config) {
+    const message = error && error.message ? error.message : String(error);
+    const handshake = /ETIMEDOUT|ECONNRESET|EPROTO|wrong version|socket disconnected|Connection is closed/i.test(message);
+    if (config.tls && handshake) {
+      return `${message}. The TLS handshake did not complete: check that this port serves TLS, or turn TLS off.`;
+    }
+    if (!config.tls && /ECONNRESET|Connection is closed/i.test(message)) {
+      return `${message}. If the server requires TLS (a rediss:// URL), turn TLS on.`;
+    }
+    return message;
+  }
+
+  /**
+   * A client bound to one DB index, for the browser's internal commands.
+   *
+   * These used to run `SELECT n` on the shared connection, which moved it for
+   * everything after: a GET typed in the query tab ran against whichever db was
+   * browsed last rather than the configured one, and two browser requests in
+   * flight at once (key list + key detail) could each land in the other's db.
+   * One duplicate per index, closed with the main client.
+   */
+  async _redisDbClient(client, dbIndex) {
+    if (!this._redisDbClients) this._redisDbClients = new WeakMap();
+    let byIndex = this._redisDbClients.get(client);
+    if (!byIndex) { byIndex = new Map(); this._redisDbClients.set(client, byIndex); }
+    let pending = byIndex.get(dbIndex);
+    if (!pending) {
+      pending = (async () => {
+        const dup = client.duplicate({ db: dbIndex, lazyConnect: true });
+        // Errors reach the caller through the rejected command; this only keeps ioredis quiet
+        dup.on('error', () => {});
+        await dup.connect();
+        return dup;
+      })();
+      byIndex.set(dbIndex, pending);
+      pending.catch(() => byIndex.delete(dbIndex));
+    }
+    return pending;
+  }
+
+  _closeRedisDbClients(client) {
+    const byIndex = this._redisDbClients && this._redisDbClients.get(client);
+    if (!byIndex) return;
+    for (const pending of byIndex.values()) {
+      pending.then(dup => dup.disconnect(), () => {});
+    }
+    this._redisDbClients.delete(client);
   }
 
   // ==================== Private: Ping ====================
@@ -574,6 +897,7 @@ class DatabaseService {
         await client.close();
         break;
       case 'redis':
+        this._closeRedisDbClients(client);
         client.disconnect();
         break;
     }
@@ -588,7 +912,7 @@ class DatabaseService {
       case 'mariadb': return this._getMysqlSchema(client);
       case 'postgresql': return this._getPgSchema(client);
       case 'mongodb': return this._getMongoSchema(client, config);
-      case 'redis': return this._getRedisSchema(client);
+      case 'redis': return this._getRedisSchema(client, config);
       default: return [];
     }
   }
@@ -747,18 +1071,30 @@ class DatabaseService {
     return result;
   }
 
-  async _getRedisSchema(client) {
-    const info = await client.info('keyspace');
-    const dbInfos = [];
-    for (const line of info.split('\r\n')) {
-      const m = line.match(/^db(\d+):keys=(\d+)/);
-      if (m) dbInfos.push({ dbIndex: parseInt(m[1]), keyCount: parseInt(m[2]) });
+  async _getRedisSchema(client, config) {
+    // INFO keyspace only lists databases that hold keys at this instant. The
+    // configured one is listed regardless: it used to be replaced by a made-up
+    // db:0 whenever it was empty, which for a cache whose keys all carry a TTL
+    // is any moment they happen to have expired - and the connection then
+    // looked pointed at the wrong database.
+    const configured = this._redisDbIndex(config);
+    const counts = new Map();
+    try {
+      const info = await client.info('keyspace');
+      for (const line of info.split(/\r?\n/)) {
+        const m = line.match(/^db(\d+):keys=(\d+)/);
+        if (m) counts.set(parseInt(m[1], 10), parseInt(m[2], 10));
+      }
+    } catch { /* INFO can be denied by an ACL; the configured db is still browsable */ }
+    if (!counts.has(configured)) {
+      counts.set(configured, await client.dbsize().catch(() => 0));
     }
-    if (dbInfos.length === 0) dbInfos.push({ dbIndex: 0, keyCount: 0 });
 
     // Each Redis database appears as a "table" with a fixed schema
-    return dbInfos.map(({ dbIndex, keyCount }) => ({
+    return [...counts.entries()].sort((a, b) => a[0] - b[0]).map(([dbIndex, keyCount]) => ({
       name: `db:${dbIndex}`,
+      keyCount,
+      isDefault: dbIndex === configured,
       columns: [
         { name: 'key',   type: 'string', primaryKey: true,  nullable: false },
         { name: 'type',  type: 'string', primaryKey: false, nullable: false },
@@ -872,23 +1208,23 @@ class DatabaseService {
       const dbIndex = parseInt(scanMatch[1]);
       const pageSize = parseInt(scanMatch[2]);
       const offset = parseInt(scanMatch[3]);
-      const pattern = scanMatch[4] ? `*${scanMatch[4]}*` : '*';
+      const pattern = scanMatch[4] ? `*${this._redisGlobEscape(scanMatch[4])}*` : '*';
 
-      await client.select(dbIndex);
-      const allKeys = await this._redisGetAllKeys(client, pattern);
+      const db = await this._redisDbClient(client, dbIndex);
+      const allKeys = await this._redisGetAllKeys(db, pattern);
       const total = allKeys.length;
       const pageKeys = allKeys.slice(offset, offset + pageSize);
 
       const rows = await Promise.all(pageKeys.map(async key => {
-        const type = await client.type(key);
-        const ttl = await client.ttl(key);
+        const type = await db.type(key);
+        const ttl = await db.ttl(key);
         let value = null;
         try {
-          if (type === 'string') value = await client.get(key);
-          else if (type === 'hash') value = JSON.stringify(await client.hgetall(key));
-          else if (type === 'list') value = JSON.stringify(await client.lrange(key, 0, 9));
-          else if (type === 'set') value = JSON.stringify(await client.smembers(key));
-          else if (type === 'zset') value = JSON.stringify(await client.zrange(key, 0, 9, 'WITHSCORES'));
+          if (type === 'string') value = await db.get(key);
+          else if (type === 'hash') value = JSON.stringify(await db.hgetall(key));
+          else if (type === 'list') value = JSON.stringify(await db.lrange(key, 0, 9));
+          else if (type === 'set') value = JSON.stringify(await db.smembers(key));
+          else if (type === 'zset') value = JSON.stringify(await db.zrange(key, 0, 9, 'WITHSCORES'));
           else value = `(${type})`;
         } catch { /* ignore */ }
         return { key, type, ttl: ttl < 0 ? null : ttl, value };
@@ -897,69 +1233,60 @@ class DatabaseService {
       return { columns: ['key', 'type', 'ttl', 'value'], rows, rowCount: total };
     }
 
-    // Fast key listing: _REDIS_KEYS {dbIndex} {pattern?}
-    const keysMatch = trimmed.match(/^_REDIS_KEYS\s+(\d+)(?:\s+(.+))?$/);
-    if (keysMatch) {
-      const dbIndex = parseInt(keysMatch[1]);
-      const pattern = keysMatch[2] ? `*${keysMatch[2]}*` : '*';
-      await client.select(dbIndex);
-      const allKeys = await this._redisGetAllKeys(client, pattern);
-      return { columns: ['key'], rows: allKeys.map(k => ({ key: k })), rowCount: allKeys.length };
-    }
-
-    // Single key detail: _REDIS_KEY_INFO {dbIndex} {key}
-    const keyInfoMatch = trimmed.match(/^_REDIS_KEY_INFO\s+(\d+)\s+(.+)$/);
-    if (keyInfoMatch) {
-      const dbIndex = parseInt(keyInfoMatch[1]);
-      const key = keyInfoMatch[2].trim();
-      await client.select(dbIndex);
-      const type = await client.type(key);
-      if (type === 'none') throw new Error(`Key "${key}" does not exist`);
-      const ttl = await client.ttl(key);
-      const pttl = await client.pttl(key);
-      let size = null, length = null, value = null;
-      try {
-        if (type === 'string') {
-          value = await client.get(key);
-          size = await client.strlen(key);
-        } else if (type === 'hash') {
-          length = await client.hlen(key);
-          value = JSON.stringify(await client.hgetall(key));
-        } else if (type === 'list') {
-          length = await client.llen(key);
-          value = JSON.stringify(await client.lrange(key, 0, 499));
-        } else if (type === 'set') {
-          length = await client.scard(key);
-          value = JSON.stringify(await client.smembers(key));
-        } else if (type === 'zset') {
-          length = await client.zcard(key);
-          value = JSON.stringify(await client.zrange(key, 0, 499, 'WITHSCORES'));
-        } else {
-          value = `(${type})`;
-        }
-      } catch { /* ignore */ }
-      return {
-        columns: ['key', 'type', 'ttl', 'pttl', 'size', 'length', 'value'],
-        rows: [{ key, type, ttl: ttl < 0 ? null : ttl, pttl: pttl < 0 ? null : pttl, size, length, value }],
-        rowCount: 1,
-      };
-    }
-
     // Native Redis command (e.g. "GET mykey", "SET foo bar", "KEYS *")
-    const parts = trimmed.split(/\s+/);
+    const parts = this._tokenizeRedisCommand(trimmed);
+    if (parts.length === 0) throw new Error('Empty Redis command');
     const cmd = parts[0].toLowerCase();
     const args = parts.slice(1);
 
-    if (!REDIS_ALLOWED_COMMANDS.has(cmd)) {
-      throw new Error(`Redis command "${cmd.toUpperCase()}" is not allowed. Only read/write data commands are permitted.`);
+    if (!isRedisCommandAllowed(cmd, args)) {
+      const subs = REDIS_SUBCOMMANDS[cmd];
+      throw new Error(subs
+        ? `Redis command "${cmd.toUpperCase()} ${String(args[0] || '').toUpperCase()}" is not allowed. Allowed: ${subs.map(s => `${cmd.toUpperCase()} ${s.toUpperCase()}`).join(', ')}.`
+        : `Redis command "${cmd.toUpperCase()}" is not allowed. Only read/write data commands are permitted.`);
     }
 
-    const result = await client[cmd](...args);
+    // ioredis has a method per core command, which also shapes replies (HGETALL
+    // as an object); a module command such as JSON.GET goes through call()
+    const result = typeof client[cmd] === 'function' && !cmd.includes('.')
+      ? await client[cmd](...args)
+      : await client.call(cmd, ...args);
+    // HGETALL comes back from ioredis as an object, which String() turned into "[object Object]"
+    if (result && typeof result === 'object' && !Array.isArray(result) && !Buffer.isBuffer(result)) {
+      const entries = Object.entries(result);
+      return { columns: ['field', 'value'], rows: entries.slice(0, limit).map(([field, value]) => ({ field, value: String(value) })), rowCount: entries.length };
+    }
     if (Array.isArray(result)) {
       const limited = result.slice(0, limit);
-      return { columns: ['value'], rows: limited.map(v => ({ value: v === null ? null : String(v) })), rowCount: result.length };
+      // XRANGE, SCAN and friends nest arrays, which String() flattened into "a,b,c"
+      const cell = v => (v === null ? null : Array.isArray(v) ? JSON.stringify(v) : String(v));
+      return { columns: ['value'], rows: limited.map(v => ({ value: cell(v) })), rowCount: result.length };
     }
     return { columns: ['result'], rows: [{ result: result === null ? null : String(result) }], rowCount: 1 };
+  }
+
+  /** redis-cli style argument splitting; shared with the MCP server. */
+  _tokenizeRedisCommand(line) {
+    return tokenizeRedisCommand(line);
+  }
+
+  /** A filter is a substring, not a glob: `user[1]` must not match `user1`. */
+  _redisGlobEscape(text) {
+    return String(text).replace(/[*?[\]\\]/g, '\\$&');
+  }
+
+  /**
+   * The browser's filter as a MATCH glob that ignores case, so a search the
+   * server answers finds what the same text finds in a list already loaded.
+   */
+  _redisCaselessGlob(text) {
+    let out = '';
+    for (const ch of String(text)) {
+      const lower = ch.toLowerCase(), upper = ch.toUpperCase();
+      if (lower !== upper) out += `[${lower}${upper}]`;
+      else out += /[*?[\]\\]/.test(ch) ? `\\${ch}` : ch;
+    }
+    return out;
   }
 
   async _redisGetAllKeys(client, pattern = '*') {
@@ -1013,9 +1340,10 @@ class DatabaseService {
       if (!match) return null;
 
       let type = match[1];
+      const tls = type === 'rediss';
       if (type.startsWith('postgres')) type = 'postgresql';
       if (type.startsWith('mongodb')) type = 'mongodb';
-      if (type === 'rediss') type = 'redis';
+      if (tls) type = 'redis';
 
       const defaultPorts = { mysql: 3306, mariadb: 3306, postgresql: 5432, redis: 6379 };
 
@@ -1029,8 +1357,10 @@ class DatabaseService {
           name: `Redis - ${match[4]}`,
           host: match[4],
           port: match[5] ? parseInt(match[5]) : 6379,
-          password: match[3] || '',
-          database: match[6] ? parseInt(match[6]) : 0
+          ...(match[2] ? { username: decodeURIComponent(match[2]) } : {}),
+          password: match[3] ? decodeURIComponent(match[3]) : '',
+          database: match[6] ? parseInt(match[6]) : 0,
+          ...(tls ? { tls: true } : {})
         };
       }
 

@@ -2,21 +2,109 @@
 
 All notable changes to Claude Terminal are documented in this file.
 
-## [1.3.3] - 2026-09-14
+## [1.3.6] - 2026-10-03
+
+### Added
+- **Remote SSH Projects**: open a project that lives on another machine over SSH, IntelliJ Gateway style. Add a host with the system's own OpenSSH (ProxyJump, identity file, optional agent forwarding, host key verification handled by OpenSSH itself), then browse its folders and open, create or clone a project there. Terminals, quick actions, Claude Code chat, git, file browsing/editing and diffs all run on the host, with a connection badge that reconnects on its own and keeps tabs alive across the drop (inside tmux if you enable it). Features that only make sense locally are shown disabled, with the reason as a tooltip (#224)
+- **Dashboard**: the project page and the overview now open on a weekly briefing: this week's cost, time and commits, your last Claude sessions with a Resume button, and what's waiting (uncommitted files, commits to push or pull, failing CI, open PRs, TODO count), plus a 14-day chart of cost against commits
+- **Cost tab**: see API-equivalent Claude spend by account, project, model and day, for this week, last week, 7/30 days, this month or all time; a weekly-limit card splits a shared account's usage between this machine's share and everyone else's
+- **Chat**: commands that act on the machine or the account rather than the conversation (/design-login, /login, /logout, /permissions, /plugin...) now open in a Claude terminal tab instead of failing silently in the chat
+- **Skills & Agents**: compact cards with a filter that matches name, description and tool names, instead of one long scroll
+
+### Fixed
+- Git panel: committing, pulling or pushing no longer throws an error afterward
+- Git: files with spaces or accented characters in their name can be staged again
+- Projects: a project created or edited by an MCP tool is picked up again instead of being silently ignored, and a projects file that fails to parse can no longer wipe the projects you already have
+- A modal no longer closes itself the moment its own button makes it re-render
+- Chat: the input placeholder goes back to normal after a turn ends, instead of staying on the last hint
+- Global shortcuts now answer on Wayland, and Ctrl+Shift+T opens a terminal
+- Time tracking: the week total no longer resets when the week crosses a month boundary
+- Cost: a shared account's weekly usage percentage is now split fairly between the machines using it
+- Clicking a release notification now opens the full What's New panel instead of a dead link
+- Skills and agents with a multi-line description now display correctly
+- The accent color is now followed consistently across the interface, instead of reverting to the default orange in places
+- Hooks left pointing at a removed Claude Terminal install are now cleaned up automatically
+- Accounts: the Claude Design access grant now stays with the account it was issued to
+- Parallel tasks: a project with no run yet shows a proper empty state
+
+## [1.3.5] - 2026-09-30
+
+### Added
+- **Database**: connect to a Redis server over TLS, as an ACL user, or straight from a connection URL
+- **Database**: a Redis server overview sits beside the key tree, the query tab is wider, and commands and keys now autocomplete
+- **Database**: every Redis value type can be browsed a page at a time, and a key can be edited, given a new expiry, renamed or deleted in place
+- **Accounts**: the limit switch offer shows each account's usage, with accounts that are already spent greyed out (#225)
+- **Chat**: Sonnet 5.5 joins the model picker, Sonnet 5 moves down to "More models", and the SDK moves to 0.3.284 (#226)
+- **i18n**: Brazilian Portuguese (pt-BR) is now available (#222)
+- **Linux**: `npm install` adds a source checkout entry to the application menu (#223, contributed by @policarpojonathan)
+
+### Changed
+- Database: the Redis key tree is capped and repaints on its own, keeping large databases responsive
+
+### Fixed
+- Chat: a model a served catalog appends after the usual list now files correctly under "More models" instead of the main list (#228)
+- Chat: a catalog row is labelled by the model it actually resolves to
+- Database: browsing a Redis connection now shows the database it was configured for, instead of always the cache
+- Database (MCP tools): the configured Redis database is reported correctly, no longer selecting from the cache
+- Terminal, Notifications (Linux): Wayland notifications stay clickable and the glyph atlas repaints correctly, without affecting other platforms
+- Terminal (Linux): the glyph atlas repaints when the window regains focus, and Wayland toasts no longer steal focus from the app (#221)
+- Sessions: a worktree name with braces in it now displays without the stray characters
+
+## [1.3.4] - 2026-09-23
+
+### Added
+- **Chat**: Opus 5.5 is in the model picker, and the picker now updates itself when the CLI learns about a new model instead of keeping the name the previous one gave
+- **Chat**: the model and reasoning-effort pickers can be used while a turn is running, like the permission-mode picker beside them. The choice applies to the next turn, and the chip says so until it does
+- **Settings**: GPU terminal rendering can be turned off, for graphics drivers that leave ghost characters behind or draw the caret a column away from the text
+- **Files**: markdown can be read rendered or as source, a file the session touched adds a diff view, and a reload button re-reads from disk
+
+### Changed
+- Opus 5 moves to the "More models" section of the picker, following the CLI, and stays selectable everywhere it was before
+
+### Performance
+- Chat: a long conversation left open for days no longer grows the app's memory the way it did. The part of the transcript well above what you are reading is now held as markup rather than as live elements, which measured 33x smaller per message and around 1 GB on a window open for four days
+
+### Fixed
+- Chat: an "Enhanced" prompt scrolled far enough back keeps its badge working, so the original prompt stays reachable
+- Chat: a filtered table read back later comes back with its search box and its hidden rows agreeing
+- Chat: a spinner no longer stays frozen after the conversation scrolls past it and back
+- Chat: changing the model twice during one turn now reports the switch the session actually made, and a failed switch returns to the model it is really running
+- Chat: a message queued behind a model change is sent after the change reaches Claude, not beside it
+- Usage: the titlebar chip recovers on its own after a credential store refuses once, instead of going quiet for the rest of the session, and its tooltip says when it will try again
+- Usage: repeated failures now stop the retries rather than reopening the credential store every hour, which on macOS meant a password prompt behind the window
+- The `usage_get` and `usage_refresh` tools work at all, report the account they describe, mark figures that are no longer current, and no longer clamp usage past 100% down to 100%
+- Files: "Open in editor" reports when the editor did not start, anywhere in the app, and finds a macOS editor whose command-line shortcut was never installed
+- Files: "Reference in chat" attaches to a conversation of the project you are browsing, and opens one when there is none
+- Files: rendered markdown uses the app's typography instead of the browser's defaults
+- Notifications: the toast window is sized to the card it draws, so nothing is clipped
+
+## [1.3.3] - 2026-09-22
 
 ### Added
 - **Settings**: a terminal font size setting, applied live to every open terminal (#181)
 - **Settings**: a search field, so a setting can be found by name instead of by memory
 - **Command palette**: Ctrl+P now searches settings, knowledge entries, workspace docs, kanban cards and past sessions, not just projects and commands
-- **Project types**: a third-party project type can be added as a folder in `~/.claude-terminal/project-types/` — a manifest and its translations, opt-in twice, with no third-party code ever running
+- **Project types**: a third-party project type can be added as a folder in `~/.claude-terminal/project-types/`, a manifest and its translations, opt-in twice, with no third-party code ever running
 - **Tabs**: the close confirmation can remember your answer, reversible from Settings → Claude → Terminal
 - **Database**: the Add Connection picker is themed instead of drawn by the OS, with a colour per driver and keyboard navigation
 - **Notifications**: desktop notifications now match the in-app toasts
 - **Dashboard**: the first load draws the page greyed out instead of a spinner, so nothing jumps when the data lands
+- **Chat**: the composer shows how long the current turn has been running
+- **Control Tower**: failed workflow runs, unavailable triggers and sync conflicts now appear as alerts, and a trigger that failed to register is retried (#194)
+- **Long operations**: database exports, AI commit messages and PR descriptions, clones and project scaffolding can be cancelled and retried from what you already filled in, without overwriting a destination that already exists (#194)
+- **macOS and Linux**: background work a finished Claude command left running is now detected and stopped, with a toast naming what was stopped. Can be turned off in settings (#203)
+
+### Changed
+- The app now runs on Electron 43.7 and Node 24.15 (#190)
+- Database connection credentials move to the OS keychain instead of sitting in the config file (#188)
+- Installing without a C++ toolchain now works: the only thing missing is the SQLite driver, and the supported Node version starts at 22.13
 
 ### Performance
 - Opening a stored conversation reads it from its end: about three times faster on a large transcript, and tool output is no longer cut short
 - The five heaviest panels, the terminal emulator and each project type's code now load the first time they are used, taking roughly 1 MB out of every startup
+- Chat: reading back through a long conversation no longer slows the window down, because the transcript now keeps only what is around you mounted on both sides instead of everything above
+- Leaving the app in the background no longer freezes it for seconds at a time when a long conversation is open
+- Dragging a tab to reorder it is smooth again
 
 ### Fixed
 - The project overview no longer prints a token embedded in a git remote URL
@@ -28,6 +116,34 @@ All notable changes to Claude Terminal are documented in this file.
 - Chat: clicking an image in a tool card opens it instead of collapsing the card
 - The collapsed sidebar no longer paints its icons over the footer
 - A notification's close button stays at its right edge
+- Projects: a folder dropped inside itself no longer vanishes, subfolders left out of a parent's list are drawn again, and the list repaints when another window or process changes it
+- Terminals: an error from the terminal backend no longer takes the whole app down
+- Terminals: every terminal is attributed to its project and opens under the account that project is bound to
+- Terminals: the tab of a restarted quick action stays where it was
+- Chat: a tab's background tasks survive a restart, a reload and an account switch instead of disappearing (#204, #205, #206)
+- Chat: closing a tab while its session is still starting now cancels the startup (#197)
+- Chat: a restored conversation no longer jumps back to the bottom when the input takes focus (#196)
+- Chat: the assistant no longer writes the em dashes its own instructions forbid
+- Files: the copy button, the line-numbers toggle and mermaid diagrams now work in the Files pane instead of being visible but dead (#200, #201)
+- "Open in editor" works again, everywhere in the app, and says so when it cannot: it was reporting success before the editor had even failed to start. On macOS an editor whose command line shim was never installed is opened as an application instead (#209)
+- Files: "Reference in chat" no longer needs a chat tab to already be open, markdown is styled like it is in chat, a markdown file can be read rendered or as source, and the view you picked is remembered (#209)
+- Chat: the model and effort pickers can be used while a turn is running. The pick is held until the turn ends rather than refused, so it cannot land halfway through an answer
+- Dashboard: picking projects no longer waits for data to finish loading (#185)
+- The sidebar entries are left-aligned again (#199)
+- The MCP registry is reachable again on networks with a system-trusted certificate (#195, #196)
+- Accounts: the signed-in account no longer signs itself out, repeated reads of the same credential are merged, and automatic retries stop for a refused or unavailable credential until you refresh
+- Sync: resource files, both agent formats and deletions are now carried across, ZIP filenames are preserved and versions compared properly (#191, #192)
+- Cloud: an import is staged before it lands, an existing destination is preserved, and a failed upload is kept so it can be retried (#187, #188)
+- Notifications: no more notification for a permission the current mode has already answered
+- Usage: the units in the reset countdown are translated
+- Sessions: the sessions window shows its dates in your language
+- Data: an unreadable time tracking file, artifact index, plugin manifest, marketplace list or `~/.claude.json` is now left untouched instead of being replaced by an empty one
+- Updates: an update installs silently, so a cancelled installer can no longer leave you with no app at all
+- Workflows: run again after the runtime update, and a regex you wrote is evaluated somewhere it can be stopped (#189, #190)
+- The file bridge available to the interface is denied access to credentials and startup files, its filesystem access now goes through the main process, and the quick picker and notification windows run sandboxed (#191, #192, #193, #194)
+- Git commands refuse quoted arguments in their string form, and web project route detection runs without a shell
+- The plaintext secret backups older versions left behind are replaced with verified encrypted copies (#194)
+- The installer no longer ships the renderer sourcemaps
 
 ## [1.3.2] - 2026-09-09
 

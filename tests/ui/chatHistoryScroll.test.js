@@ -61,7 +61,7 @@ describe('restored conversation scrolling', () => {
   test('scrolling upward near the top still fetches earlier history', async () => {
     height = 400; contentHeight = 2200;
     resize(); await flush();
-    messages.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+    messages.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100 }));
     messages.scrollTop = 500; messages.dispatchEvent(new Event('scroll'));
     await flush();
     expect(calls.filter(call => call.method === 'loadHistory')).toHaveLength(2);
@@ -77,7 +77,7 @@ describe('restored conversation scrolling', () => {
 
     // An upward gesture cancels a bottom-scroll frame already queued.
     resize();
-    messages.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+    messages.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100 }));
     messages.scrollTop = 1500; messages.dispatchEvent(new Event('scroll'));
     contentHeight = 3300; resize(); view.focus(); await flush();
     expect(top).toBe(1500);

@@ -165,6 +165,23 @@ describe('loadSettings', () => {
     expect(tabs).not.toContain('artifacts');
   });
 
+  test('slots the new cost tab under time tracking in a saved pin list and nav order', async () => {
+    window.electron_nodeModules.fs.promises.access.mockResolvedValue(undefined);
+    window.electron_nodeModules.fs.promises.readFile.mockResolvedValue(
+      JSON.stringify({
+        pinnedTabs: ['claude', 'timetracking', 'database'],
+        tabsOrder: ['claude', 'timetracking', 'database'],
+      })
+    );
+
+    await loadSettings();
+
+    const pinned = getSetting('pinnedTabs');
+    expect(pinned.indexOf('cost')).toBe(pinned.indexOf('timetracking') + 1);
+    const order = getSetting('tabsOrder');
+    expect(order.indexOf('cost')).toBe(order.indexOf('timetracking') + 1);
+  });
+
   test('slots the new Tickets tab under Git in a saved pin list and nav order', async () => {
     window.electron_nodeModules.fs.promises.access.mockResolvedValue(undefined);
     window.electron_nodeModules.fs.promises.readFile.mockResolvedValue(

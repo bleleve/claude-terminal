@@ -7,7 +7,8 @@
   <a href="README.fr.md">Français</a> &bull;
   <a href="README.es.md">Español</a> &bull;
   <a href="README.id.md">Bahasa Indonesia</a> &bull;
-  <a href="README.zh-CN.md">简体中文</a>
+  <a href="README.zh-CN.md">简体中文</a> &bull;
+  <a href="README.pt-BR.md">Português (Brasil)</a>
 </p>
 
 <p align="center">
@@ -177,6 +178,7 @@ npm install
 - **Todo widget**: persistent task list above the input, auto-dismisses on completion
 - **Attachments**: paste, drag-drop, or pick PNG/JPEG/GIF/WebP images (up to 20MB), plus text files and PDFs
 - **Slash commands**: auto-completing commands (/compact, /clear, /help, custom skills)
+- **Terminal handoff**: commands that act on the machine or the account rather than the conversation (/design-login, /login, /logout, /permissions, /plugin...) open a Claude terminal tab to run them, since the chat drives the CLI headless
 - **Inline @mentions**: rich contenteditable input field lets you type @mentions inline without leaving the message composition area
 - **File rewind**: revert chat context to an earlier file state via SDK checkpointing — useful for undoing unwanted edits mid-session
 - **Cost tracking**: model name, token count, and USD cost in the status bar
@@ -299,6 +301,8 @@ npm install
 
 ### Dashboard
 - Open the selected project directly from the topbar; actions and cached data appear immediately while Git, code statistics and GitHub data load progressively
+- **Weekly briefing**: both the project page and the overview open on this week's cost, time and commits, your last Claude sessions with a Resume button, and what's waiting (uncommitted files, commits to push or pull, failing CI, open PRs, TODO count), plus a 14-day chart of cost against commits
+- **Cost tab**: API-equivalent Claude spend by account, project, model and day, for this week, last week, 7/30 days, this month or all time; a weekly-limit card splits a shared account's usage between this machine's share and everyone else's
 - Three sub-views: **Overview**, **Kanban** and **Timeline**
 - Overview: current branch, commits ahead/behind, recent commits, contributors
 - Code statistics: lines of code by language, file count, commit count
@@ -342,6 +346,7 @@ npm install
 
 ### Skills & Agents
 - Browse and manage Claude Code skills and agents
+- **Compact cards with a filter**: each card shows the name, the opening line of the description and, for agents, up to four tools as chips; a filter above the list matches name, description and tool names
 - View SKILL.md and agent configuration files
 - **Syntax-highlighted editor**: edit skill and agent files with line numbers and full highlight.js code highlighting
 - Load skills from `~/.claude/skills`, plugins, and bundled resources
@@ -420,6 +425,16 @@ npm install
 - Diff modal for local vs cloud file comparison
 - User profiles and session management
 - Automated install script with Docker, reverse proxy, and SSL setup
+
+### Remote SSH Projects
+- Open a project that lives on another machine over SSH, IntelliJ Gateway style: the app stays the UI, while terminals, Claude chat, git and files run on the host
+- Uses the system OpenSSH client, so `~/.ssh/config`, keys, `ssh-agent`, ProxyJump and agent forwarding work exactly as in a terminal. The app stores no password and no key: a password is typed into OpenSSH's own prompt, never saved
+- **Open Remote Project**: pick a saved host profile, browse its folders, then open one, create one, `git init` it or clone a repository into it
+- A host badge on every remote project shows its connection state. A dropped connection reconnects on its own, and terminal and chat tabs pick up where they were (inside tmux if you enable it)
+- Claude Code runs on the host (it has to be installed there, and the app tells you when it is not), and session history is read from the host
+- The Git panel, dashboard, file explorer, Files screen, file tabs and diffs work on the host. VS Code, Cursor and Windsurf open remote files through their Remote-SSH extension
+- Nothing is installed on the host: no agent, no daemon, just one `sh` session per connection
+- Features that only make sense locally (project-type dashboards, parallel tasks, workflow nodes that run on this machine, account binding, cloud upload, Open in Explorer) are shown disabled, with the reason as a tooltip
 
 ### Database Panel
 - Multi-driver support: SQLite, MySQL, MariaDB, PostgreSQL, MongoDB

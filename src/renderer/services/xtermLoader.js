@@ -152,7 +152,14 @@ function loadWebgl() {
  * @param {Object} terminal - an opened xterm Terminal
  * @returns {Promise<boolean>} true if the WebGL renderer was attached
  */
-function attachWebglAddon(terminal) {
+function attachWebglAddon(terminal, { enabled = true } = {}) {
+  // The escape hatch for issue #207. A glyph atlas that disagrees with the
+  // font's real metrics is a driver-and-font specific fault we cannot probe
+  // for, and `--disable-gpu` is not a workaround: Electron still answers
+  // getContext('webgl2') through SwiftShader, so hasWebgl2() stays true and
+  // the addon still attaches. Only an explicit setting can take this path out.
+  if (!enabled) return Promise.resolve(false);
+
   return loadWebgl().then((WebglAddon) => {
     if (!WebglAddon || !terminal) return false;
     // `element` is set by Terminal#open and cleared by dispose(); a detached
@@ -162,11 +169,104 @@ function attachWebglAddon(terminal) {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => webgl.dispose());
       terminal.loadAddon(webgl);
+      // Kept so the font-size setting can re-cut the atlas; see clearGlyphAtlas.
+      terminal._ctWebglAddon = webgl;
+      repaintWhenFontsSettle(terminal, webgl);
+      trackForRepaintOnReturn(terminal, webgl);
       return true;
     } catch (e) {
       console.warn('WebGL addon failed to load, using DOM renderer:', e.message);
       return false;
     }
+  });
+}
+
+/**
+ * Rasterise the glyph atlas again once the page's fonts have stopped moving.
+ *
+ * The atlas is built from the metrics in force when the addon attaches, and
+ * those are not final. The terminal asks for `Cascadia Code` first and falls
+ * back through `Consolas` to `monospace`; whichever wins can be resolved after
+ * the first paint, and a fallback's advance width is not the one the atlas was
+ * cut for. From then on every glyph is drawn on the old grid: the caret lands
+ * a column away from where text goes in, and a cell repainted in place keeps a
+ * sliver of what was under it until something forces a full redraw.
+ *
+ * `document.fonts.ready` is the one signal that says the measurements are now
+ * stable. Cheap, idempotent, and a no-op where it is unsupported.
+ */
+function repaintWhenFontsSettle(terminal, webgl) {
+  const fonts = typeof document !== 'undefined' && document.fonts;
+  if (!fonts || typeof fonts.ready?.then !== 'function') return;
+  fonts.ready.then(() => {
+    // The tab can close while the fonts settle.
+    if (!terminal.element || !terminal.element.isConnected) return;
+    try {
+      webgl.clearTextureAtlas();
+      terminal.refresh(0, terminal.rows - 1);
+    } catch (e) { /* disposed mid-flight */ }
+  }).catch(() => { /* never worth failing a terminal over */ });
+}
+
+/**
+ * Re-cut every live atlas when the window comes back into view, on Linux.
+ *
+ * While the window is hidden or behind another app, Chromium on Linux may
+ * evict the GPU textures backing the atlas without raising a context loss.
+ * xterm keeps sampling the stale texture on return, which shows up as
+ * half-drawn or scrambled glyphs until the next full redraw. Rebuilding costs
+ * one rasterisation pass per terminal, which is why it is not paid on every
+ * alt-tab elsewhere: nothing has shown this fault off Linux.
+ *
+ * `focus` and `visibilitychange` both fire on the same return, so the repaint
+ * is coalesced into one frame. That frame also lets the compositor restore the
+ * surface before anything is redrawn.
+ */
+const _webglTerminals = new Map();
+let _returnListenersInstalled = false;
+let _repaintScheduled = false;
+
+function isLinux() {
+  return typeof window !== 'undefined'
+    && window.electron_nodeModules?.process?.platform === 'linux';
+}
+
+/** A closed terminal has nothing left to repaint. */
+function pruneDeadTerminals() {
+  for (const terminal of _webglTerminals.keys()) {
+    if (!terminal.element || !terminal.element.isConnected) _webglTerminals.delete(terminal);
+  }
+}
+
+function repaintAllAtlases() {
+  _repaintScheduled = false;
+  pruneDeadTerminals();
+  for (const [terminal, webgl] of _webglTerminals) {
+    try {
+      webgl.clearTextureAtlas();
+      terminal.refresh(0, terminal.rows - 1);
+    } catch (e) { _webglTerminals.delete(terminal); }
+  }
+}
+
+function scheduleRepaint() {
+  if (_repaintScheduled) return;
+  _repaintScheduled = true;
+  requestAnimationFrame(repaintAllAtlases);
+}
+
+function trackForRepaintOnReturn(terminal, webgl) {
+  if (!isLinux()) return;
+  // Closing a tab does not tell us, so whatever closed since the last attach
+  // is dropped here: the map stays bounded by the tabs actually open.
+  pruneDeadTerminals();
+  _webglTerminals.set(terminal, webgl);
+  webgl.onContextLoss(() => _webglTerminals.delete(terminal));
+  if (_returnListenersInstalled) return;
+  _returnListenersInstalled = true;
+  window.addEventListener('focus', scheduleRepaint);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') scheduleRepaint();
   });
 }
 
@@ -177,10 +277,29 @@ function attachWebglAddon(terminal) {
 // milliseconds on one click. The load is started before the PTY spawn instead
 // (see TerminalManager.createTerminal), so the two overlap.
 
+/**
+ * Drop the cached glyph atlas of a terminal, if it has one.
+ *
+ * Anything that changes how a cell is measured — the font size setting is the
+ * one the UI exposes — leaves the atlas holding glyphs rasterised for the old
+ * grid. xterm redraws from that cache, so without this the new size is laid
+ * out with the old advance widths. A no-op on a DOM-rendered terminal, which
+ * has no atlas to begin with.
+ *
+ * @param {Object} terminal
+ */
+function clearGlyphAtlas(terminal) {
+  const webgl = terminal && terminal._ctWebglAddon;
+  if (!webgl || typeof webgl.clearTextureAtlas !== 'function') return;
+  try { webgl.clearTextureAtlas(); } catch (e) { /* disposed */ }
+}
+
 module.exports = {
   loadXterm,
   getXtermSync,
   isXtermLoaded,
   loadWebgl,
-  attachWebglAddon
+  attachWebglAddon,
+  clearGlyphAtlas,
+  trackForRepaintOnReturn
 };

@@ -80,9 +80,101 @@ function findProjectRecord(ref, vars) {
   return projects.find(p => _samePath(p.path, resolvedPath)) || null;
 }
 
+/**
+ * The project a directory belongs to: the one whose path is that directory or
+ * contains it, the deepest when projects are nested. A Claude step can run in
+ * a subfolder (an explicit cwd), and it still belongs to the project above it.
+ *
+ * @param {string} dir  absolute local path
+ * @returns {Object|null}
+ */
+function findProjectForPath(dir) {
+  if (!dir) return null;
+  let target;
+  try { target = path.resolve(String(dir)).toLowerCase(); } catch { return null; }
+  let best = null;
+  let bestLen = -1;
+  for (const p of loadProjects()) {
+    if (!p.path) continue;
+    let root;
+    try { root = path.resolve(String(p.path)).toLowerCase(); } catch { continue; }
+    const inside = target === root || target.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+    if (inside && root.length > bestLen) { best = p; bestLen = root.length; }
+  }
+  return best;
+}
+
+/**
+ * The account a Claude step authenticates as, from its `account` property.
+ *
+ *   ''               the default account: null, i.e. the machine-wide login,
+ *                    which is what an unbound chat uses and what setDefault()
+ *                    keeps the default account in;
+ *   PROJECT_ACCOUNT  the target project's binding, or the default when the
+ *                    project has none (or is remote, where a binding means
+ *                    nothing) — the same answer that project's chat gets.
+ *                    The target is the project the step actually runs in,
+ *                    found from its directory, then the node's project picker;
+ *   anything else    that account id, verbatim. Whether it still exists is
+ *                    for ChatService to check, which is where the store is.
+ *
+ * @param {string} account
+ * @param {{ projectRef?: string, cwd?: string, vars?: Map|Object }} target
+ * @returns {string|null}
+ */
+function resolveRunAccount(account, { projectRef = '', cwd = '', vars } = {}) {
+  const value = typeof account === 'string' ? account.trim() : '';
+  if (!value) return null;
+  const { PROJECT_ACCOUNT } = require('../../shared/simple-task');
+  if (value !== PROJECT_ACCOUNT) return value;
+
+  const record = findProjectForPath(cwd) || (projectRef ? findProjectRecord(projectRef, vars) : null);
+  if (!record) return null;
+  const { isRemoteProject } = require('../../shared/remote-capabilities');
+  if (isRemoteProject(record)) return null;
+  return record.accountId || null;
+}
+
 /** Display name for a project record, falling back to its folder name. */
 function projectLabel(project) {
   return project?.name || path.basename(project?.path || '') || project?.id || '';
 }
 
-module.exports = { projectsFile, loadProjects, findProjectRecord, projectLabel };
+/**
+ * Refuse a remote (SSH) project for a node that runs on this machine.
+ *
+ * Nodes that execute or read locally (shell, git, file, claude, terminal,
+ * session_recap, parallel_spawn) cannot target a project whose files live on
+ * another host: a URI never exists locally, so without this they would fail
+ * with a misleading "path not found" or, worse, fall back to the home
+ * directory. Each argument is checked on its own and may be:
+ *   - an ssh-remote:// URI (a resolved cwd, `$ctx.project`, a custom path);
+ *   - a project id or exact name, as the project pickers store it, which is
+ *     refused when it names a remote project in projects.json.
+ * Anything else (a local path, an empty value, an unknown reference) passes
+ * untouched, so local resolution and its error messages do not move.
+ *
+ * @param {...*} refs
+ * @throws {Error} refusalError('workflowNodes'), code REMOTE_UNSUPPORTED
+ */
+function assertLocalTargets(...refs) {
+  const { assertLocalPaths, isRemoteProject, refusalError } = require('../../shared/remote-capabilities');
+  const names = [];
+  for (const ref of refs) {
+    if (typeof ref !== 'string' || !ref.trim()) continue;
+    assertLocalPaths('workflowNodes', ref.trim());
+    names.push(ref.trim());
+  }
+  if (!names.length) return;
+  const projects = loadProjects();
+  for (const ref of names) {
+    const needle = ref.toLowerCase();
+    const record = projects.find(p => p.id === ref || (p.name || '').toLowerCase() === needle);
+    if (record && isRemoteProject(record)) throw refusalError('workflowNodes');
+  }
+}
+
+module.exports = {
+  projectsFile, loadProjects, findProjectRecord, findProjectForPath, resolveRunAccount,
+  projectLabel, assertLocalTargets,
+};

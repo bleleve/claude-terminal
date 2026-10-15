@@ -56,9 +56,9 @@ function registerDatabaseHandlers() {
     }
   });
 
-  ipcMain.handle('database-get-schema', async (event, { id }) => {
+  ipcMain.handle('database-get-schema', async (event, { id, force }) => {
     try {
-      return await databaseService.getSchema(id);
+      return await databaseService.getSchema(id, { force: !!force });
     } catch (err) {
       return { success: false, error: err.message };
     }
@@ -72,7 +72,21 @@ function registerDatabaseHandlers() {
     }
   });
 
+  ipcMain.handle('database-redis', async (event, { id, ...request }) => {
+    try {
+      return await databaseService.redis(id, request);
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
   ipcMain.handle('database-detect', async (event, { projectPath }) => {
+    // Detection reads .env files and SQLite databases in a local project
+    // folder; a remote (SSH) project has none here.
+    if (require('../../shared/remote-path').isRemotePath(projectPath)) {
+      const r = require('../../shared/remote-capabilities').refusal('databaseDetect');
+      return { success: false, error: r.message, code: r.code, reasonKey: r.reasonKey };
+    }
     try {
       return await databaseService.detectDatabases(projectPath);
     } catch (err) {

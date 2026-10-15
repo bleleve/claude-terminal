@@ -35,14 +35,17 @@ const { ensureBgTaskSubscription, ensureWakeupTicker } = require('./chat/liveCar
 const { extractResultText, parseResultJson, parseCreatedTaskId } = require('./chat/resultParsing');
 const { createContextSuggestions } = require('./chat/contextSuggestions');
 const { createFollowupChips } = require('./chat/followupChips');
+const { createGitTab, ciStatusText } = require('./chat/gitTab');
 const { createElapsedTimer } = require('./chat/elapsedTimer');
 const { createLightbox } = require('./chat/lightbox');
 const { attachExportMenu } = require('./chat/exportConversation');
 const { createTranscriptSearch } = require('./chat/transcriptSearch');
 const { createAttachmentTray } = require('./chat/attachmentTray');
-const { createGitTab, ciStatusText } = require('./chat/gitTab');
+const { createRemoteChat } = require('./chat/remoteSession');
+const { createProjectMentions } = require('./chat/projectMentions');
+const projectFs = require('../../utils/projectFs');
 const { createTicketsTab } = require('./chat/ticketsTab');
-const { createSuggestionCard } = require('./chat/ticketSuggestionCard');
+const { createTicketsWiring } = require('./chat/ticketsWiring');
 const { formatTokenCount, contextSummaryText, contextSummaryHtml, contextUsageRows } = require('./chat/contextUsage');
 
 /** Paperclip, for the chip an attached file leaves in the composer. */
@@ -54,7 +57,8 @@ const { saveTerminalSessions } = require('../../services/TerminalSessionService'
 
 const { matchModel, resolveModelSelection, uncataloguedModelLabel, hasOneMContext, DEFAULT_ALIAS, modelFamily, modelTier, PREMIUM_EFFORT_LEVELS } = require('../../../shared/model-options');
 const { PERMISSION_MODES, permissionModeInfo, modeFromSetting, settingFromMode } = require('../../../shared/permission-modes');
-const { contextTokensFromMessage } = require('../../../shared/context-usage');
+const { contextTokensFromMessage, contextWindowFromResult } = require('../../../shared/context-usage');
+const { parseTerminalCommand } = require('../../../shared/terminal-commands');
 const ModelCatalog = require('../../services/ModelCatalogClient');
 
 // Catalog access is shared with the project-settings and parallel-run pickers
@@ -98,7 +102,7 @@ class ChatView extends BaseComponent {
 
   createChatView(wrapperEl, project, options = {}) {
     const api = this._api;
-  const { terminalId = null, resumeSessionId = null, forkSession = false, resumeSessionAt = null, resumeDropsTurn = null, skipPermissions = false, onTabRename = null, onStatusChange = null, onModelChange = null, onSwitchTerminal = null, onSwitchProject = null, onForkSession = null, initialPrompt = null, initialModel = null, initialEffort = null, initialImages = null, onSessionStart = null, systemPrompt = null, builtinSystemPrompt = null, draftPrompt = null, initialTickets = null } = options;
+  const { terminalId = null, resumeSessionId = null, forkSession = false, resumeSessionAt = null, resumeDropsTurn = null, skipPermissions = false, onTabRename = null, onStatusChange = null, onModelChange = null, onSwitchTerminal = null, onSwitchProject = null, onForkSession = null, onRunInTerminal = null, initialPrompt = null, initialModel = null, initialEffort = null, initialImages = null, onSessionStart = null, systemPrompt = null, builtinSystemPrompt = null, draftPrompt = null, initialTickets = null } = options;
   let sessionId = null;
   let destroyed = false;
 
@@ -131,8 +135,21 @@ class ChatView extends BaseComponent {
   // A model or effort pick made while a turn is running. The footer label
   // moves at once (it is this conversation's setting, and the user just set
   // it), but the SDK only hears about it once the turn is done.
+  //
+  // Each is `{ run, baseline }`: `baseline` is where the *session* actually is,
+  // which is not the same as where the footer is once a pick has been parked.
+  // A second pick before the first has been pushed must still describe itself
+  // as coming from the model the SDK is running, or the transcript line names a
+  // switch that never happened and a failed push reverts to a model that was
+  // never applied.
   let pendingModelPush = null;
   let pendingEffortPush = null;
+  // Messages the composer queued *behind* a parked pick. They cannot go to the
+  // SDK yet: `api.chat.send` reaches the CLI's own queue immediately, so a
+  // message handed over before the switch is a message the next turn runs under
+  // the old model — which is the whole thing the deferral exists to prevent.
+  // Drained by flushPendingSelection(), after the pushes and in type order.
+  let pendingQueuedSends = [];
   let pendingResumeId = resumeSessionId || null;
   // The transcript this tab replayed, kept after `pendingResumeId` is cleared by
   // the first turn: an expanded tool card fetches its full output from that file,
@@ -145,6 +162,14 @@ class ChatView extends BaseComponent {
   let pendingDropsTurn = resumeDropsTurn || null;
   let lastStartOpts = null; // cached so we can re-launch the SDK after an account switch
   let switchingAccount = false; // suppress error UI while we hot-swap credentials
+
+  /**
+   * The account this conversation runs on: the one its session was started
+   * with, or the project's binding before there is a session.
+   */
+  function conversationAccountId() {
+    return lastStartOpts ? (lastStartOpts.accountId ?? null) : getProjectAccount(project.id);
+  }
   // A limit refused the turn that was running, so a switch has to ask for that
   // turn back instead of resuming into a session that answers nothing. Cleared
   // as soon as a turn runs again, so a later switch from the account menu on an
@@ -198,6 +223,9 @@ class ChatView extends BaseComponent {
   let premiumNoticeDismissed = false;
   let hasSentPrompt = false;
   let inputTokens = 0; // drives the context gauge
+  // The window the CLI reported for the model it ran (`modelUsage`), keyed by
+  // that model so a switch falls back to the estimate until the next result.
+  let reportedContextWindow = { model: '', tokens: 0 };
   const toolCards = new Map(); // content_block index -> element
   const toolInputBuffers = new Map(); // content_block index -> accumulated JSON string
   const todoToolIndices = new Map(); // block index -> { kind: 'TaskCreate'|'TaskUpdate'|'TaskList'|'TaskGet'|'TodoWrite', toolUseId }
@@ -439,8 +467,6 @@ class ChatView extends BaseComponent {
     openGitScreen: () => document.querySelector('.nav-tab[data-tab="git"]')?.click(),
     openSettings: (tab) => document.dispatchEvent(new CustomEvent('ct-open-settings', { detail: { tab } })),
     showToast: (opts) => require('./Toast').showToast(opts),
-    // The branch name and the PR title may name tickets: detection suggests them.
-    onSummary: (summary) => observeGitForTickets(summary),
     onCiStatus: (ci) => {
       gitTabCiEl.hidden = !ci;
       gitTabCiEl.className = `chat-tab-ci${ci ? ` ${ci.state}` : ''}`;
@@ -458,12 +484,24 @@ class ChatView extends BaseComponent {
     // wrote the code is the one with the context to fix it.
     fillComposer: (text) => {
       switchChatTab('conversation');
-      const current = getInputText().trim();
-      setInputText(current ? `${current}\n\n${text}` : text);
+      if (inputAdapter.isEmpty()) {
+        setInputText(text);
+      } else {
+        // After what is already there: setInputText would rewrite it as plain
+        // text and drop its @mention chips.
+        inputEl.appendChild(document.createTextNode(`\n\n${text}`));
+        updatePlaceholderVisibility();
+        placeCaretAtEnd();
+        autoResize();
+      }
       inputEl.focus();
     },
+    // The branch name and the PR title may name tickets: detection suggests them.
+    onSummary: (summary) => observeGitForTickets(summary),
   });
-  if (!project.isCloud) gitTab.probe();
+  // Not read until the chat is first on screen: tabs restored in the
+  // background do not each read a transcript, git and GitHub at startup.
+  if (!project.isCloud) gitTab.probeWhenOnScreen(chatView);
 
   // The tickets this session works on (chat/ticketsTab.js). Shown once a
   // tracker is connected. Keyed by the CLI session id; a new tab has none yet,
@@ -475,81 +513,38 @@ class ChatView extends BaseComponent {
     panelEl: ticketsPanelEl,
     tabBtn: ticketsTabBtn,
     badgeEl: ticketsTabBtn.querySelector('.chat-tab-badge'),
-    initialKey: resumeSessionId || `tab:${terminalId ?? crypto.randomUUID().slice(0, 8)}`,
+    // Provisional until the CLI names the session; only needs to be unique per tab.
+    // A fork is a new session: it starts provisional too and copies its parent's links.
+    initialKey: (!forkSession && resumeSessionId) || `tab:${terminalId ?? Math.random().toString(36).slice(2, 10)}`,
+    parentKey: forkSession ? resumeSessionId : null,
     getProjectId: () => project?.id || null,
     onAvailable: () => {
       ticketsTabBtn.hidden = false;
       tabbarEl.hidden = false;
     },
     showToast: (opts) => require('./Toast').showToast(opts),
-    buildRecap: () => buildTicketRecap(),
+    buildRecap: () => ticketsWiring.buildRecap(),
   });
   ticketsTab.probe();
   for (const ticket of Array.isArray(initialTickets) ? initialTickets : []) {
     ticketsTab.linkTicket(ticket, 'start');
   }
 
-  // Detected tickets are asked about in the conversation (chat/ticketSuggestionCard.js),
-  // at the end of a turn rather than in the middle of Claude's answer.
-  const pendingSuggestionCards = [];
-  function showSuggestionCards() {
-    if (!pendingSuggestionCards.length || destroyed) return;
-    const batch = pendingSuggestionCards.splice(0);
-    messagesEl.appendChild(createSuggestionCard(batch, {
-      onConfirm: (refs) => ticketsTab.confirm(refs),
-      onDismiss: (refs) => ticketsTab.dismiss(refs),
-    }));
-    scrollToBottom();
-  }
-  // Suggestions from one moment (the branch and the PR title, several tool
-  // calls) arrive one by one: gathered for a moment, they make one card.
-  let suggestionCardTimer = null;
-  ticketsTab.onSuggestions((list) => {
-    pendingSuggestionCards.push(...list);
-    clearTimeout(suggestionCardTimer);
-    suggestionCardTimer = setTimeout(() => {
-      if (!isStreaming) showSuggestionCards();
-    }, 600);
+  // Suggestion cards, the Git tab's branch and PR title, the recap (chat/ticketsWiring.js).
+  const ticketsWiring = createTicketsWiring({
+    api,
+    ticketsTab,
+    getGitSummary: () => gitTab.getSummary(),
+    getProject: () => project,
+    getEditedFiles: () => [...sessionFileTally.keys()],
+    showCard: (card) => {
+      messagesEl.appendChild(card);
+      scrollToBottom();
+    },
+    isStreaming: () => isStreaming,
   });
-
-  /**
-   * What this session did, as a markdown comment draft for a linked ticket:
-   * branch, the branch's commits, the pull request, the files Claude edited.
-   * Only a draft: the user edits it and publishes it themselves.
-   */
-  function buildTicketRecap() {
-    const s = gitTab.getSummary();
-    const lines = [t('chat.tickets.recapHeading', { project: project?.name || '' })];
-    if (s?.isRepo && s.branch) lines.push(`- ${t('chat.tickets.recapBranch')}: \`${s.branch}\``);
-    if (s?.isRepo && !s.onBase && s.commits?.length) {
-      lines.push(`- ${t('chat.tickets.recapCommits')}:`);
-      for (const c of s.commits.slice(0, 10)) lines.push(`  - \`${c.short}\` ${c.subject}`);
-    }
-    const pr = s?.pr?.pullRequest;
-    if (pr) lines.push(`- ${t('chat.tickets.recapPr')}: [#${pr.number} ${pr.title}](${pr.url})`);
-    const files = [...sessionFileTally.keys()].map((f) => f.split(/[\\/]/).pop());
-    if (files.length) {
-      const shown = files.slice(0, 8).map((f) => `\`${f}\``).join(', ');
-      lines.push(`- ${t('chat.tickets.recapFiles', { count: files.length })}: ${shown}${files.length > 8 ? ', …' : ''}`);
-    }
-    return lines.join('\n');
-  }
-
-  const observedGit = new Set();
-  // Each branch and title once: a session with several worktrees hands over
-  // several of each on every refresh.
   function observeGitForTickets(summary) {
-    if (!summary?.isRepo || !api.issueLinks?.observeText) return;
-    const key = ticketsTab.getKey();
-    if (summary.branch && !observedGit.has(`branch:${summary.branch}`)) {
-      observedGit.add(`branch:${summary.branch}`);
-      api.issueLinks.observeText(key, summary.branch, 'branch', summary.branch).catch(() => {});
-    }
-    const pr = summary.pr?.pullRequest;
-    if (pr?.title && !observedGit.has(`pr:${pr.url || pr.number}:${pr.title}`)) {
-      observedGit.add(`pr:${pr.url || pr.number}:${pr.title}`);
-      api.issueLinks.observeText(key, pr.title, 'pr', `#${pr.number}`).catch(() => {});
-    }
+    ticketsWiring.observeGit(summary);
   }
   const artifactsBadgeEl = chatView.querySelector('.chat-tab-badge[data-badge="artifacts"]');
   const inputEl = chatView.querySelector('.chat-input');
@@ -697,6 +692,31 @@ class ChatView extends BaseComponent {
     onMentionChip: (type, data) => addMentionChip(type, data),
     countPdfAttachments: () => countPdfAttachments(),
     countTextAttachments: () => countTextAttachments(),
+  });
+
+  // ── Remote (SSH) project ──
+  //
+  // Its CLI runs on the host. The unit draws the host badge and what a remote
+  // chat does without, holds the host while the tab is open, and resumes the
+  // session once a lost connection comes back. Inert for a local project.
+  const remoteChat = createRemoteChat({
+    project,
+    chatView,
+    hosts: {
+      getProjectHost: (p) => require('../../state/remoteHosts.state').getProjectHost(p),
+      holdHost: (id) => require('../../state/remoteHosts.state').holdHost(id),
+      connectHost: (id) => require('../../state/remoteHosts.state').connectHost(id),
+      subscribe: (fn) => require('../../state/remoteHosts.state').remoteHostsState.subscribe(fn),
+      nudge: () => api.ssh?.networkOnline?.(),
+    },
+    badge: {
+      buildHostBadgeHtml: (p, opts) => require('./RemoteHostBadge').buildHostBadgeHtml(p, opts),
+      onHostBadgeClick: (id) => require('./RemoteHostBadge').onHostBadgeClick(id),
+      stateLabel: (state) => require('./RemoteHostBadge').stateLabel(state),
+    },
+    t,
+    escapeHtml,
+    onResume: (ctx) => resumeAfterConnectionLoss(ctx),
   });
 
   // ── Contenteditable helpers ──
@@ -972,13 +992,23 @@ class ChatView extends BaseComponent {
    * The `[1m]` build carries its own window, so the model decides — the
    * `enable1MContext` setting is a separate beta opt-in and can't be the only
    * input, or picking "Opus (1M context)" would still read "/200K".
+   *
+   * Once a turn has finished, the CLI's own figure overrides all of that: a
+   * model can serve 1M under a plain id (Opus 5.5 does), which no id-based
+   * guess sees.
    */
   function currentContextLimit() {
+    if (reportedContextWindow.tokens > 0 && reportedContextWindow.model === model) {
+      return reportedContextWindow.tokens;
+    }
     const active = matchModel(allCatalogModels(), selectedModel);
     const oneM = hasOneMContext(selectedModel)
       || hasOneMContext(active?.value)
       || hasOneMContext(active?.resolvedModel)
-      || getSetting('enable1MContext');
+      || getSetting('enable1MContext')
+      // A window cannot hold more than it is: before the first result says
+      // otherwise (a resumed transcript), 677k in hand means a 1M build.
+      || inputTokens > 200000;
     return oneM ? 1000000 : 200000;
   }
 
@@ -992,9 +1022,24 @@ class ChatView extends BaseComponent {
   // The menu is rebuilt on every open, the chip is not: a catalog main pushes
   // after the first load (a CLI upgrade surfacing on the first session start)
   // has to repaint it here, or it keeps the label the previous CLI gave.
+  //
+  // Re-deriving the selection is only allowed while nothing is running on it.
+  // A live session was handed a concrete model at start and this handler never
+  // talks to the SDK, so moving the chip or the effort here would leave the
+  // footer naming something the running turn is not using — and would walk
+  // straight past the parking a mid-turn pick goes through. The tab this push
+  // exists for is the one that has *not* started yet: it resolved against the
+  // fallback tier because the CLI had not answered when it opened, and it is
+  // still free to correct itself.
   unsubscribers.push(ModelCatalog.subscribe(() => {
-    applyResolvedModel();
-    syncEffortVisibility();
+    if (sessionId) {
+      // Repaint only. A newer catalog may describe the same model's effort
+      // ladder differently, but which level is selected is the conversation's.
+      syncEffortVisibility({ adjust: false });
+    } else {
+      applyResolvedModel();
+      syncEffortVisibility();
+    }
     // The stream's model, once known, names the chip; relabel it too.
     if (model) updateStatusInfo();
     if (modelDropdown.style.display !== 'none') buildModelDropdown();
@@ -1117,6 +1162,17 @@ class ChatView extends BaseComponent {
     // and the effort it will run under has to be possible too. What must
     // not happen is the switch landing halfway through the answer being
     // streamed, so the SDK call waits for the turn to finish.
+    //
+    // Where the session actually is, which a parked pick has already moved the
+    // footer away from. Changing your mind twice mid-turn must still describe
+    // one switch, from what is running to what was picked last.
+    const baseline = pendingModelPush ? pendingModelPush.baseline : {
+      id: previousId,
+      option: previousOption,
+      explicit: previousExplicit,
+      source: previousSource,
+    };
+
     const push = async () => {
       let res;
       try {
@@ -1125,22 +1181,21 @@ class ChatView extends BaseComponent {
         res = { success: false, error: err?.message || String(err) };
       }
       if (res && res.success) {
-        // A restart after an account switch replays lastStartOpts; keep it on
-        // the model actually in use.
-        if (lastStartOpts) lastStartOpts.model = selectedModel;
-        if (previousOption && previousOption.value !== option.value) {
-          appendSystemNotice(t('chat.modelSwitched', { previous: previousOption.displayName, model: option.displayName }), 'model');
+        if (baseline.option && baseline.option.value !== option.value) {
+          appendSystemNotice(t('chat.modelSwitched', { previous: baseline.option.displayName, model: option.displayName }), 'model');
         }
         return;
       }
 
-      // Switch failed: the session is still running the previous model.
-      // Revert the label so the footer stops lying.
-      if (previousOption) {
-        selectedModel = previousId;
-        modelIsExplicit = previousExplicit;
-        modelSource = previousSource;
-        modelLabel.textContent = previousOption.displayName;
+      // Switch failed: the session is still running the model it was on before
+      // this pick — and before any pick parked ahead of it, which never reached
+      // the SDK either. Revert the footer to that, not to the one in between.
+      if (baseline.option) {
+        selectedModel = baseline.id;
+        modelIsExplicit = baseline.explicit;
+        modelSource = baseline.source;
+        modelLabel.textContent = baseline.option.displayName;
+        if (lastStartOpts) lastStartOpts.model = baseline.id;
         syncEffortVisibility();
         syncModelTier();
       }
@@ -1148,19 +1203,26 @@ class ChatView extends BaseComponent {
       Toast.showToast({
         message: t('chat.modelSwitchFailed', {
           model: option.displayName,
-          previous: previousOption ? previousOption.displayName : previousId,
+          previous: baseline.option ? baseline.option.displayName : baseline.id,
           error: (res && res.error) || '',
         }),
         type: 'error',
       });
     };
+
+    // An account-switch restart replays lastStartOpts against a *new* session,
+    // where "parked until the turn ends" means nothing: the new session should
+    // simply start on what the user chose. So this moves at pick time, and the
+    // failure path above is what puts it back.
+    if (lastStartOpts) lastStartOpts.model = selectedModel;
+
     if (isStreaming) {
-      pendingModelPush = push;
+      pendingModelPush = { run: push, baseline };
       syncPendingSelection();
       return;
     }
     await push();
-  
+
   }
 
   modelBtn.addEventListener('click', (e) => {
@@ -1221,11 +1283,17 @@ class ChatView extends BaseComponent {
   /**
    * Hide the whole control on a model without effort support — Claude Desktop
    * drops the menu entirely for Haiku rather than showing a dead one.
+   *
+   * @param {{ adjust?: boolean }} [opts] - `adjust: false` shows or hides the
+   *   control without touching which level is selected. Moving the selection is
+   *   a change to the conversation, not a repaint, and there is one caller —
+   *   the catalog push — that runs while a turn may be in flight.
    */
-  function syncEffortVisibility() {
+  function syncEffortVisibility({ adjust = true } = {}) {
     const efforts = availableEfforts();
     const supported = efforts.length > 0;
     effortBtn.parentElement.style.display = supported ? '' : 'none';
+    if (!adjust) return;
     if (supported && !efforts.some(e => e.id === selectedEffort)) {
       // The stored level isn't on this model's ladder — fall back to its
       // default rather than sending a level the CLI will reject.
@@ -1286,6 +1354,14 @@ class ChatView extends BaseComponent {
     // and the effort it will run under has to be possible too. What must
     // not happen is the switch landing halfway through the answer being
     // streamed, so the SDK call waits for the turn to finish.
+    //
+    // Where the session actually is; see the same capture in selectModel for
+    // why a parked pick's baseline is inherited rather than recomputed.
+    const baseline = pendingEffortPush ? pendingEffortPush.baseline : {
+      id: previousId,
+      option: previousOption,
+    };
+
     const push = async () => {
       let res;
       try {
@@ -1294,37 +1370,43 @@ class ChatView extends BaseComponent {
         res = { success: false, error: err?.message || String(err) };
       }
       if (res && res.success) {
-        if (lastStartOpts) lastStartOpts.effort = effortId;
-        if (previousOption && previousId !== effortId) {
-          appendSystemNotice(t('chat.effortSwitched', { previous: previousOption.label, effort: option.label }), 'model');
+        if (baseline.option && baseline.id !== effortId) {
+          appendSystemNotice(t('chat.effortSwitched', { previous: baseline.option.label, effort: option.label }), 'model');
         }
         return;
       }
 
       // Switch failed: revert the label to the live effort level.
       console.warn('[ChatView] setEffort failed:', res && res.error);
-      if (previousOption) {
-        selectedEffort = previousId;
-        effortLabel.textContent = previousOption.label;
+      if (baseline.option) {
+        selectedEffort = baseline.id;
+        effortLabel.textContent = baseline.option.label;
+        if (lastStartOpts) lastStartOpts.effort = baseline.id;
         syncModelTier();
       }
       const Toast = require('./Toast');
       Toast.showToast({
         message: t('chat.effortSwitchFailed', {
           effort: option.label,
-          previous: previousOption ? previousOption.label : previousId,
+          previous: baseline.option ? baseline.option.label : baseline.id,
           error: (res && res.error) || '',
         }),
         type: 'error',
       });
     };
+
+    // Moved at pick time, not on push success: a restart builds a new session,
+    // which should start on what the user chose rather than replay what the
+    // parked push has not delivered yet.
+    if (lastStartOpts) lastStartOpts.effort = effortId;
+
     if (isStreaming) {
-      pendingEffortPush = push;
+      pendingEffortPush = { run: push, baseline };
       syncPendingSelection();
       return;
     }
     await push();
-  
+
   }
 
   effortBtn.addEventListener('click', (e) => {
@@ -1476,7 +1558,13 @@ class ChatView extends BaseComponent {
     chatView.dataset.modelFamily = family || 'other';
     chatView.dataset.modelTier = tier;
     chatView.dataset.effortCost = PREMIUM_EFFORT_LEVELS.includes(selectedEffort) ? selectedEffort : '';
-    modelBtn.title = tier === 'premium' ? t('chat.premiumModelHint', { model: label }) : label;
+    // This owns the model chip's tooltip, including while a pick is parked —
+    // syncPendingSelection() calls back here rather than writing it, so the
+    // premium hint is restored on flush instead of being blanked for the life
+    // of the tab (no turn-end path calls syncModelTier on its own).
+    modelBtn.title = pendingModelPush
+      ? t('chat.appliesNextTurn')
+      : (tier === 'premium' ? t('chat.premiumModelHint', { model: label }) : label);
     if (onModelChange) onModelChange({ family, tier, label });
     syncPremiumNotice(tier, label);
   }
@@ -1675,12 +1763,19 @@ class ChatView extends BaseComponent {
   initModeSelector();
 
   // ── Context suggestions (placeholder rotation before first message) ──
-  const contextSuggestions = createContextSuggestions(api, project, inputAdapter, () => t('chat.placeholder'));
+  // @git and @todos, read on the host for a remote project (and not at all
+  // while it is away); the two project hints below follow the same rule.
+  const projectMentions = createProjectMentions({
+    api,
+    getProjectHost: (p) => require('../../state/remoteHosts.state').getProjectHost(p),
+  });
+
+  const contextSuggestions = createContextSuggestions(api, project, inputAdapter, () => t('chat.placeholder'), () => projectMentions.mayRead(project));
   // Defer initial scan to let the component finish mounting
   contextSuggestions.setInitTimer(setTimeout(() => { if (project?.path) contextSuggestions.refresh(); }, 500));
 
   // ── Follow-up suggestion chips (shown after Claude responds) ──
-  const followupChips = createFollowupChips(api, followupSuggestionsEl, inputAdapter, project);
+  const followupChips = createFollowupChips(api, followupSuggestionsEl, inputAdapter, project, () => projectMentions.mayRead(project));
 
   // ── Turn elapsed time (the footer's wall clock) ──
   const elapsedTimer = createElapsedTimer(statusElapsedEl);
@@ -2035,7 +2130,33 @@ class ChatView extends BaseComponent {
 
   // ── Mention picker infrastructure ──
 
+  /**
+   * A remote project's files for the @file picker: one `git ls-files` (or
+   * `find`) on its host, filtered like the local walk.
+   */
+  async function scanRemoteProjectFiles(projectUri) {
+    const ignoreDirs = new Set(['node_modules', '.git', 'dist', 'build', '.next', '__pycache__', 'vendor', '.cache', 'coverage', '.nuxt']);
+    let listing;
+    try {
+      listing = await projectFs.listFiles(projectUri);
+    } catch {
+      return [];
+    }
+    const files = [];
+    for (const rel of listing.files) {
+      if (files.length >= 500) break;
+      const segments = rel.split('/');
+      if (segments.length > 7) continue;
+      if (segments.some(seg => (seg.startsWith('.') && seg !== '.env') || ignoreDirs.has(seg))) continue;
+      let fullPath;
+      try { fullPath = projectFs.remotePathApi.join(projectUri, rel); } catch { continue; }
+      files.push({ path: rel, fullPath, mtime: 0 });
+    }
+    return files;
+  }
+
   async function scanProjectFiles(projectPath) {
+    if (projectFs.isRemote(projectPath)) return scanRemoteProjectFiles(projectPath);
     const { fileExists, fsp } = require('../../utils/fs-async');
     const { path } = window.electron_nodeModules;
     const files = [];
@@ -2459,7 +2580,14 @@ class ChatView extends BaseComponent {
 
     const query = atMatch[1].toLowerCase();
     const LOCAL_ONLY_MENTIONS = ['file', 'git', 'errors', 'selection', 'todos'];
-    const availableMentions = project.isCloud ? MENTION_TYPES.filter(m => !LOCAL_ONLY_MENTIONS.includes(m.type)) : MENTION_TYPES;
+    // The app's own errors and the editor selection are local, whatever the
+    // project; a remote chat cannot use them (the `localMentions` row).
+    const REMOTE_EXCLUDED_MENTIONS = ['errors', 'selection'];
+    const localMentionsOk = !remoteChat.isRemote
+      && require('../../../shared/remote-capabilities').can(project, 'localMentions').ok;
+    const availableMentions = project.isCloud
+      ? MENTION_TYPES.filter(m => !LOCAL_ONLY_MENTIONS.includes(m.type))
+      : !localMentionsOk ? MENTION_TYPES.filter(m => !REMOTE_EXCLUDED_MENTIONS.includes(m.type)) : MENTION_TYPES;
     const filtered = availableMentions.filter(m => m.type.includes(query));
     if (filtered.length === 0) {
       hideMentionDropdown();
@@ -2672,7 +2800,10 @@ class ChatView extends BaseComponent {
 
         case 'file': {
           try {
-            const raw = await fs.promises.readFile(mention.data.fullPath, 'utf8');
+            // A remote project's file is read on its host, over ssh.fs.
+            const raw = projectFs.isRemote(mention.data.fullPath)
+              ? await projectFs.remoteFsPromises.readFile(mention.data.fullPath, 'utf8')
+              : await fs.promises.readFile(mention.data.fullPath, 'utf8');
             const lines = raw.split('\n');
             const range = mention.data.lineRange;
             if (range) {
@@ -2691,27 +2822,10 @@ class ChatView extends BaseComponent {
           break;
         }
 
+        // A remote project's changes and TODOs are read on its host, and fail
+        // closed while it is not connected (chat/projectMentions).
         case 'git': {
-          try {
-            const status = await api.git.statusDetailed({ projectPath: project.path });
-            if (!status?.success || !status.files?.length) {
-              content = '[No git changes detected]';
-              break;
-            }
-            const diffs = [];
-            for (const file of status.files.slice(0, 20)) {
-              try {
-                // fileDiff resolves the diff as a plain string, or
-                // { error: true, message } when git could not run. Reading
-                // `d.diff` meant this context never carried any diff at all.
-                const d = await api.git.fileDiff({ projectPath: project.path, filePath: file.path });
-                if (typeof d === 'string' && d.trim()) diffs.push(`--- ${file.path} ---\n${d}`);
-              } catch (e) { /* skip */ }
-            }
-            content = diffs.length > 0 ? `Git Changes (${status.files.length} files):\n\n${diffs.join('\n\n')}` : '[No diff content available]';
-          } catch (e) {
-            content = '[Error fetching git diff]';
-          }
+          content = await projectMentions.resolveGit(project);
           break;
         }
 
@@ -2741,16 +2855,7 @@ class ChatView extends BaseComponent {
         }
 
         case 'todos': {
-          try {
-            const todos = await api.project.scanTodos(project.path);
-            if (todos?.length > 0) {
-              content = `TODO Items (${todos.length} found):\n\n${todos.slice(0, 50).map(t => `${t.type} [${t.file}:${t.line}]: ${t.text}`).join('\n')}`;
-            } else {
-              content = '[No TODOs found in project]';
-            }
-          } catch (e) {
-            content = '[Error scanning TODOs]';
-          }
+          content = await projectMentions.resolveTodos(project);
           break;
         }
 
@@ -2768,8 +2873,11 @@ class ChatView extends BaseComponent {
           // Use selected project data if available, otherwise fall back to current project
           const targetName = mention.data?.name || project.name || 'Unknown';
           const targetPath = mention.data?.path || project.path;
+          // A remote project is read on its host and named by its path there.
+          const remoteTarget = projectFs.isRemote(targetPath);
+          const shownPath = remoteTarget ? require('../../../shared/remote-path').toPosix(targetPath) : targetPath;
           try {
-            const parts = [`Project: ${targetName}`, `Path: ${targetPath}`];
+            const parts = [`Project: ${targetName}`, `Path: ${shownPath}`];
             // Git info
             const [branch, status, stats] = await Promise.all([
               api.git.currentBranch({ projectPath: targetPath }).catch(() => null),
@@ -2794,7 +2902,8 @@ class ChatView extends BaseComponent {
                 parts.push('Top Languages:\n' + top.join('\n'));
               }
             }
-            const { fs, path: pathModule } = window.electron_nodeModules;
+            const fs = remoteTarget ? { promises: projectFs.remoteFsPromises } : window.electron_nodeModules.fs;
+            const pathModule = remoteTarget ? projectFs.remotePathApi : window.electron_nodeModules.path;
 
             // Try to read CLAUDE.md from the target project
             const claudeMdPath = pathModule.join(targetPath, 'CLAUDE.md');
@@ -3091,6 +3200,18 @@ class ChatView extends BaseComponent {
 
   // ── Delegated click handlers ──
 
+  // `error` does not bubble, but it does reach a capturing listener, which is
+  // what lets this stand in for the per-image `onerror` injectInlineImages used
+  // to set. That was a property, so it did not survive the pruner rebuilding an
+  // entry from `outerHTML`, and a path that turned out not to be an image came
+  // back as a broken-image placeholder instead of being removed.
+  messagesEl.addEventListener('error', (e) => {
+    const img = e.target;
+    if (img && img.tagName === 'IMG' && img.classList.contains('chat-inline-img')) {
+      img.closest('.chat-inline-img-wrap')?.remove();
+    }
+  }, true);
+
   messagesEl.addEventListener('click', (e) => {
     // Note: copy, collapse, line-toggle, sort, preview buttons are handled by MarkdownRenderer.attachInteractivity()
 
@@ -3115,6 +3236,18 @@ class ChatView extends BaseComponent {
       // absent means fork off the tail, which must stay `undefined` rather
       // than become an empty string.
       if (uuid) forkFromMessage(uuid, host.dataset.forkDropsTurn || undefined);
+      return;
+    }
+
+    // Same reason, and it sits on the same entries: a user message carrying an
+    // "Enhanced" badge is marked serializable like every other prose turn, so a
+    // listener bound to the badge itself would be dropped on the first rebuild
+    // and the original prompt would become unreachable for good.
+    const enhancedBadge = e.target.closest('.chat-msg-enhanced-badge');
+    if (enhancedBadge) {
+      e.stopPropagation();
+      const original = enhancedBadge.closest('.chat-msg')?.querySelector('.chat-msg-original');
+      if (original) original.style.display = original.style.display === 'none' ? '' : 'none';
       return;
     }
 
@@ -3318,6 +3451,28 @@ class ChatView extends BaseComponent {
       return;
     }
 
+    // Commands the CLI only runs in its interactive UI (/design-login, /login...)
+    // answer "isn't available in this environment" here, so they open in a
+    // Claude terminal of their own, on the account this conversation runs on.
+    const terminalCommand = !hasImages && !hasMentions ? parseTerminalCommand(text) : null;
+    if (terminalCommand && onRunInTerminal) {
+      setInputText('');
+      const command = `/${terminalCommand.name}`;
+      if (!terminalCommand.valid) {
+        appendSystemNotice(t('chat.terminalCommandUnsafeArgs', { command }), 'command');
+        return;
+      }
+      const opened = await onRunInTerminal({ command: text, accountId: conversationAccountId() });
+      if (destroyed) return;
+      appendSystemNotice(
+        opened
+          ? t('chat.terminalCommandOpened', { command })
+          : t('chat.terminalCommandFailed', { command }),
+        'command'
+      );
+      return;
+    }
+
     // /parallel-task interception: strip prefix, set force flag
     if (text === '/parallel-task' || text.startsWith('/parallel-task ')) {
       const taskDesc = text.replace(/^\/parallel-task\s*/, '').trim();
@@ -3511,6 +3666,11 @@ class ChatView extends BaseComponent {
           sessionId = null;
           appendError(result.error || t('chat.errorOccurred'));
           setStreaming(false);
+          // A remote host that is not reachable yet: the opening turn goes
+          // out on its own once it is
+          if (result.errorType === 'connection_lost') remoteChat.onConnectionLost({ turnWasRunning: false });
+        } else if (result.remote) {
+          remoteChat.showWarnings(result.remote.warnings);
         }
       } else {
         // Force parallel task: prepend instruction to message in existing session
@@ -3520,11 +3680,25 @@ class ChatView extends BaseComponent {
           sendText = forceInstr + sendText;
           _forceParallelTask = false;
         }
-        const result = await api.chat.send({ sessionId, text: sendText, images: imagesPayload, documents: documentsPayload, mentions: resolvedMentions, userMessageUuid: userMsgUuid });
-        if (destroyed) return;
-        if (!result.success) {
-          appendError(result.error || t('chat.errorOccurred'));
-          if (!isStreaming) setStreaming(false);
+        const dispatch = () => api.chat.send({ sessionId, text: sendText, images: imagesPayload, documents: documentsPayload, mentions: resolvedMentions, userMessageUuid: userMsgUuid });
+
+        // `api.chat.send` reaches the CLI's own queue right away, so handing a
+        // message over while a switch is still parked is handing it over to run
+        // under the model the user has just moved away from. Park it behind the
+        // switch instead; flushPendingSelection() drains both, in order.
+        if (pendingModelPush || pendingEffortPush) {
+          pendingQueuedSends.push(dispatch);
+          // With no turn running there is no turn end coming to drain this —
+          // which is also how a pick survives one of the early
+          // `turnEnded: false` stops above. Flush it now.
+          if (!isStreaming) flushPendingSelection();
+        } else {
+          const result = await dispatch();
+          if (destroyed) return;
+          if (!result.success) {
+            appendError(result.error || t('chat.errorOccurred'));
+            if (!isStreaming) setStreaming(false);
+          }
         }
       }
     } catch (err) {
@@ -3642,15 +3816,19 @@ class ChatView extends BaseComponent {
       const inputData = JSON.parse(card.dataset.toolInput || '{}');
       result = { behavior: 'allow', updatedInput: inputData };
       if (action === 'always-allow') {
-        // Use SDK suggestions for granular permissions (e.g. acceptEdits)
-        // Fallback to bypassPermissions only if no suggestions available
+        // Use SDK suggestions for granular permissions (e.g. acceptEdits).
+        // Without any, allow this one tool for the rest of the session. This
+        // used to switch the whole session to bypassPermissions, so approving
+        // one tool silently turned off every later prompt, for every tool.
         const suggestions = JSON.parse(card.dataset.suggestions || '[]');
+        const toolName = card.dataset.toolName;
         if (suggestions.length > 0) {
           result.updatedPermissions = suggestions;
-        } else {
+        } else if (toolName) {
           result.updatedPermissions = [{
-            type: 'setMode',
-            mode: 'bypassPermissions',
+            type: 'addRules',
+            rules: [{ toolName }],
+            behavior: 'allow',
             destination: 'session'
           }];
         }
@@ -3861,8 +4039,11 @@ class ChatView extends BaseComponent {
    */
   async function getLineOffset(filePath, searchStr) {
     try {
-      const { fs } = window.electron_nodeModules;
-      const content = await fs.promises.readFile(filePath, 'utf8');
+      // A remote chat's tool paths are on its host: read them there.
+      const remoteFile = projectFs.toProjectUri(filePath, project);
+      const content = projectFs.isRemote(remoteFile)
+        ? await projectFs.remoteFsPromises.readFile(remoteFile, 'utf8')
+        : await window.electron_nodeModules.fs.promises.readFile(filePath, 'utf8');
       const idx = content.indexOf(searchStr);
       if (idx === -1) return 1;
       return content.substring(0, idx).split('\n').length;
@@ -3896,7 +4077,8 @@ class ChatView extends BaseComponent {
 
   function _openFileBtn(filePath) {
     if (!filePath) return '';
-    const escaped = escapeHtml(filePath).replace(/"/g, '&quot;');
+    // A remote chat's path opens the file on its host.
+    const escaped = escapeHtml(projectFs.toProjectUri(filePath, project)).replace(/"/g, '&quot;');
     return `<button class="chat-open-file-btn" data-file-path="${escaped}" title="${t('chat.openFile') || 'Open file'}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>`;
   }
 
@@ -3940,6 +4122,17 @@ class ChatView extends BaseComponent {
       const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
       const BINARY_EXTS = new Set(['pdf', 'zip', 'gz', 'tar', 'rar', '7z', 'exe', 'dll', 'so', 'dylib', 'bin', 'dat', 'db', 'sqlite', 'wasm', 'mp3', 'mp4', 'mov', 'avi', 'mkv', 'wav', 'ogg', 'ttf', 'otf', 'woff', 'woff2']);
 
+      const remoteReadPath = projectFs.toProjectUri(path, project);
+      if (IMAGE_EXTS.has(ext) && path && projectFs.isRemote(remoteReadPath)) {
+        // Never a file:// URL of a host path, which would name a local file:
+        // the image is downloaded into the remote-cache first.
+        let localImage = null;
+        try { localImage = await projectFs.mediaPath(remoteReadPath); } catch { /* too large or host away */ }
+        if (!localImage) return `<div class="chat-tool-content-path">${escapeHtml(path)} ${_openFileBtn(path)}</div>`;
+        return `<div class="chat-tool-content-path">${escapeHtml(path)} ${_openFileBtn(path)}</div>
+          <div class="chat-inline-images"><div class="chat-inline-img-wrap"><img src="${escapeHtml(projectFs.fileUrl(localImage))}" class="chat-inline-img" alt="${escapeHtml(path)}" loading="lazy"></div></div>`;
+      }
+
       if (IMAGE_EXTS.has(ext) && path) {
         const fileUrl = 'file:///' + path.replace(/\\/g, '/');
         return `<div class="chat-tool-content-path">${escapeHtml(path)} ${_openFileBtn(path)}</div>
@@ -3955,7 +4148,9 @@ class ChatView extends BaseComponent {
       if (!effectiveOutput && path) {
         try {
           const { fs } = window.electron_nodeModules;
-          const raw = await fs.promises.readFile(path, 'utf8');
+          const raw = projectFs.isRemote(remoteReadPath)
+            ? await projectFs.remoteFsPromises.readFile(remoteReadPath, 'utf8')
+            : await fs.promises.readFile(path, 'utf8');
           const allLines = raw.split('\n');
           const start = Math.max(0, (parseInt(offset, 10) || 1) - 1);
           const end = limit ? start + parseInt(limit, 10) : allLines.length;
@@ -4154,15 +4349,9 @@ class ChatView extends BaseComponent {
       html += `<div class="chat-msg-content">${renderMarkdown(text)}</div>`;
     }
     el.innerHTML = html;
-    // Toggle original prompt visibility on badge click
-    const badge = el.querySelector('.chat-msg-enhanced-badge');
-    const originalBlock = el.querySelector('.chat-msg-original');
-    if (badge && originalBlock) {
-      badge.style.cursor = 'pointer';
-      badge.addEventListener('click', () => {
-        originalBlock.style.display = originalBlock.style.display === 'none' ? '' : 'none';
-      });
-    }
+    // The badge's click is delegated on messagesEl, not bound here: this entry
+    // is marked serializable, so a listener on the badge would not survive the
+    // pruner rebuilding it from `outerHTML`.
     // Add rewind button for live sessions (undo file changes from this point)
     if (uuid && sessionId && !queued) {
       const rewindBtn = document.createElement('button');
@@ -4202,7 +4391,11 @@ class ChatView extends BaseComponent {
     const errorMessages = {
       rate_limit: t('chat.errorRateLimit'),
       billing_error: t('chat.errorBilling'),
-      authentication_failed: t('chat.errorAuth'),
+      // A remote CLI runs on its host's own login: "run claude in a
+      // terminal" would send the user to a local one, which logs in here.
+      authentication_failed: remoteChat.isRemote
+        ? t('ssh.chat.errorAuth', { host: remoteChat.hostLabel() })
+        : t('chat.errorAuth'),
       invalid_request: t('chat.errorInvalidRequest'),
       max_output_tokens: t('chat.errorMaxTokens'),
       server_error: t('chat.errorServer'),
@@ -4396,8 +4589,9 @@ class ChatView extends BaseComponent {
       const fileUrl = 'file:///' + p.replace(/\\/g, '/').replace(/^\/\//, '/');
       const imgWrap = document.createElement('div');
       imgWrap.className = 'chat-inline-img-wrap';
+      // No `onerror` here: the capturing 'error' listener on messagesEl owns
+      // it, because a property does not survive the pruner's rebuild.
       imgWrap.innerHTML = `<img src="${fileUrl}" class="chat-inline-img" alt="${escapeHtml(p)}" loading="lazy">`;
-      imgWrap.querySelector('img').onerror = () => imgWrap.remove();
       wrap.appendChild(imgWrap);
     });
     container.appendChild(wrap);
@@ -4584,7 +4778,12 @@ class ChatView extends BaseComponent {
     const { fsp } = require('../../utils/fs-async');
     let source;
     try {
-      source = await fsp.readFile(input.file_path, 'utf8');
+      // A remote chat published a file on its host; main only serves it from
+      // inside the project (a temp file elsewhere is skipped like a gone one).
+      const remoteFile = projectFs.toProjectUri(input.file_path, project);
+      source = projectFs.isRemote(remoteFile)
+        ? await projectFs.remoteFsPromises.readFile(remoteFile, 'utf8')
+        : await fsp.readFile(input.file_path, 'utf8');
     } catch (e) {
       // Often a temp file that is already gone. Without content there is
       // nothing to preview, and a sourceless card would just be dead weight.
@@ -6391,29 +6590,61 @@ class ChatView extends BaseComponent {
    * footer does not read as though the running turn already switched.
    */
   function syncPendingSelection() {
-    const pending = !!(pendingModelPush || pendingEffortPush);
-    chatView.classList.toggle('selection-pending', pending);
-    const hint = pending ? t('chat.appliesNextTurn') : '';
-    modelBtn.title = hint;
-    effortBtn.title = hint;
+    const modelPending = !!pendingModelPush;
+    const effortPending = !!pendingEffortPush;
+    // The chip is shared, so its border answers to either.
+    chatView.classList.toggle('selection-pending', modelPending || effortPending);
+    // The labels are not: a parked effort pick says nothing about the model
+    // name beside it, which has not moved.
+    modelLabel.classList.toggle('selection-pending', modelPending);
+    effortLabel.classList.toggle('selection-pending', effortPending);
+    // syncModelTier owns modelBtn.title and reads pendingModelPush itself.
+    syncModelTier();
+    effortBtn.title = effortPending ? t('chat.appliesNextTurn') : '';
   }
 
-  /** Hand the SDK what was picked mid-turn, now that the turn is over. */
+  /**
+   * Hand the SDK what was picked mid-turn, now that the turn is over, and only
+   * then release the messages the composer queued behind it.
+   */
   async function flushPendingSelection() {
     const model = pendingModelPush;
     const effort = pendingEffortPush;
+    const sends = pendingQueuedSends;
     pendingModelPush = null;
     pendingEffortPush = null;
+    pendingQueuedSends = [];
     syncPendingSelection();
     try {
-      if (model) await model();
-      if (effort) await effort();
+      if (model) await model.run();
+      if (effort) await effort.run();
     } catch (err) {
       console.warn('[ChatView] deferred model/effort switch failed:', err?.message || err);
     }
+    // In the order they were typed, and sent even if the switch above failed:
+    // losing what the user wrote is worse than running it on the model the
+    // session is still on, which is what a failed switch leaves in place.
+    for (const dispatch of sends) {
+      if (destroyed) return;
+      try {
+        const res = await dispatch();
+        if (destroyed) return;
+        if (res && !res.success) appendError(res.error || t('chat.errorOccurred'));
+      } catch (err) {
+        if (!destroyed) appendError(err?.message || String(err));
+      }
+    }
   }
 
-  function setStreaming(streaming) {
+  /**
+   * @param {boolean} streaming
+   * @param {{ turnEnded?: boolean }} [opts] - `turnEnded: false` for the sites
+   *   that lower the spinner while the SDK may still be mid-turn (a compact
+   *   boundary, a tool-less `message_stop` that the `result` has yet to
+   *   confirm). Those must not release a parked model/effort switch, which
+   *   would then land in the middle of the answer being streamed.
+   */
+  function setStreaming(streaming, { turnEnded = true } = {}) {
     isStreaming = streaming;
     stopBtn.style.display = streaming ? '' : 'none';
     // Only meaningful while something is actually in the foreground.
@@ -6426,9 +6657,9 @@ class ChatView extends BaseComponent {
     // happily queues the next message, and the permission-mode picker beside
     // them stayed live the whole time. They are enabled now; a pick made
     // mid-turn is held and pushed to the SDK when the turn ends.
-    if (!streaming) {
+    if (!streaming && turnEnded) {
       flushPendingSelection();
-      showSuggestionCards();
+      ticketsWiring.flushCards();
     }
 
     if (streaming) {
@@ -6774,7 +7005,10 @@ class ChatView extends BaseComponent {
         } else {
           refreshContextGaugeFromSession();
         }
-        setStreaming(false);
+        // The boundary lowers the spinner, but the SDK is not necessarily done:
+        // an auto-compact happens mid-turn. Not a turn end for the purpose of
+        // releasing a parked model/effort switch.
+        setStreaming(false, { turnEnded: false });
       } else if (message.subtype === 'task_started') {
         const taskId = message.task_id;
         if (taskId) {
@@ -6880,6 +7114,8 @@ class ChatView extends BaseComponent {
       // API call it made, not what occupies the window. The assistant frames
       // above carry that.
       if (message.model) model = message.model;
+      const reportedWindow = contextWindowFromResult(message, model);
+      if (reportedWindow > 0) reportedContextWindow = { model, tokens: reportedWindow };
       updateStatusInfo();
 
       // Handle SDK errors (error_during_execution, error_max_turns, etc.)
@@ -7148,7 +7384,9 @@ class ChatView extends BaseComponent {
         toolCards.clear();
         if (!currentMsgHasToolUse) {
           // Turn is complete (no tool use) — reset streaming
-          setStreaming(false);
+          // The `result` message is what confirms the turn; until then a
+          // parked model/effort switch stays parked.
+          setStreaming(false, { turnEnded: false });
           // Don't complete subagent cards here — they have their own lifecycle
           // via parent_tool_use_id messages and will be completed when their
           // individual 'result' message arrives or on chat-done/chat-error
@@ -7577,6 +7815,9 @@ class ChatView extends BaseComponent {
 
   const unsubError = api.chat.onError(({ sessionId: sid, error, errorType }) => {
     if (sid !== sessionId) return;
+    // A remote session that lost its host: picked up again once it is back
+    const turnWasRunning = isStreaming;
+    if (errorType === 'connection_lost') remoteChat.onConnectionLost({ turnWasRunning });
     removeThinkingIndicator();
     finalizeStreamBlock();
     resolveAllPendingCards();
@@ -7712,6 +7953,10 @@ class ChatView extends BaseComponent {
       setStreaming(false);
       return false;
     }
+    // The session runs on `newId` from here, and everything that relaunches it
+    // later (a retry, the next switch, a command handed to a terminal) starts
+    // from lastStartOpts.
+    lastStartOpts = { ...lastStartOpts, accountId: newId ?? null };
     // A restart carries one prompt. Anything else that was still queued
     // goes back on the new session in the order it was typed, rather than
     // being dropped for being second.
@@ -7738,6 +7983,54 @@ class ChatView extends BaseComponent {
    *   restart; defaults to whether a limit cut the last turn short.
    * @returns {Promise<boolean>}
    */
+  /**
+   * Restart a remote session after its connection came back, the way an
+   * account switch restarts one: same tab, same app-local handle, `resume`
+   * with the CLI's own session id. A turn the drop cut off is asked for
+   * again; an idle tab just comes back. A session that never started (the
+   * host was away for the opening turn) sends that turn now.
+   *
+   * @param {{turnWasRunning: boolean}} ctx
+   * @returns {Promise<boolean>} whether the session is running again
+   */
+  async function resumeAfterConnectionLoss({ turnWasRunning }) {
+    if (destroyed || !lastStartOpts) return false;
+    const realSid = sdkSessionId || resumeSessionId;
+    const restartOpts = realSid
+      ? {
+        ...lastStartOpts,
+        prompt: turnWasRunning ? RESUME_TURN_PROMPT : '',
+        images: [],
+        documents: [],
+        mentions: [],
+        userMessageUuid: null,
+        forkSession: false,
+        resumeSessionAt: null,
+        resumeDropsTurn: null,
+        resumeSessionId: realSid,
+      }
+      : { ...lastStartOpts };
+    const replayed = Boolean((restartOpts.prompt || '').trim() || (restartOpts.images || []).length || (restartOpts.mentions || []).length);
+    appendSystemNotice(realSid
+      ? t('ssh.chat.resumed', { host: remoteChat.hostLabel() })
+      : t('ssh.chat.resent', { host: remoteChat.hostLabel() }), 'info');
+    // The handle the restart runs under: events for it must reach this tab
+    sessionId = restartOpts.sessionId || sessionId;
+    if (replayed) {
+      setStreaming(true);
+      appendThinkingIndicator();
+    }
+    const res = await startChatSession(restartOpts);
+    if (!res) return false;
+    if (!res.success) {
+      if (res.errorType !== 'connection_lost') appendError(res.error || t('chat.errorOccurred'));
+      setStreaming(false);
+      return false;
+    }
+    if (res.remote) remoteChat.showWarnings(res.remote.warnings);
+    return true;
+  }
+
   async function switchAccountAndRestart(accountId, { resumeTurn = turnCutByLimit } = {}) {
     // `null` is a target of its own — the project following the default account
     // rather than pinning one — so only an absent argument is refused.
@@ -8854,6 +9147,8 @@ class ChatView extends BaseComponent {
   // Focus input
   const initialSubmitTimer = setTimeout(() => {
     if (destroyed) return;
+    // preventScroll: focusing the composer must not yank a restored tab's
+    // transcript back down while the reader is still up in its history.
     inputEl.focus({ preventScroll: true });
     // Auto-submit si un prompt initial est fourni (ex: depuis Remote Control)
     if (initialPrompt) {
@@ -8892,12 +9187,13 @@ class ChatView extends BaseComponent {
         } catch (e) { /* events not ready */ }
       }
       if (sessionId) api.chat.close({ sessionId });
+      remoteChat.destroy();
       // Persist whatever the debounce was still holding, before the view goes.
       artifactRegistry.flush();
       transcriptPruner?.destroy();
       gitTab.destroy();
       ticketsTab.destroy();
-      clearTimeout(suggestionCardTimer);
+      ticketsWiring.destroy();
       scrollResizeObserver?.disconnect();
       scrollChildrenObserver.disconnect();
       contextSuggestions.reset();

@@ -16,6 +16,15 @@ const {
 } = require('../../state');
 const { escapeHtml } = require('../../utils');
 const { t } = require('../../i18n');
+const { isRemoteProject } = require('../../../shared/remote-capabilities');
+const remotePath = require('../../../shared/remote-path');
+
+/** The directory of a remote project on its host. */
+function remoteDirOf(project) {
+  if (project.remote && typeof project.remote.path === 'string') return project.remote.path;
+  const parsed = remotePath.tryParse(project.path);
+  return parsed ? parsed.path : project.path;
+}
 const { createModal, showModal: showModalElement, closeModal } = require('./Modal');
 
 // Icons available for quick actions
@@ -178,13 +187,26 @@ class QuickActions extends BaseComponent {
     this._createTerminalCallback = callback;
   }
 
-  _substituteVariables(command, project) {
-    const branch = this._gitRepoStatus.get(project.id)?.branch || '';
+  /**
+   * @param {string} command
+   * @param {object} project
+   * @param {{ branch?: string }} [overrides]  a branch read just now, which
+   *   wins over the status map (a remote project's, see _remoteBranch)
+   */
+  _substituteVariables(command, project, overrides = {}) {
+    const branch = typeof overrides.branch === 'string'
+      ? overrides.branch
+      : (this._gitRepoStatus.get(project.id)?.branch || '');
+    // A remote (SSH) project's command runs on its host: the path is the one
+    // there, and $HOME is left for the remote shell to expand rather than
+    // replaced with this machine's home directory. $BRANCH comes from the same
+    // status map, or for a remote project from its host (_remoteBranch).
+    const remote = isRemoteProject(project);
     const vars = {
-      '$PROJECT_PATH': project.path,
+      '$PROJECT_PATH': remote ? remoteDirOf(project) : project.path,
       '$PROJECT_NAME': project.name,
       '$BRANCH': branch,
-      '$HOME': window.electron_nodeModules.os.homedir(),
+      '$HOME': remote ? '$HOME' : window.electron_nodeModules.os.homedir(),
     };
     const envVars = getProjectEnvVars(project.id);
     for (const [key, value] of Object.entries(envVars)) {
@@ -336,9 +358,24 @@ class QuickActions extends BaseComponent {
 
         this._actionTerminals.set(actionId, { terminalId, projectId: project.id });
 
-        setTimeout(() => {
-          this._api.terminal.input({ id: terminalId, data: resolvedCommand + '\r' });
-        }, 300);
+        if (isRemoteProject(project)) {
+          // Typed only once the host has answered: anything typed while ssh is
+          // still authenticating could be read by a password prompt. By then
+          // the tab has asked its host to connect, so $BRANCH can be read on
+          // the host rather than from a status map the startup sweep left empty.
+          this._whenTerminalSpeaks(terminalId)
+            .then(() => this._remoteBranch(project))
+            .then((branch) => {
+              const remoteCommand = this._substituteVariables(action.command, project, { branch });
+              setTimeout(() => {
+                this._api.terminal.input({ id: terminalId, data: remoteCommand + '\r' });
+              }, 300);
+            });
+        } else {
+          setTimeout(() => {
+            this._api.terminal.input({ id: terminalId, data: resolvedCommand + '\r' });
+          }, 300);
+        }
 
         const unsubscribe = this._api.terminal.onExit((data) => {
           if (data && data.id === terminalId) {
@@ -355,6 +392,49 @@ class QuickActions extends BaseComponent {
     } catch (error) {
       console.error('Error executing quick action:', error);
     }
+  }
+
+  /**
+   * The current branch of a remote project, read on its host through the
+   * remote git primitives (`git-current-branch` with the project's URI).
+   * Empty while the host is not connected: the read would otherwise connect
+   * the host or wait on it, and a command must not hang on a branch name. A
+   * host that answers nothing usable falls back to the status map.
+   * @returns {Promise<string>}
+   */
+  async _remoteBranch(project) {
+    const host = require('../../state/remoteHosts.state').getProjectHost(project);
+    if (!host || host.state !== 'connected') return '';
+    try {
+      const branch = await this._api.git.currentBranch({ projectPath: project.path });
+      if (typeof branch === 'string' && branch) return branch;
+    } catch (_) { /* fall back to the status map */ }
+    return this._gitRepoStatus.get(project.id)?.branch || '';
+  }
+
+  /**
+   * Resolve on the first output of a terminal, or after `timeoutMs`. A remote
+   * tab's first byte means ssh is through and the remote side is reading.
+   */
+  _whenTerminalSpeaks(terminalId, timeoutMs = 20000) {
+    return new Promise((resolve) => {
+      // Output that arrived before this was asked counts too.
+      const td = require('../../state').getTerminal(terminalId);
+      if (td && td.outputCursor > 0) { resolve(); return; }
+      let done = false;
+      let unsubscribe = null;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (typeof unsubscribe === 'function') unsubscribe();
+        resolve();
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      unsubscribe = this._api.terminal.onData((data) => {
+        if (data && data.id === terminalId) finish();
+      });
+    });
   }
 
   // Required lazily: TerminalManager requires this module back, and resolving

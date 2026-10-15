@@ -23,8 +23,15 @@ for (const method of ['exists', 'readFile', 'writeFile', 'readdir', 'stat', 'mkd
 }
 // Cache repeated pure path calculations; use the host's native path semantics
 // for drive letters, UNC names and separators on every supported platform.
+//
+// This list must cover every path method the renderer actually calls, and it
+// is duplicated in `src/main/utils/rendererFiles.js` because a sandboxed
+// preload can only require electron, events, timers and url — it cannot pull a
+// shared constant. `tests/security/rendererBridgeSurface.test.js` is what keeps
+// the two halves and the renderer's real usage in agreement; extend it rather
+// than trusting this comment.
 const pathApi = { sep: bootstrap.sep }, pathCache = new Map();
-for (const method of ['join', 'dirname', 'basename', 'relative', 'resolve']) {
+for (const method of ['join', 'dirname', 'basename', 'relative', 'resolve', 'extname', 'normalize', 'isAbsolute']) {
   pathApi[method] = (...args) => {
     const key = JSON.stringify([method, args]);
     if (pathCache.has(key)) return pathCache.get(key);
@@ -59,8 +66,12 @@ contextBridge.exposeInMainWorld('electron_api', {
     input: (params) => ipcRenderer.send('terminal-input', params),
     resize: (params) => ipcRenderer.send('terminal-resize', params),
     kill: (params) => ipcRenderer.send('terminal-kill', params),
+    // Remote (SSH) tabs only: reopen one whose connection dropped, by its id.
+    respawn: (params) => ipcRenderer.invoke('terminal-respawn', params),
     onData: createListener('terminal-data'),
-    onExit: createListener('terminal-exit')
+    onExit: createListener('terminal-exit'),
+    // A remote tab's ssh exited 255: the connection was lost, the tab stays.
+    onDisconnected: createListener('terminal-disconnected')
   },
 
   // ==================== GIT ====================
@@ -247,6 +258,8 @@ contextBridge.exposeInMainWorld('electron_api', {
     stopWatch: () => ipcRenderer.send('explorer:stopWatch'),
     watchDir: (dirPath) => ipcRenderer.send('explorer:watchDir', dirPath),
     unwatchDir: (dirPath) => ipcRenderer.send('explorer:unwatchDir', dirPath),
+    // Remote directories are polled only while the explorer is on screen.
+    setVisible: (visible) => ipcRenderer.send('explorer:setVisible', visible === true),
     onChanges: createListener('explorer:changes'),
     onWatchLimitWarning: createListener('explorer:watchLimitWarning')
   },
@@ -361,6 +374,31 @@ contextBridge.exposeInMainWorld('electron_api', {
     ensureDir: () => ipcRenderer.invoke('project-types:ensure-dir'),
   },
 
+  // ==================== SSH (remote projects) ====================
+  // Every call names a host by profile id; main reads host, user, port and
+  // options from its own remote-hosts.json. See design/remote-ssh.md.
+  ssh: {
+    listProfiles: () => ipcRenderer.invoke('ssh-profiles-list'),
+    saveProfile: (profile) => ipcRenderer.invoke('ssh-profile-save', profile),
+    deleteProfile: (profileId) => ipcRenderer.invoke('ssh-profile-delete', { profileId }),
+    testProfile: (profileId) => ipcRenderer.invoke('ssh-profile-test', { profileId }),
+    pickIdentityFile: () => ipcRenderer.invoke('ssh-pick-identity-file'),
+    verifyHost: (profileId) => ipcRenderer.invoke('ssh-verify-host', { profileId }),
+    connect: (profileId) => ipcRenderer.invoke('ssh-connect', { profileId }),
+    disconnect: (profileId) => ipcRenderer.invoke('ssh-disconnect', { profileId }),
+    status: (profileId) => ipcRenderer.invoke('ssh-status', { profileId }),
+    networkOnline: () => ipcRenderer.send('ssh-network-online'),
+    browse: (profileId, path) => ipcRenderer.invoke('ssh-browse', { profileId, path }),
+    mkdir: (profileId, path) => ipcRenderer.invoke('ssh-mkdir', { profileId, path }),
+    init: (profileId, path) => ipcRenderer.invoke('ssh-init', { profileId, path }),
+    clone: (params) => ipcRenderer.invoke('ssh-clone', params),
+    // Remote project files, async only: `{ op, path, ... }` with paths as
+    // ssh-remote:// URIs, authorised in main (src/renderer/utils/projectFs.js
+    // is the renderer side).
+    fs: (request) => ipcRenderer.invoke('ssh-fs', request),
+    onStatusChanged: createListener('ssh-status-changed'),
+  },
+
   // ==================== KNOWLEDGE (global memory) ====================
   knowledge: {
     list: () => ipcRenderer.invoke('knowledge-list'),
@@ -400,11 +438,16 @@ contextBridge.exposeInMainWorld('electron_api', {
     stats: (projectPath) => ipcRenderer.invoke('project-stats', projectPath),
     onQuickActionRun: createListener('quickaction:run'),
     onQuickActionChanged: createListener('quickaction:changed'),
+    onProjectsChanged: createListener('mcp-project:changed'),
+    onProjectOpen: createListener('mcp-project:open'),
   },
 
   // ==================== CLAUDE ====================
   claude: {
     sessions: (projectPath) => ipcRenderer.invoke('claude-sessions', projectPath),
+    // `{ sessions, disconnected, host }`: what a remote project's views need to
+    // say "history lives on <host>" instead of showing an empty list
+    sessionListing: (projectPath) => ipcRenderer.invoke('claude-sessions', projectPath, { withStatus: true }),
     sessionReplay: (params) => ipcRenderer.invoke('claude-session-replay', params),
     sessionChanges: (params) => ipcRenderer.invoke('claude-session-changes', params),
     deleteSession: (params) => ipcRenderer.invoke('claude-delete-session', params),
@@ -422,6 +465,7 @@ contextBridge.exposeInMainWorld('electron_api', {
     setColor: (id, color) => ipcRenderer.invoke('accounts-update', { id, color }),
     rename: (id, name) => ipcRenderer.invoke('accounts-rename', { id, name }),
     remove: (id) => ipcRenderer.invoke('accounts-remove', { id }),
+    automationsUsing: (id) => ipcRenderer.invoke('accounts-automations', { id }),
     syncActive: () => ipcRenderer.invoke('accounts-sync-active'),
     onChanged: createListener('accounts-changed')
   },
@@ -535,6 +579,13 @@ contextBridge.exposeInMainWorld('electron_api', {
     onEntry: createListener('errorlog:entry'),
     onPatternAlert: createListener('errorlog:pattern-alert'),
     onCleared: createListener('errorlog:cleared'),
+  },
+
+  // ==================== COST ====================
+  cost: {
+    getReport: (range) => ipcRenderer.invoke('cost-get-report', range),
+    getAutomations: (range) => ipcRenderer.invoke('cost-get-automations', range),
+    getQuota: (args) => ipcRenderer.invoke('cost-get-quota', args),
   },
 
   // ==================== TELEMETRY ====================
@@ -652,7 +703,8 @@ contextBridge.exposeInMainWorld('electron_api', {
     disconnect:      (params)  => ipcRenderer.invoke('database-disconnect', params),
     getSchema:       (params)  => ipcRenderer.invoke('database-get-schema', params),
     executeQuery:    (params)  => ipcRenderer.invoke('database-execute-query', params),
-    detect:          (params)  => ipcRenderer.invoke('database-detect', params),
+    redis:           (params)  => ipcRenderer.invoke('database-redis', params),
+    detect:         (params)  => ipcRenderer.invoke('database-detect', params),
     saveConnections: (params)  => ipcRenderer.invoke('database-save-connections', params),
     loadConnections: ()        => ipcRenderer.invoke('database-load-connections'),
     refreshMcp:      ()        => ipcRenderer.invoke('database-refresh-mcp'),

@@ -118,10 +118,16 @@ const registry = require('./src/project-types/registry');
 const { mergeTranslations } = require('./src/renderer/i18n');
 const ModalComponent = require('./src/renderer/ui/components/Modal');
 const WhatsNew = require('./src/renderer/ui/components/WhatsNew');
-const { MemoryEditor, GitChangesPanel, ShortcutsManager, SettingsPanel, SkillsAgentsPanel, PluginsPanel, MarketplacePanel, McpPanel, CloudPanel, ConnectivityPanel, WorkspacePanel, ErrorLogPanel, FilesPanel, ArtifactsPanel } = require('./src/renderer/ui/panels');
+const { MemoryEditor, GitChangesPanel, ShortcutsManager, SettingsPanel, SkillsAgentsPanel, PluginsPanel, MarketplacePanel, McpPanel, CloudPanel, ConnectivityPanel, WorkspacePanel, ErrorLogPanel, FilesPanel, ArtifactsPanel, CostPanel } = require('./src/renderer/ui/panels');
 // Not re-exported by the panels index: ConnectivityPanel embeds it as a sub-tab,
 // but its polling lifecycle is driven from the tab registry below.
 const RemotePanel = require('./src/renderer/ui/panels/RemotePanel');
+// SSH remote projects (design/remote-ssh.md). Not the PWA "remote" above.
+const RemoteProjectModal = require('./src/renderer/ui/components/RemoteProjectModal');
+const { refuseForRemote } = require('./src/renderer/ui/components/RemoteHostBadge');
+const { isRemoteProject, sameProject, can: remoteCan } = require('./src/shared/remote-capabilities');
+const remotePathLib = require('./src/shared/remote-path');
+const { remoteHostsState, onRemoteProjectOpened, getProjectHost } = require('./src/renderer/state/remoteHosts.state');
 
 // ========== LAZILY-SPLIT PANELS ==========
 //
@@ -361,7 +367,7 @@ function closeModal() {
   const pendingCreation = document.getElementById('form-project')?.dataset.operationId;
   if (pendingCreation) api.operations.cancel(pendingCreation);
   document.getElementById('modal-overlay').classList.remove('active');
-  document.getElementById('modal')?.classList.remove('modal--sessions');
+  document.getElementById('modal')?.classList.remove('modal--sessions', 'modal--whats-new');
 }
 
 // ========== LOCAL STATE ==========
@@ -397,6 +403,29 @@ function updateStaticTranslations() {
 onLanguageChange(() => {
   updateStaticTranslations();
 });
+
+/**
+ * What the project sidebar and the project bar actually draw, as one string.
+ *
+ * Used to tell "the list changed" apart from "the selection moved": the latter
+ * fires on every tab switch and must not rebuild the list. Only the fields both
+ * views render are included, so a change nobody can see costs no repaint.
+ *
+ * @param {{projects: Array, folders: Array, rootOrder: Array}} state
+ * @returns {string}
+ */
+function _projectsSignature(state) {
+  const projects = (state.projects || []).map(p => [
+    p.id, p.name, p.path, p.type, p.folderId, p.color, p.icon,
+    p.pathMissing ? 1 : 0,
+    (p.tags || []).join(','),
+    (p.quickActions || []).filter(a => a.pinned).map(a => a.id).join(','),
+  ].join(''));
+  const folders = (state.folders || []).map(f => [
+    f.id, f.name, f.parentId, f.color, f.collapsed ? 1 : 0, (f.children || []).join(','),
+  ].join(''));
+  return [projects.join(''), folders.join(''), (state.rootOrder || []).join(',')].join('');
+}
 
 // ========== KEYBOARD SHORTCUTS (extracted to ShortcutsManager module) ==========
 // ========== INITIALIZATION ==========
@@ -495,6 +524,13 @@ const { loadSessionData, clearProjectSessions, saveTerminalSessions } = require(
         const saved = sessionData.projects[projectId];
         const project = projects.find(p => p.id === projectId);
         if (!project) continue;
+        // Remote (SSH) projects restore nothing at startup: their tabs need the
+        // host, and nothing may connect before the user opens the project.
+        // They are held until then (TerminalManager.restoreRemoteTabs).
+        if (isRemoteProject(project)) {
+          require('./src/renderer/services/TerminalSessionService').stashRemoteTabs(projectId, saved);
+          continue;
+        }
         if (!(await fileExists(project.path))) continue;
         if (!saved.tabs || saved.tabs.length === 0) continue;
 
@@ -587,6 +623,23 @@ const { loadSessionData, clearProjectSessions, saveTerminalSessions } = require(
   projectsState.subscribe((state) => {
     registry.ensureLoadedMany(state.projects.map(p => p.type))
       .then(loaded => { if (loaded.length) ProjectList.render(); });
+  });
+
+  // Repaint when the list itself changed rather than when a new *type* arrived.
+  // Every mutation made from the UI calls ProjectList.render() on its own, but
+  // the ones that come from outside this renderer have nobody to do that for
+  // them — the MCP project tools, a cloud sync pull, and the three-way merge
+  // that adopts another process's writes all reach state through loadProjects()
+  // alone, so the sidebar stayed on the previous list until the next restart.
+  // Both renders are rAF-debounced, so the duplicate on a local edit collapses.
+  let _lastProjectsSignature = _projectsSignature(projectsState.get());
+  projectsState.subscribe((state) => {
+    const signature = _projectsSignature(state);
+    if (signature === _lastProjectsSignature) return;
+    _lastProjectsSignature = signature;
+    ProjectList.render();
+    ProjectBar.render();
+    if (document.body.dataset.activeTab === 'dashboard') renderDashboardForScope();
   });
 
   // Third-party project types, if the user has opted in. Deliberately not
@@ -787,6 +840,12 @@ async function checkAllProjectsGitStatus() {
   for (let i = 0; i < projects.length; i += BATCH_SIZE) {
     const batch = projects.slice(i, i + BATCH_SIZE);
     await Promise.all(batch.map(async (project) => {
+      // Remote (SSH) projects are left out of the startup sweep: a dead host
+      // must never slow startup, and their host connects only when opened.
+      if (isRemoteProject(project)) {
+        localState.gitRepoStatus.set(project.id, { isGitRepo: false });
+        return;
+      }
       // Skip projects whose path doesn't exist (e.g. synced from another machine)
       // Use async access() to avoid blocking the renderer thread on slow/network paths
       if (project.path) {
@@ -836,7 +895,40 @@ async function checkAllProjectsGitStatus() {
   }
 }
 
+/**
+ * Fill in the git status of remote projects when their host connects. Tracks
+ * each host's last state, so a status broadcast that changes nothing (a retry
+ * timer, a capabilities refresh) does not query again.
+ */
+function watchRemoteGitStatus() {
+  const lastState = new Map(); // profileId -> state
+  remoteHostsState.subscribe(() => {
+    const projects = projectsState.get().projects || [];
+    const nowConnected = new Set();
+    const seen = new Set();
+    for (const project of projects) {
+      const host = getProjectHost(project);
+      if (!host || !host.profileId || seen.has(host.profileId)) continue;
+      seen.add(host.profileId);
+      if (host.state === 'connected' && lastState.get(host.profileId) !== 'connected') nowConnected.add(host.profileId);
+      lastState.set(host.profileId, host.state);
+    }
+    if (nowConnected.size === 0) return;
+    for (const project of projects) {
+      const host = getProjectHost(project);
+      if (host && nowConnected.has(host.profileId)) checkProjectGitStatus(project);
+    }
+  });
+}
+
 async function checkProjectGitStatus(project) {
+  // A remote project is only asked while its host is connected: a read on a
+  // host that is not would connect it (or wait on it), and that is the user's
+  // call. watchRemoteGitStatus() fills it in once the host is up.
+  if (isRemoteProject(project) && getProjectHost(project)?.state !== 'connected') {
+    localState.gitRepoStatus.set(project.id, { isGitRepo: false });
+    return;
+  }
   try {
     const result = await api.git.statusQuick({ projectPath: project.path });
     const status = { isGitRepo: result.isGitRepo };
@@ -972,7 +1064,7 @@ function refreshDashboardAsync(projectId) {
       DashboardService.renderDashboard(content, project, {
         terminalCount,
         fivemStatus,
-        onOpenFolder: (p) => api.dialog.openInExplorer(p),
+        onOpenFolder: (p) => { if (!refuseForRemote(p, 'openInExplorer')) api.dialog.openInExplorer(p); },
         onOpenClaude: (proj) => {
           createTerminalForProject(proj);
           document.querySelector('[data-tab="claude"]')?.click();
@@ -1873,7 +1965,7 @@ async function deleteProjectUI(projectId) {
   if (!confirmed) return;
 
   // Stop any type-specific running processes (e.g., FiveM server)
-  const deleteTypeHandler = registry.get(project.type);
+  const deleteTypeHandler = registry.forProject(project);
   if (deleteTypeHandler.onProjectDelete) {
     deleteTypeHandler.onProjectDelete(project, projectIndex);
   }
@@ -1987,7 +2079,8 @@ async function openNewWorktreeModal(project) {
       <div class="worktree-existing-list">
         ${existingWorktrees.map(wt => {
           const branchLabel = wt.detached ? wt.head?.substring(0, 7) : (wt.branch || '?');
-          const shortPath = wt.path.replace(/\\/g, '/').split('/').slice(-2).join('/');
+          const wtDisplay = isRemoteProject(project) ? (remotePathLib.tryParse(wt.path)?.path || wt.path) : wt.path;
+          const shortPath = wtDisplay.replace(/\\/g, '/').split('/').slice(-2).join('/');
           return `<button class="worktree-existing-item" data-wt-path="${escapeHtml(wt.path)}" data-wt-branch="${escapeHtml(branchLabel)}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path stroke-linecap="round" stroke-linejoin="round" d="M6 3v12m0 0a3 3 0 100 6 3 3 0 000-6zm12-6a3 3 0 100-6 3 3 0 000 6zm0 0c0 4.5-1.5 6-6 6"/></svg>
             <span class="worktree-existing-branch">${escapeHtml(branchLabel)}</span>
@@ -2057,11 +2150,14 @@ async function openNewWorktreeModal(project) {
     createBtn.disabled = true;
     createBtn.innerHTML = `<span class="worktree-btn-spinner"></span>${t('projects.worktreeCreating')}`;
 
-    // Worktree path: sibling folder named <project>-<branch> (slashes → dashes)
-    const basePath = window.electron_nodeModules.path.dirname(project.path);
+    // Worktree path: sibling folder named <project>-<branch> (slashes → dashes).
+    // A remote project's path is an ssh-remote:// URI: POSIX rules on its host,
+    // never the local path module (win32 here would make a drive path of it).
     const safeBranch = branchName.replace(/[/\\:*?"<>|]/g, '-');
-    const projectBase = window.electron_nodeModules.path.basename(project.path);
-    const worktreePath = window.electron_nodeModules.path.join(basePath, `${projectBase}-${safeBranch}`);
+    const pathOps = isRemoteProject(project) ? remotePathLib : window.electron_nodeModules.path;
+    const basePath = pathOps.dirname(project.path);
+    const projectBase = pathOps.basename(project.path);
+    const worktreePath = pathOps.join(basePath, `${projectBase}-${safeBranch}`);
 
     const result = await api.git.worktreeCreate({
       projectPath: project.path,
@@ -2224,12 +2320,15 @@ function _moveSessionErrorMessage(result) {
  * @param {Function} onFinish - Called once the picker closes, moved or not
  */
 function _showMoveSessionModal(session, fromProject, onFinish) {
+  // A remote session lives on its host and is never re-filed from here
+  if (refuseForRemote(fromProject, 'sessionMove')) return;
   if (_isSessionLive(session.sessionId)) {
     showToast({ type: 'warning', title: t('sessions.move.title'), message: t('sessions.move.errorLive') });
     return;
   }
 
-  const targets = projectsState.get().projects.filter(p => p.path !== fromProject.path);
+  // A local transcript cannot be moved onto a host either
+  const targets = projectsState.get().projects.filter(p => p.path !== fromProject.path && !isRemoteProject(p));
   if (targets.length === 0) {
     showToast({ type: 'info', title: t('sessions.move.title'), message: t('sessions.move.noTarget') });
     return;
@@ -2317,8 +2416,32 @@ ${s.gitBranch ? `<span class="session-meta-branch"><svg width="10" height="10"><
 async function showSessionsModal(project) {
   if (!project) return;
 
+  // A remote project's transcripts live on its host and are read over the
+  // channel. While the host is not connected, say where they are rather than
+  // "no conversations".
+  let remoteListing = null;
+  if (isRemoteProject(project)) {
+    try {
+      remoteListing = await api.claude.sessionListing(project.path);
+    } catch (_) {
+      remoteListing = null;
+    }
+    if (!remoteListing || remoteListing.disconnected) {
+      const hostLabel = getProjectHost(project)?.hostLabel || t('ssh.unknownHost');
+      showModal(t('terminals.resumeConversation') || 'Resume a conversation', `
+        <div class="sessions-modal-empty">
+          <p>${escapeHtml(t('ssh.terminal.historyOnHost', { host: hostLabel }))}</p>
+          <button class="modal-btn primary" id="sessions-modal-remote-new">${escapeHtml(t('terminals.newConversation'))}</button>
+        </div>
+      `);
+      const newBtn = document.getElementById('sessions-modal-remote-new');
+      if (newBtn) newBtn.onclick = () => { closeModal(); createTerminalForProject(project); };
+      return;
+    }
+  }
+
   try {
-    const sessions = await api.claude.sessions(project.path);
+    const sessions = remoteListing ? (remoteListing.sessions || []) : await api.claude.sessions(project.path);
 
     if (!sessions || sessions.length === 0) {
       showModal(t('terminals.resumeConversation') || 'Resume a conversation', `
@@ -2529,6 +2652,10 @@ async function refreshCloudProjects() {
 async function cloudUploadProject(projectId) {
   const project = projectsState.get().projects.find(p => p.id === projectId);
   if (!project) return;
+
+  // A remote project has no local folder to zip: say so, before any sync
+  // existsSync on its URI.
+  if (refuseForRemote(project, 'cloudUpload')) return;
 
   // Skip if project directory doesn't exist (e.g. synced from another machine)
   if (project.path && !fs.existsSync(project.path)) return;
@@ -2843,6 +2970,8 @@ projectsState.subscribe((state) => {
   for (const id of newIds) {
     if (_skipAutoUploadIds.has(id)) { _skipAutoUploadIds.delete(id); continue; }
     if (cloudUploadStatus.get(id)?.synced) continue;
+    // Nothing to zip for a remote project; do not offer it.
+    if (isRemoteProject(getProject(id))) continue;
     _pendingAutoUploadIds.add(id);
   }
   if (_pendingAutoUploadIds.size > 0) _scheduleAutoUploadPrompt();
@@ -3090,7 +3219,7 @@ let _closeProjectConfirmOpen = false;
 function openTerminalIdsForProject(project) {
   const ids = [];
   terminalsState.get().terminals.forEach((termData, id) => {
-    if (termData.project && (termData.project.path === project.path ||
+    if (termData.project && (sameProject(termData.project, project) ||
       (termData.parentProjectId && termData.parentProjectId === project.id))) {
       ids.push(id);
     }
@@ -3409,7 +3538,7 @@ function switchTerminal(direction) {
   allTerminals.forEach((termData, id) => {
     const isVisible = currentFilter === null ||
       (filterProject && termData.project && (
-        termData.project.path === filterProject.path ||
+        sameProject(termData.project, filterProject) ||
         termData.project.parentRepoProjectId === filterProject.id
       ));
     if (isVisible) {
@@ -3529,13 +3658,22 @@ FilesPanel.setCallbacks({
     };
 
     const terminals = terminalsState.get().terminals;
-    const activeId = terminalsState.get().activeTerminal;
-    if (activeId != null && attach(terminals.get(activeId))) return;
-
     const project = getCurrentProjectFromBar();
+    // The file belongs to the project the tree is showing, so a chat tab of a
+    // *different* project is never a valid target — including when it happens
+    // to be the active one, which is why the fast path shares this predicate
+    // rather than taking whatever has focus.
+    const belongsToProject = (data) => !project
+      || data?.project?.id === project.id
+      || data?.parentProjectId === project.id;
+
+    const activeId = terminalsState.get().activeTerminal;
+    const activeData = activeId != null ? terminals.get(activeId) : null;
+    if (belongsToProject(activeData) && attach(activeData)) return;
+
     for (const [id, data] of terminals) {
       if (data.mode !== 'chat' || !data.chatView?.addMentionChip) continue;
-      if (project && data.project?.id !== project.id && data.parentProjectId !== project.id) continue;
+      if (!belongsToProject(data)) continue;
       TerminalManager.setActiveTerminal(id);
       if (attach(data)) return;
     }
@@ -4102,6 +4240,13 @@ const _TAB_LIFECYCLE = {
     },
     deactivate: () => ErrorLogPanel.cleanup()
   },
+  cost: {
+    activate: () => {
+      const root = document.getElementById('cost-panel-root');
+      if (root) CostPanel.loadPanel(root);
+    },
+    deactivate: () => CostPanel.cleanup()
+  },
   connectivity: {
     activate: () => {
       const container = document.getElementById('tab-connectivity');
@@ -4205,7 +4350,7 @@ document.querySelectorAll('.nav-tab[data-tab]').forEach(tab => {
 // index.html because the screen cannot be populated (see the note there). Both
 // the customize modal and the More dropdown are built from this list, so
 // leaving it in would offer a tab that no longer exists in the DOM.
-const _ALL_TABS_ORDER = ['claude', 'dashboard', 'files', 'git', 'tickets', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
+const _ALL_TABS_ORDER = ['claude', 'dashboard', 'files', 'git', 'tickets', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'cost', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'];
 
 function applyPinnedTabs() {
   const pinned = settingsState.get().pinnedTabs || _ALL_TABS_ORDER;
@@ -4783,7 +4928,8 @@ function showContextMenuEmpty(x, y) {
   const menu = document.getElementById('context-menu');
   menu.innerHTML = `
     <div class="context-menu-item" data-action="new-folder">${t('contextMenu.newFolder')}</div>
-    <div class="context-menu-item" data-action="new-project">${t('contextMenu.newProject')}</div>`;
+    <div class="context-menu-item" data-action="new-project">${t('contextMenu.newProject')}</div>
+    <div class="context-menu-item" data-action="new-remote-project">${t('ssh.openRemoteProject')}</div>`;
   showContextMenuAt(menu, x, y, { type: 'empty', id: null });
 }
 
@@ -4848,6 +4994,7 @@ async function handleContextAction(action) {
       }
       break;
     case 'new-project': document.getElementById('btn-new-project').click(); break;
+    case 'new-remote-project': openRemoteProjectDialog(); break;
   }
 }
 
@@ -5004,7 +5151,7 @@ async function renderDashboardContent(projectIndex) {
   await DashboardService.renderDashboard(content, project, {
     terminalCount,
     fivemStatus,
-    onOpenFolder: (p) => api.dialog.openInExplorer(p),
+    onOpenFolder: (p) => { if (!refuseForRemote(p, 'openInExplorer')) api.dialog.openInExplorer(p); },
     onOpenClaude: (proj) => {
       createTerminalForProject(proj);
       document.querySelector('[data-tab="claude"]')?.click();
@@ -5660,6 +5807,39 @@ document.getElementById('btn-new-project').onclick = async () => {
 };
 
 document.getElementById('btn-new-folder').onclick = () => promptCreateFolder(null);
+
+// ========== OPEN REMOTE PROJECT (SSH) ==========
+// A project created there is opened straight away: the user just picked it,
+// and its host is already connected by the dialog.
+RemoteProjectModal.setDefaults({
+  onProjectCreated: (project) => {
+    ProjectList.render();
+    const index = getProjectIndex(project.id);
+    if (index !== -1 && index != null) selectProjectFromBar(index);
+  },
+});
+
+function openRemoteProjectDialog() {
+  RemoteProjectModal.openRemoteProjectModal();
+}
+
+const btnNewRemoteProject = document.getElementById('btn-new-remote-project');
+if (btnNewRemoteProject) btnNewRemoteProject.onclick = () => openRemoteProjectDialog();
+
+// Host badges in the sidebar list follow the connection state. ProjectBar
+// subscribes on its own.
+remoteHostsState.subscribe(() => ProjectList.render());
+
+// The startup git sweep leaves remote projects out, so a dead host never slows
+// startup (design/remote-ssh.md 5.4). Their status, branch included, is filled
+// in when their host reaches `connected`, each time it does.
+watchRemoteGitStatus();
+
+// A remote project's terminal tabs from the last run come back when the user
+// opens it, which is also when its host connects.
+onRemoteProjectOpened((project) => {
+  TerminalManager.restoreRemoteTabs(project).catch((e) => console.error('[SessionRestore] Remote tabs:', e));
+});
 
 // ========== FILTER GIT ACTIONS ==========
 const filterGitActions = document.getElementById('filter-git-actions');
@@ -6663,14 +6843,16 @@ api.remote.onOpenChatTab(({ cwd, prompt, images, model, effort, resumeSessionId 
   setInterval(pushTime, 30000);
 })();
 
+// Ctrl+Shift+T and the tray's "New Terminal" open a plain shell, not a Claude
+// session: Ctrl+T is already the in-app way to start Claude.
 api.tray.onOpenTerminal(() => {
   const selectedFilter = projectsState.get().selectedProjectFilter;
   const projects = projectsState.get().projects;
   if (selectedFilter !== null && projects[selectedFilter]) {
-    createTerminalForProject(projects[selectedFilter]);
+    createBasicTerminalForProject(projects[selectedFilter]);
   } else if (projects.length > 0) {
     // No project selected, use the first one
-    createTerminalForProject(projects[0]);
+    createBasicTerminalForProject(projects[0]);
   }
 });
 
@@ -6723,8 +6905,6 @@ const updateProgressText = document.getElementById('update-progress-text');
 const updateBtn = document.getElementById('update-btn');
 const updateDismiss = document.getElementById('update-dismiss');
 const updateChangelogToggle = document.getElementById('update-changelog-toggle');
-const updateChangelog = document.getElementById('update-changelog');
-const updateChangelogContent = document.getElementById('update-changelog-content');
 
 let updateState = {
   available: false,
@@ -6745,8 +6925,6 @@ function showUpdateBanner() {
 
 function hideUpdateBanner() {
   updateBanner.style.display = 'none';
-  updateChangelog.style.display = 'none';
-  updateChangelogToggle.classList.remove('expanded');
   document.querySelector('.main-container').style.height = 'calc(100vh - 36px)';
 }
 
@@ -6779,7 +6957,6 @@ api.updates.onStatus((data) => {
       updateProgressContainer.style.display = 'flex';
       updateBtn.style.display = 'none';
       updateChangelogToggle.style.display = 'none';
-      updateChangelog.style.display = 'none';
       updateBanner.classList.remove('downloaded');
       showUpdateBanner();
       break;
@@ -6800,17 +6977,7 @@ api.updates.onStatus((data) => {
       updateBtn.textContent = t('updates.restartToUpdate');  // Reset button text
       updateBanner.classList.add('downloaded');
       // Show changelog toggle if we have release notes
-      if (updateState.changelog) {
-        updateChangelogToggle.style.display = 'inline-flex';
-        try {
-          const { marked } = require('marked');
-          updateChangelogContent.innerHTML = marked(updateState.changelog);
-        } catch (e) {
-          updateChangelogContent.textContent = updateState.changelog;
-        }
-      } else {
-        updateChangelogToggle.style.display = 'none';
-      }
+      updateChangelogToggle.style.display = updateState.changelog ? 'inline-flex' : 'none';
       showUpdateBanner();
       break;
 
@@ -6833,19 +7000,28 @@ api.updates.onStatus((data) => {
   }
 });
 
-// Restart and install button
-updateBtn.addEventListener('click', () => {
+function installDownloadedUpdate() {
   // Disable button and show installing state
   updateBtn.disabled = true;
   updateBtn.textContent = t('updates.installing');
   api.app.installUpdate();
-});
+}
 
-// Changelog toggle button
+// Restart and install button
+updateBtn.addEventListener('click', installDownloadedUpdate);
+
+// The notes open in the What's new modal rather than under the banner: they
+// are written for GitHub (badges, a two-column table), and a strip spanning
+// the whole window, capped at 200 px, could not hold them.
 updateChangelogToggle.addEventListener('click', () => {
-  const isOpen = updateChangelog.style.display !== 'none';
-  updateChangelog.style.display = isOpen ? 'none' : 'block';
-  updateChangelogToggle.classList.toggle('expanded', !isOpen);
+  if (!updateState.changelog) return;
+  WhatsNew.showReleaseNotes({
+    version: updateState.version,
+    notes: updateState.changelog,
+    showModal,
+    closeModal,
+    onInstall: installDownloadedUpdate,
+  });
 });
 
 // Dismiss button
@@ -7027,6 +7203,13 @@ function renderUsageAccountLabel() {
     el.title = isDefault
       ? t('accounts.usageDefaultTitle', { name: account.name })
       : t('accounts.usageBoundTitle', { name: account.name });
+    // A remote (SSH) project runs as its host's own claude login: the chip
+    // still names the account, but offers no picker, and says why.
+    const bindingCap = project ? remoteCan(project, 'accountBinding') : { ok: true };
+    if (!bindingCap.ok) {
+      el.disabled = true;
+      el.title = t(bindingCap.reasonKey);
+    }
     const color = sanitizeColor(account.color);
     el.style.setProperty('--account-color', color || 'var(--text-secondary)');
   } catch (_) {
@@ -7165,6 +7348,33 @@ function updateAllResets() {
 }
 
 /**
+ * Why the figures are not current, and what the user can do about it.
+ *
+ * A credential store that gave back no usable token parks the account on an
+ * escalating backoff rather than being retried every minute, which is right,
+ * but it used to leave the chip silently frozen. Naming the retry time makes
+ * the difference between "waiting" and "broken" visible, and the click that
+ * skips the wait is the chip itself.
+ *
+ * @param {{ error?: string, retryAt?: string|null, gaveUp?: boolean }} info
+ * @returns {string}
+ */
+function _usageStaleTitle(info) {
+  const error = (info && info.error) || '';
+  // Given up is not the same as waiting: there is no next attempt to name, and
+  // the chip would otherwise read as "still trying" while nothing is.
+  if (info && info.gaveUp) return t('usage.staleGaveUp', { error });
+  const retryAt = info && info.retryAt ? new Date(info.retryAt) : null;
+  if (retryAt && !Number.isNaN(retryAt.getTime())) {
+    return t('usage.staleRetry', {
+      error,
+      time: retryAt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
+    });
+  }
+  return t('usage.stale', { error });
+}
+
+/**
  * Fetch and update usage.
  *
  * `force` re-reads the account's credential store instead of trusting the
@@ -7176,30 +7386,6 @@ function updateAllResets() {
  *
  * @param {boolean} [force]
  */
-/**
- * Why the figures are not current, and what the user can do about it.
- *
- * A credential store that gave back no usable token parks the account on an
- * escalating backoff rather than being retried every minute, which is right,
- * but it used to leave the chip silently frozen. Naming the retry time makes
- * the difference between "waiting" and "broken" visible, and the click that
- * skips the wait is the chip itself.
- *
- * @param {{ error?: string, retryAt?: string|null }} info
- * @returns {string}
- */
-function _usageStaleTitle(info) {
-  const error = (info && info.error) || '';
-  const retryAt = info && info.retryAt ? new Date(info.retryAt) : null;
-  if (retryAt && !Number.isNaN(retryAt.getTime())) {
-    return t('usage.staleRetry', {
-      error,
-      time: retryAt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
-    });
-  }
-  return t('usage.stale', { error });
-}
-
 async function refreshUsageDisplay(force = false) {
   if (!usageElements.container) return;
 

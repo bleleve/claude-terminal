@@ -78,6 +78,25 @@ function writeIndex(index) {
   const tmp = `${indexFile}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(index, null, 2));
   fs.renameSync(tmp, indexFile);
+  if (_liveListener) {
+    try {
+      _liveListener(index.liveId ?? null);
+    } catch (err) {
+      console.warn('[AccountManager] live-account listener failed:', err.message);
+    }
+  }
+}
+
+let _liveListener = null;
+
+/**
+ * Be told which account holds the machine-wide login after every index write.
+ * Called with the same id repeatedly; the listener dedupes. The cost screen
+ * uses it to attribute unbound work to whoever was live at the time.
+ * @param {(liveId: string|null) => void} cb
+ */
+function onLiveChange(cb) {
+  _liveListener = cb;
 }
 
 /**
@@ -86,6 +105,16 @@ function writeIndex(index) {
 async function readCurrentCredentials() {
   return readCredentials();
 }
+
+/**
+ * The store keys that belong to one Claude login, and so travel with it.
+ *
+ * This is the set the CLI's own `/logout` deletes, which is the CLI saying
+ * which keys are the account's. `designOauth` is the one that made the
+ * difference: `/design-login` grants Claude Design access to one account, and
+ * leaving it in the store across a swap handed that grant to the next account.
+ */
+const ACCOUNT_KEYS = ['claudeAiOauth', 'organizationUuid', 'trustedDeviceToken', 'enterpriseGateway', 'designOauth'];
 
 /**
  * Reduce live credentials to the part that identifies a Claude account.
@@ -98,28 +127,43 @@ async function readCurrentCredentials() {
  * than a snapshot that cannot restore the login.
  */
 function accountCredentials(creds) {
-  return creds?.claudeAiOauth ? { claudeAiOauth: creds.claudeAiOauth } : creds;
+  if (!creds?.claudeAiOauth) return creds;
+  const stored = {};
+  for (const key of ACCOUNT_KEYS) {
+    if (creds[key] !== undefined) stored[key] = creds[key];
+  }
+  return stored;
 }
 
 /**
- * Overlay a snapshot's Claude login onto the live store, keeping every other
+ * Overlay a snapshot's account keys onto the live store, keeping every other
  * key the CLI put there. Swapping the store wholesale would roll `mcpOAuth`
  * back to whenever the account was captured, silently signing the user out of
  * their MCP servers.
+ *
+ * The outgoing account's keys are dropped first, so one the incoming snapshot
+ * does not carry is absent rather than inherited.
  */
 async function mergeWithLiveStore(creds) {
   if (!creds?.claudeAiOauth) return creds;
   const live = await readCurrentCredentials();
   if (!live || typeof live !== 'object') return creds;
-  return { ...live, claudeAiOauth: creds.claudeAiOauth };
+  const merged = { ...live };
+  for (const key of ACCOUNT_KEYS) delete merged[key];
+  return { ...merged, ...accountCredentials(creds) };
 }
 
 /**
  * Write credentials back to every store the CLI might read on this platform,
  * so the swap takes effect whichever one it picks.
+ *
+ * Compact, as the CLI writes it. On macOS, `security -w` prints a payload
+ * holding a newline as hex, and its hex doubles the size, so indented JSON
+ * pushed the write past the `security -i` line limit and onto argv, where
+ * `ps` shows it to every local user while it runs.
  */
 async function writeCurrentCredentials(creds) {
-  await writeCredentials(JSON.stringify(await mergeWithLiveStore(creds), null, 2));
+  await writeCredentials(JSON.stringify(await mergeWithLiveStore(creds)));
 }
 
 function fingerprintCredentials(creds) {
@@ -610,5 +654,6 @@ module.exports = {
   ensureAccountStore,
   credentialsForAccount,
   ownsLiveStore,
-  accountEnv
+  accountEnv,
+  onLiveChange
 };

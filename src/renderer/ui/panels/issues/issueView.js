@@ -260,17 +260,17 @@ function groupIssues(issues, groupBy, metadata) {
 // ── Board ────────────────────────────────────────────────────────────────────
 
 /**
- * The board's columns. One team on screen (the team facet narrowed to one, or
- * every listed ticket in the same team): that team's real states, in its
- * workflow order. Several teams: the five shared categories, since each team
- * has its own states and only the categories line up.
+ * The board's columns. One team on screen (the container facet narrowed to
+ * one, or every listed ticket in the same team): that team's real states, in
+ * its workflow order. Several teams, or states shared by the whole workspace:
+ * the categories, since only they line up, and only those the tracker uses.
  *
  * @returns {{ mode: 'states'|'categories', containerId: string|null,
  *   columns: Array<{ key: string, label: string, category: string, color?: string|null, stateId?: string, issues: object[] }> }}
  */
 function boardColumns(issues, metadata, viewState) {
   const states = metadata?.states || [];
-  const picked = viewState?.facets?.team;
+  const picked = viewState?.facets?.[containerFacet(metadata)?.id];
   let containerId = Array.isArray(picked) && picked.length === 1 ? picked[0] : null;
   if (!containerId) {
     const ids = new Set(issues.map((i) => i.container?.id).filter(Boolean));
@@ -287,21 +287,27 @@ function boardColumns(issues, metadata, viewState) {
     return { mode: 'states', containerId, columns };
   }
 
-  const columns = STATE_CATEGORIES.map((category) => ({ key: `cat:${category}`, label: categoryLabel(category), category, issues: [] }));
+  // Only the categories this tracker has a state in: a ticket could never be
+  // dropped on the others (a GitHub-like tracker has open and closed, no more).
+  const used = new Set(states.map((st) => st.category));
+  const columns = STATE_CATEGORIES
+    .filter((category) => !used.size || used.has(category))
+    .map((category) => ({ key: `cat:${category}`, label: categoryLabel(category), category, issues: [] }));
   for (const issue of issues) columns.find((c) => c.category === issue.state.category)?.issues.push(issue);
   return { mode: 'categories', containerId: null, columns };
 }
 
 /**
  * The state a ticket takes when dropped on a column: the column's own state,
- * or in category mode the first state of the ticket's team in that category.
+ * or in category mode the first state of the ticket's team in that category
+ * (any state in it, when the tracker's states belong to no team).
  * Null when the drop changes nothing or the team has no such state.
  */
 function dropTargetState(issue, column, metadata) {
   if (column.stateId) return column.stateId === issue.state.id ? null : column.stateId;
   if (issue.state.category === column.category) return null;
   const candidates = (metadata?.states || [])
-    .filter((st) => st.category === column.category && (!issue.container || st.containerId === issue.container.id))
+    .filter((st) => st.category === column.category && (!issue.container || !st.containerId || st.containerId === issue.container.id))
     .sort((a, b) => a.position - b.position);
   return candidates[0]?.id || null;
 }
@@ -578,7 +584,11 @@ function editable(field, html, editableFields) {
 }
 
 function detailHtml(issue, { renderMarkdown, providerName, metadata, editableFields = null, canStart = false }) {
+  // A tracker whose container is also a facet (a GitHub repository) already
+  // names it on the container row.
+  const shownAsContainer = issue.container ? containerFacet(metadata)?.id : null;
   const facets = Object.entries(issue.facets)
+    .filter(([id]) => id !== shownAsContainer)
     .map(([id, value]) => propHtml(facetLabel((metadata?.facets || []).find((f) => f.id === id) || { id, label: id }), escapeHtml(value)))
     .join('');
   const children = issue.children.length

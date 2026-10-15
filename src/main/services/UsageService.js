@@ -6,7 +6,7 @@
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
-const { readCredentials, tokenFromCredentials } = require('../utils/claudeCredentials');
+const { readCredentials, tokenFromCredentials, auditKeychainReads } = require('../utils/claudeCredentials');
 
 // Per-account state.
 //
@@ -61,6 +61,8 @@ function entryFor(accountId) {
       // How long the next refused or unreadable store read waits before being
       // tried again. Zero means the next failure starts the ladder over.
       tokenBackoff: 0,
+      tokenFailures: 0,
+      tokenGaveUp: false,
       // The store answered, but with an access token past its expiry. Not a
       // refusal: see TOKEN_EXPIRED_RECHECK.
       tokenExpired: false,
@@ -114,6 +116,21 @@ const TOKEN_CACHE_MAX = 6 * 60 * 60 * 1000;   // cap for a long-lived token
 const TOKEN_BACKOFF_MIN = 5 * 60 * 1000;
 const TOKEN_BACKOFF_MAX = 60 * 60 * 1000;
 /**
+ * Consecutive failed store reads after which automatic retrying stops for good.
+ *
+ * The ladder alone caps the *interval*, not the total. A store that is refused
+ * permanently — Keychain access denied and never granted — would be reopened
+ * once an hour for as long as the app is open, and on darwin each of those is
+ * a password dialog raised behind the window: ~24 a day, which is the timer
+ * -driven prompt the old `Infinity` was there to prevent.
+ *
+ * Eight failures is 5+10+20+40+60+60+60 minutes of trying, about four and a
+ * half hours. Past that the cause is not transient and only the user can
+ * resolve it, so the chip stops asking and waits for the explicit refresh —
+ * which still clears everything, so this is a pause, not a dead end.
+ */
+const TOKEN_BACKOFF_GIVE_UP = 8;
+/**
  * How long a store that answered with an expired access token waits before it
  * is read again.
  *
@@ -121,13 +138,13 @@ const TOKEN_BACKOFF_MAX = 60 * 60 * 1000;
  * because nothing has used the account since, and the CLI renews it the next
  * time it runs there. It is the normal state of an account the user stopped
  * using, and the usual reason they stopped is that it hit its limit. Running it
- * up the refusal ladder parked that account for up to an hour at a time, so the
- * last figure ever fetched, a full bar, stayed on screen for up to an hour after
- * the user went back to it.
+ * up the refusal ladder parked that account for up to an hour at a time, then
+ * gave up on it for good after a night of disuse, so the last figure ever
+ * fetched, a full bar, stayed on screen after the user went back to it.
  *
- * A flat recheck instead, never escalated. Five minutes is the ladder's own
- * first step, so this reads the store no more often than a single refusal
- * already did.
+ * A flat recheck instead, never escalated and never given up on. Five minutes
+ * is the ladder's own first step, so this reads the store no more often than
+ * a single refusal already did.
  */
 const TOKEN_EXPIRED_RECHECK = TOKEN_BACKOFF_MIN;
 const TOKEN_EXPIRY_MARGIN = 60 * 1000;        // re-read shortly before expiry
@@ -173,6 +190,28 @@ function readCredentialsFor(accountId) {
 }
 
 /**
+ * Park an account after a store read that produced no usable token, and say
+ * when it will be tried again.
+ *
+ * @param {Object} entry
+ * @param {number} now
+ */
+function backOffToken(entry, now) {
+  entry.tokenCache = null;
+  entry.tokenFailures = (entry.tokenFailures || 0) + 1;
+  entry.tokenBackoff = entry.tokenBackoff
+    ? Math.min(entry.tokenBackoff * 2, TOKEN_BACKOFF_MAX)
+    : TOKEN_BACKOFF_MIN;
+  if (entry.tokenFailures >= TOKEN_BACKOFF_GIVE_UP) {
+    // Stop reopening the store on a timer. Only `force` clears this.
+    entry.tokenGaveUp = true;
+    entry.tokenCacheUntil = Infinity;
+    return;
+  }
+  entry.tokenCacheUntil = now + entry.tokenBackoff;
+}
+
+/**
  * Read the OAuth access token for an account.
  *
  * A bound account is read from its own credential directory — the same one its
@@ -189,21 +228,6 @@ function readCredentialsFor(accountId) {
  *   password prompt, which is the whole reason the cache above is that long.
  * @returns {Promise<string|null>}
  */
-/**
- * Park an account after a store read that produced no usable token, and say
- * when it will be tried again.
- *
- * @param {Object} entry
- * @param {number} now
- */
-function backOffToken(entry, now) {
-  entry.tokenCache = null;
-  entry.tokenBackoff = entry.tokenBackoff
-    ? Math.min(entry.tokenBackoff * 2, TOKEN_BACKOFF_MAX)
-    : TOKEN_BACKOFF_MIN;
-  entry.tokenCacheUntil = now + entry.tokenBackoff;
-}
-
 async function readOAuthToken(accountId, force = false) {
   const entry = entryFor(accountId);
   const now = Date.now();
@@ -220,6 +244,8 @@ async function readOAuthToken(accountId, force = false) {
   if (force) {
     entry.rejectedToken = null;
     entry.tokenBackoff = 0;
+    entry.tokenFailures = 0;
+    entry.tokenGaveUp = false;
     entry.tokenExpired = false;
   }
 
@@ -251,10 +277,18 @@ function startTokenRead(entry) {
     let expiresAt = null;
     let expired = false;
     try {
-      const creds = await readCredentialsFor(entry.accountId);
+      const { value: creds, keychainFailed } = await auditKeychainReads(() => readCredentialsFor(entry.accountId));
       token = tokenFromCredentials(creds);
       expiresAt = creds?.claudeAiOauth?.expiresAt ?? null;
-      expired = !token && !!creds?.claudeAiOauth?.accessToken;
+      // Only a store that actually answered can say its token ran out. On
+      // darwin a refused Keychain read is swallowed by the readers, which fall
+      // back to ~/.claude/.credentials.json or to an account's seed file, and
+      // AccountManager rewrites that seed from a snapshot whose token is often
+      // long expired. Taken at its word, that fallback looked like an idle
+      // account: the ladder was reset, the give-up undone, and the Keychain
+      // reopened every five minutes for good, one password dialog each time.
+      // Behind a refusal it is a refusal, and climbs the ladder like one.
+      expired = !keychainFailed && !token && !!creds?.claudeAiOauth?.accessToken;
     } catch (e) {
       // Store unreadable: Keychain access refused, or the file is malformed.
       // Treated as no token, and backed off, rather than retried on every tick.
@@ -282,6 +316,8 @@ function startTokenRead(entry) {
       // The store answered, so the refusal ladder starts over, and the token
       // is looked at again shortly in case the CLI has renewed it.
       entry.tokenBackoff = 0;
+      entry.tokenFailures = 0;
+      entry.tokenGaveUp = false;
       entry.tokenCacheUntil = now + TOKEN_EXPIRED_RECHECK;
       return null;
     }
@@ -293,6 +329,8 @@ function startTokenRead(entry) {
     // A store that answered with a usable token clears the ladder, so the next
     // failure starts at five minutes rather than wherever the last one ended.
     entry.tokenBackoff = 0;
+    entry.tokenFailures = 0;
+    entry.tokenGaveUp = false;
     const expiry = Number(expiresAt);
     const refreshAt = Number.isFinite(expiry) && expiry > now
       ? (expiry > now + TOKEN_EXPIRY_MARGIN ? expiry - TOKEN_EXPIRY_MARGIN : expiry)
@@ -343,12 +381,17 @@ function invalidateCredentials(accountId) {
     entry.tokenCache = null;
     entry.tokenCacheUntil = 0;
     entry.tokenBackoff = 0;
+    entry.tokenFailures = 0;
+    entry.tokenGaveUp = false;
     entry.tokenExpired = false;
     entry.rejectedToken = null;
     entry.readGeneration += 1;
     entry.tokenRead = null;
     entry.usageData = null;
     entry.lastFetch = null;
+    // The stream's clock goes with the figures it vouched for, or the incoming
+    // account's would pass for confirmed by the outgoing one's chat.
+    entry.streamedAt = 0;
     entry.isStale = false;
     entry.lastError = null;
     entry.lastLimitNotifiedReset = null;
@@ -548,12 +591,19 @@ async function fetchUsage(accountId, force = false) {
       try {
         const data = await fetchUsageFromAPI(token);
         entry.usageData = data;
-        entry.lastFetch = new Date();
+        entry.lastFetch = new Date(Date.now());
         entry.lastError = null;
         entry.isStale = false;
         console.log('[Usage] Fetched via API');
-        mirrorToDisk();
+        mirrorToDisk(entry);
         if (_onUpdateCallback) _onUpdateCallback(data, entry.accountId);
+        for (const cb of _sampleListeners) {
+          try {
+            cb(data, entry.accountId);
+          } catch (err) {
+            console.warn('[Usage] sample listener failed:', err.message);
+          }
+        }
         _maybeNotifyLimit(entry, data);
         return data;
       } catch (apiErr) {
@@ -584,13 +634,13 @@ async function fetchUsage(accountId, force = false) {
     }
 
     // PTY fallback removed — launching `claude --dangerously-skip-permissions` just
-    // to read usage data is a security risk. Serve cached data, flagged as stale,
-    // unless a chat session confirmed them since: an endpoint that would not
-    // answer says nothing about figures the API stated a minute ago.
-    entry.isStale = !(entry.streamedAt && Date.now() - entry.streamedAt < DATA_STALE_AFTER);
+    // to read usage data is a security risk. Serve cached data, flagged as stale.
+    // A chat session that confirmed them since is accounted for when the flag
+    // is read, in isEntryStale(), so this stays a plain record of the fetch.
+    entry.isStale = true;
     // Mirrored on the way out too: a consumer reading the file needs to see
     // that these figures stopped being confirmed, not just the last good ones.
-    mirrorToDisk();
+    mirrorToDisk(entry);
     if (entry.usageData) {
       console.warn('[Usage] API unavailable, serving STALE cached data:', entry.lastError);
       return asOfNow(entry.usageData);
@@ -630,6 +680,17 @@ function isoFromSeconds(seconds) {
 }
 
 /**
+ * The stored reset of one of an account's buckets, when it is still ahead.
+ * @param {Object} entry
+ * @param {string} bucketId
+ * @returns {string|null}
+ */
+function upcomingReset(entry, bucketId) {
+  const stored = entry.usageData?.buckets?.find(b => b.id === bucketId)?.resetsAt;
+  return stored && Date.parse(stored) > Date.now() ? stored : null;
+}
+
+/**
  * Fold the figures of a `rate_limit_event` into an account's usage.
  *
  * Only the session and weekly windows: a scoped limit comes under a name the
@@ -651,6 +712,7 @@ function applyRateLimitInfo(accountId, info) {
       resetsAt: isoFromSeconds(window.resetsAt)
     });
   }
+  const entry = entryFor(accountId);
   // A refusal names the window that ran out, which is full whatever the last
   // header put it at.
   const refused = info?.status === 'rejected' ? STREAM_WINDOWS[info.rateLimitType]?.id : null;
@@ -658,12 +720,15 @@ function applyRateLimitInfo(accountId, info) {
     const seen = observed.get(refused);
     observed.set(refused, {
       utilization: Math.max(seen?.utilization ?? 0, 100),
-      resetsAt: isoFromSeconds(info.resetsAt) ?? seen?.resetsAt ?? null
+      // An event that names neither reset must not erase the one already on
+      // hand: a full bar with no reset time reads as a limit that never lifts.
+      // Only a reset still ahead, though. One already past belongs to the
+      // window before this one, and asOfNow() would serve this refusal as 0%.
+      resetsAt: isoFromSeconds(info.resetsAt) ?? seen?.resetsAt ?? upcomingReset(entry, refused)
     });
   }
   if (!observed.size) return false;
 
-  const entry = entryFor(accountId);
   const buckets = (entry.usageData?.buckets || [])
     .map(b => (observed.has(b.id) ? { ...b, ...observed.get(b.id) } : b));
   // Before any fetch has landed there is nothing to update in place.
@@ -673,20 +738,25 @@ function applyRateLimitInfo(accountId, info) {
   buckets.unshift(...missing);
 
   const now = new Date();
-  const data = {
+  entry.usageData = {
     extraUsage: null,
     ...entry.usageData,
     timestamp: now.toISOString(),
     buckets,
     _source: 'stream'
   };
-  entry.usageData = data;
-  entry.lastFetch = now;
+  // `lastFetch` is left alone on purpose. It is what decides when the endpoint
+  // is asked again (usageForAccount, onWindowShow), and the stream confirms the
+  // session and weekly windows only: moving it would keep a scoped limit or the
+  // extra-usage balance from being refetched for as long as a chat is running.
+  // The stream keeps its own clock, which only the stale badge reads.
   entry.streamedAt = now.getTime();
-  entry.isStale = false;
-  mirrorToDisk();
-  if (_onUpdateCallback) _onUpdateCallback(data, entry.accountId);
-  _maybeNotifyLimit(entry, data);
+  mirrorToDisk(entry);
+  // Served as of now, like every other read path: the buckets the stream did
+  // not touch can be from a window that has reset since the last fetch.
+  const served = asOfNow(entry.usageData);
+  if (_onUpdateCallback) _onUpdateCallback(served, entry.accountId);
+  _maybeNotifyLimit(entry, served);
   return true;
 }
 
@@ -747,6 +817,22 @@ function stopPeriodicFetch() {
  * the API last confirmed, which may be arbitrarily old.
  * @returns {Object}
  */
+/**
+ * When the token backoff has this account parked, the moment it is next
+ * allowed to reopen the credential store. Null when nothing is waiting.
+ *
+ * Shared by getUsageData and getFetchState rather than inlined in one of them:
+ * the chip reads the first on its 30s poll and the second on an explicit
+ * refresh, and only one of the two used to carry this — so the tooltip that
+ * names the next attempt never appeared on the path the user actually takes
+ * when they notice the chip has stopped.
+ */
+function retryAtFor(entry) {
+  if (entry.tokenGaveUp) return null;
+  const parked = !entry.tokenCache && entry.tokenBackoff > 0 && entry.tokenCacheUntil > Date.now();
+  return parked ? new Date(entry.tokenCacheUntil).toISOString() : null;
+}
+
 function getUsageData(accountId) {
   const entry = entryFor(accountId);
   return {
@@ -759,9 +845,8 @@ function getUsageData(accountId) {
     // When the store gave back no usable token we are parked until this
     // moment. Surfaced so "the chip stopped moving" can be read as "waiting
     // until 14:05, click to try now" rather than as an app that has broken.
-    retryAt: (!entry.tokenCache && entry.tokenBackoff > 0 && entry.tokenCacheUntil > Date.now())
-      ? new Date(entry.tokenCacheUntil).toISOString()
-      : null
+    retryAt: retryAtFor(entry),
+    gaveUp: !!entry.tokenGaveUp
   };
 }
 
@@ -777,22 +862,31 @@ function getUsageData(accountId) {
  * @returns {boolean}
  */
 function isEntryStale(entry) {
+  const now = Date.now();
+  // A chat session that reported the session and weekly windows recently
+  // vouches for them whatever the endpoint did since: one answering 429 says
+  // nothing about figures the API stated on a response a minute ago. Those are
+  // the bars the chip is read for, and its badge is one for the whole chip.
+  if (entry.streamedAt && now - entry.streamedAt <= DATA_STALE_AFTER) return false;
   if (entry.isStale) return true;
   // Never fetched is empty, not stale: there is nothing on screen to mistrust.
-  if (!entry.lastFetch) return false;
-  return Date.now() - entry.lastFetch.getTime() > DATA_STALE_AFTER;
+  // Figures that only ever came from the stream age out on its clock instead.
+  if (!entry.lastFetch) return !!entry.streamedAt;
+  return now - entry.lastFetch.getTime() > DATA_STALE_AFTER;
 }
 
 /**
  * Staleness of the most recent fetch attempt.
- * @returns {{ stale: boolean, error: string|null, lastFetch: string|null }}
+ * @returns {{ stale: boolean, error: string|null, lastFetch: string|null, retryAt: string|null }}
  */
 function getFetchState(accountId) {
   const entry = entryFor(accountId);
   return {
     stale: isEntryStale(entry),
     error: entry.lastError,
-    lastFetch: entry.lastFetch ? entry.lastFetch.toISOString() : null
+    lastFetch: entry.lastFetch ? entry.lastFetch.toISOString() : null,
+    retryAt: retryAtFor(entry),
+    gaveUp: !!entry.tokenGaveUp
   };
 }
 
@@ -852,6 +946,17 @@ function onWindowShow() {
   if (isDataOld && !entry.isFetching) {
     fetchUsage(entry.accountId).catch(e => console.error('[Usage]', e.message));
   }
+}
+
+const _sampleListeners = [];
+
+/**
+ * Be handed every successful fetch, for every account. Unlike onUpdate, which
+ * has a single owner (the renderer push), any number of listeners may register.
+ * @param {(data: Object, accountId: string|null) => void} cb
+ */
+function onSample(cb) {
+  _sampleListeners.push(cb);
 }
 
 /**
@@ -926,14 +1031,22 @@ function mirrorFile() {
  * Never throws. A read-only data directory is not a reason to fail a fetch
  * that otherwise worked.
  */
-function mirrorToDisk() {
+function mirrorToDisk(entry) {
   try {
-    const entry = entryFor(getFocusedAccount());
+    // Only the focused account is published, and `fetchUsage` runs for any
+    // account, so a fetch for another one must leave the file alone. It used
+    // to re-read the focused entry instead, which on a fetch for a background
+    // account republished an entry nobody had fetched — rendered by the MCP
+    // tool as a confident "No limits reported for this account."
+    if (!entry || entry.accountId !== entryFor(getFocusedAccount()).accountId) return;
     const data = asOfNow(entry.usageData);
     const payload = {
       accountId: entry.accountId,
       timestamp: entry.usageData?.timestamp || null,
       lastFetch: entry.lastFetch ? entry.lastFetch.toISOString() : null,
+      // Apart from lastFetch, for the same reason as on the entry: the stream
+      // confirms two windows, the fetch all of them.
+      streamedAt: entry.streamedAt ? new Date(entry.streamedAt).toISOString() : null,
       stale: isEntryStale(entry),
       error: entry.lastError || null,
       buckets: data?.buckets || [],
@@ -1056,5 +1169,6 @@ module.exports = {
   getFocusedAccount,
   onWindowShow,
   onUpdate,
+  onSample,
   onLimit
 };

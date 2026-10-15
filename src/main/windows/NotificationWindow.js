@@ -3,7 +3,7 @@
  * Manages frameless BrowserWindow notifications with stacking
  */
 
-const { BrowserWindow, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Notification } = require('electron');
 const path = require('path');
 const { getMainWindow } = require('./MainWindow');
 
@@ -16,9 +16,17 @@ const GAP = 8;
 const MARGIN = 16;
 const MAX_NOTIFICATIONS = 5;
 
+// Bounds for the height notification.html measures for itself. The floor is a
+// title with no body and no buttons; the ceiling stops a malformed payload from
+// opening a window the size of the screen.
+const MIN_HEIGHT = 64;
+const MAX_HEIGHT = 260;
+
 /**
- * Calculate notification window height based on button count.
- * More buttons = taller window (they wrap to a second row).
+ * Initial notification window height, from the button count alone.
+ * This is only an estimate: how many lines the body wraps to is not knowable
+ * here, so the window is resized to what notification.html measures once it has
+ * laid the card out ('notification-resize' below).
  */
 function calcHeight(buttons) {
   if (!buttons || buttons.length <= 2) return BASE_HEIGHT;
@@ -26,9 +34,66 @@ function calcHeight(buttons) {
 }
 
 /**
+ * True when the app runs as a native Wayland client. There a toplevel window
+ * cannot place itself (setBounds is ignored) and mutter activates every new
+ * window of a client that already has focus, `focusable: false` and
+ * showInactive() notwithstanding - so the custom toast would steal the keyboard
+ * from whatever the user is typing into, and focus cannot be taken back without
+ * an activation token. The desktop's own notification banner never takes focus.
+ */
+function isNativeWayland() {
+  if (process.platform !== 'linux') return false;
+  const ozone = app.commandLine.getSwitchValue('ozone-platform');
+  if (ozone === 'x11') return false;
+  if (ozone === 'wayland') return true;
+  return process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY;
+}
+
+/**
+ * Wayland path: a system notification. Loses the inline buttons (Electron only
+ * supports notification actions on macOS), so a click does what 'show' does and
+ * anything else - answers, allow/deny - is done from the app.
+ *
+ * Each notification is held in `liveSystemNotifications` until it is clicked
+ * or closed. Nothing else references it once this returns, and a Notification
+ * that gets garbage-collected takes its 'click' listener with it: the banner
+ * stays on screen but clicking it does nothing.
+ */
+const liveSystemNotifications = new Set();
+
+function showSystemNotification({ title, body, terminalId }) {
+  const notifId = ++notifIdCounter;
+  if (!Notification.isSupported()) return notifId;
+  const n = new Notification({ title: title || 'Claude Terminal', body: body || '', silent: false });
+  const release = () => liveSystemNotifications.delete(n);
+  n.on('click', () => { release(); focusMainAndOpen(terminalId); });
+  n.on('close', release);
+  n.on('failed', release);
+  liveSystemNotifications.add(n);
+  n.show();
+  return notifId;
+}
+
+function focusMainAndOpen(terminalId) {
+  const mainWindow = getMainWindow();
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.setAlwaysOnTop(true);
+  mainWindow.focus();
+  mainWindow.setAlwaysOnTop(false);
+  setTimeout(() => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('notification-clicked', { terminalId, answerText: null });
+    }
+  }, 300);
+}
+
+/**
  * Show a notification window
  */
 function showNotification({ title, body, terminalId, autoDismiss = 8000, labels, buttons, meta }) {
+  if (isNativeWayland()) return showSystemNotification({ title, body, terminalId });
   const notifId = ++notifIdCounter;
 
   // Normalize buttons: support legacy labels.show format and missing buttons
@@ -155,19 +220,7 @@ function registerNotificationHandlers() {
       }
     } else if (action === 'show') {
       // Bring main window to focus and switch to the right terminal
-      const mainWindow = getMainWindow();
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        mainWindow.show();
-        mainWindow.setAlwaysOnTop(true);
-        mainWindow.focus();
-        mainWindow.setAlwaysOnTop(false);
-        setTimeout(() => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('notification-clicked', { terminalId, answerText: null });
-          }
-        }, 300);
-      }
+      focusMainAndOpen(terminalId);
     } else if (action === 'allow' || action === 'deny') {
       // Resolve a pending PermissionRequest hook (blocking wait in hook handler)
       try {
@@ -182,6 +235,19 @@ function registerNotificationHandlers() {
   // Dismiss handler — called by notification.html after exit animation completes
   ipcMain.on('notification-dismiss', (event, { notifId }) => {
     dismissNotification(notifId);
+  });
+
+  // The card measures itself once laid out and reports the height it actually
+  // needs. repositionAll() applies it, so a notification that grew also pushes
+  // the ones stacked above it rather than overlapping them.
+  ipcMain.on('notification-resize', (event, { notifId, height }) => {
+    const notif = activeNotifications.get(notifId);
+    if (!notif || notif.window.isDestroyed()) return;
+    if (!Number.isFinite(height)) return;
+    const clamped = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.round(height)));
+    if (clamped === notif.height) return;
+    notif.height = clamped;
+    repositionAll();
   });
 }
 

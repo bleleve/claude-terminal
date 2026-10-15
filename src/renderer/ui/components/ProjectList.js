@@ -60,6 +60,37 @@ const { getWorkspacesForProject } = require('../../state/workspace.state');
 const { isSidebarNavigation } = require('../navigationMode');
 const ModelCatalog = require('../../services/ModelCatalogClient');
 const { matchModel } = require('../../../shared/model-options');
+const { can, canOpenInEditor } = require('../../../shared/remote-capabilities');
+const { buildHostBadgeHtml, projectLocation, onHostBadgeClick } = require('./RemoteHostBadge');
+const { getProjectHost, connectProjectHost, connectHost, disconnectHost } = require('../../state/remoteHosts.state');
+
+/**
+ * Extra class for a menu item a remote project cannot use, '' otherwise, so a
+ * local project's markup is unchanged. The item stays focusable and keeps its
+ * tooltip (a real `disabled` would drop both); the click handler refuses it.
+ */
+function remoteDisabledClass(project, feature) {
+  return projectCap(project, feature).ok ? '' : ' is-disabled';
+}
+
+/**
+ * The capability answer for a menu item. "Open in editor" depends on which
+ * editor: a remote project opens in the VS Code family over Remote-SSH.
+ */
+function projectCap(project, feature) {
+  if (feature === 'openInEditor') {
+    const editor = getProjectEditor(project.id) || getSetting('editor') || 'code';
+    return canOpenInEditor(project, getEditorCommand(editor));
+  }
+  return can(project, feature);
+}
+
+/** The matching attributes: aria-disabled, the reason as tooltip and data. */
+function remoteDisabledAttrs(project, feature) {
+  const cap = projectCap(project, feature);
+  if (cap.ok) return '';
+  return ` aria-disabled="true" data-reason-key="${escapeHtml(cap.reasonKey)}" title="${escapeHtml(t(cap.reasonKey))}"`;
+}
 
 /**
  * Get drop position based on mouse Y relative to element
@@ -91,6 +122,22 @@ function clearDropIndicators(list) {
   list.querySelectorAll('.drag-over, .drop-before, .drop-after, .drop-into, .drop-invalid-hover').forEach(el => {
     el.classList.remove('drag-over', 'drop-before', 'drop-after', 'drop-into', 'drop-invalid-hover');
   });
+}
+
+/**
+ * Does this project live inside the given folder's subtree?
+ *
+ * A reorder drop lands the dragged item beside the target, i.e. inside the
+ * target's parent - so dropping a folder next to one of its own projects is
+ * the same circular nesting the folder rows already refuse.
+ * @param {string} projectId
+ * @param {string} folderId
+ * @returns {boolean}
+ */
+function isProjectInsideFolder(projectId, folderId) {
+  const project = getProject(projectId);
+  if (!project || !project.folderId) return false;
+  return project.folderId === folderId || isDescendantOf(project.folderId, folderId);
 }
 
 class ProjectList extends BaseComponent {
@@ -349,11 +396,12 @@ class ProjectList extends BaseComponent {
       children.forEach(childId => {
         const childFolder = getFolder(childId);
         if (childFolder) {
-          const subHtml = this._renderFolderHtml(childFolder, depth + 1, searchQuery);
-          if (subHtml) {
-            childrenHtml += subHtml;
-            renderedIds.add(childId);
-          }
+          renderedIds.add(childId);
+          // `parentId` is the truth, `children` only the display order. A
+          // stale entry here would draw the subtree a second time, under a
+          // folder it no longer belongs to.
+          if (childFolder.parentId !== folder.id) return;
+          childrenHtml += this._renderFolderHtml(childFolder, depth + 1, searchQuery);
         } else {
           const childProject = getProject(childId);
           if (childProject && childProject.folderId === folder.id) {
@@ -363,6 +411,15 @@ class ProjectList extends BaseComponent {
             else { childrenHtml += this._renderProjectHtml(childProject, depth + 1); renderedIds.add(childId); }
           }
         }
+      });
+
+      // Render any subfolder not in the children array (legacy data, or a
+      // parent whose children array was written by another process). Without
+      // this the folder and everything under it is invisible while the badge
+      // still counts its projects.
+      childFolders.forEach(childFolder => {
+        if (renderedIds.has(childFolder.id)) return;
+        childrenHtml += this._renderFolderHtml(childFolder, depth + 1, searchQuery);
       });
 
       // Render any projects not in children array (legacy data)
@@ -451,7 +508,7 @@ class ProjectList extends BaseComponent {
 
   _buildMenuItemsHtml(project) {
     const projectIndex = getProjectIndex(project.id);
-    const typeHandler = registry.get(project.type);
+    const typeHandler = registry.forProject(project);
     const fivemStatus = this._fivemServers.get(projectIndex)?.status || 'stopped';
     const gitOps = this._gitOperations.get(project.id) || { pulling: false, pushing: false };
     const isGitRepo = this._gitRepoStatus.get(project.id)?.isGitRepo || false;
@@ -475,12 +532,40 @@ class ProjectList extends BaseComponent {
         ${t('projects.locatePath')}
       </button>`;
     }
+    // Remote (SSH) project: where it lives and what to do about the connection.
+    const remoteHost = getProjectHost(project);
+    if (remoteHost) {
+      const item = (cls, label) => `
+      <button class="more-actions-item ${cls}" data-project-id="${escapeHtml(project.id)}">
+        ${menuIcons.terminal}
+        ${escapeHtml(label)}
+      </button>`;
+      menuItemsHtml += `
+      <div class="more-actions-section-label">${escapeHtml(t('ssh.menu.section', { host: remoteHost.hostLabel || t('ssh.unknownHost') }))}</div>`;
+      if (remoteHost.state === 'unconfigured') {
+        menuItemsHtml += item('accent btn-remote-configure', t('ssh.menu.configure'));
+      } else {
+        if (remoteHost.state === 'hostKeyUnknown') menuItemsHtml += item('accent btn-remote-verify', t('ssh.verify.button'));
+        menuItemsHtml += remoteHost.state === 'connected' || remoteHost.state === 'connecting' || remoteHost.state === 'reconnecting'
+          ? item('btn-remote-disconnect', t('ssh.disconnect'))
+          : item('btn-remote-connect', t('ssh.connect'));
+        menuItemsHtml += item('btn-remote-edit', t('ssh.menu.editHost'));
+      }
+    }
     // Which Claude account this project runs as. Listed with the project's own
     // settings rather than under an action group: it is a property of the
     // project, not something you do to it.
     try {
       const { getAccounts, getAccountForProject } = require('../../state/accounts.state');
-      if (getAccounts().length > 1) {
+      const accountCap = can(project, 'accountBinding');
+      if (getAccounts().length > 1 && !accountCap.ok) {
+        // A remote project runs as the remote host's own claude login.
+        menuItemsHtml += `
+      <div class="more-actions-section-label">${escapeHtml(t('accounts.chooseForProjectTitle') || 'Claude account')}</div>
+      <button class="more-actions-item is-disabled btn-remote-disabled" aria-disabled="true" data-project-id="${escapeHtml(project.id)}" data-reason-key="${escapeHtml(accountCap.reasonKey)}" title="${escapeHtml(t(accountCap.reasonKey))}">
+        ${escapeHtml(t('ssh.menu.remoteLogin'))}
+      </button>`;
+      } else if (getAccounts().length > 1) {
         const account = getAccountForProject(project.id);
         const accountColor = sanitizeColor(account?.color);
         menuItemsHtml += `
@@ -532,11 +617,11 @@ class ProjectList extends BaseComponent {
       ${menuIcons.fileTree}
       ${t('projects.files')}
     </button>
-    <button class="more-actions-item btn-open-folder" data-project-id="${project.id}">
+    <button class="more-actions-item btn-open-folder${remoteDisabledClass(project, 'openInExplorer')}" data-project-id="${project.id}"${remoteDisabledAttrs(project, 'openInExplorer')}>
       ${menuIcons.folderOpen}
       ${t('projects.openFolder')}
     </button>
-    <button class="more-actions-item btn-open-editor" data-project-id="${project.id}">
+    <button class="more-actions-item btn-open-editor${remoteDisabledClass(project, 'openInEditor')}" data-project-id="${project.id}"${remoteDisabledAttrs(project, 'openInEditor')}>
       ${menuIcons.code}
       ${t('projects.openInEditor', { editor: (EDITOR_OPTIONS.find(e => e.value === (getProjectEditor(project.id) || getSetting('editor'))) || EDITOR_OPTIONS[0]).label })}
     </button>`;
@@ -587,7 +672,7 @@ class ProjectList extends BaseComponent {
   _renderProjectHtml(project, depth) {
     const projectIndex = getProjectIndex(project.id);
     const terminalStats = this._callbacks.getTerminalStatsForProject(projectIndex);
-    const typeHandler = registry.get(project.type);
+    const typeHandler = registry.forProject(project);
     const fivemStatus = this._fivemServers.get(projectIndex)?.status || 'stopped';
     const gitOps = this._gitOperations.get(project.id) || { pulling: false, pushing: false };
     const isGitRepo = this._gitRepoStatus.get(project.id)?.isGitRepo || false;
@@ -654,7 +739,8 @@ class ProjectList extends BaseComponent {
 
     // Build tooltip lines for compact hover
     let tooltipLines = [];
-    tooltipLines.push(`<div class="project-tooltip-path">${escapeHtml(project.path)}</div>`);
+    // A remote project's path is a URI; show where it actually lives.
+    tooltipLines.push(`<div class="project-tooltip-path">${escapeHtml(projectLocation(project))}</div>`);
     if (gitBranch) {
       tooltipLines.push(`<div class="project-tooltip-branch"><svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M6 2a4 4 0 0 0-1 7.874V14a1 1 0 0 0 1 1h3a2 2 0 0 1 2 2v.126A4.002 4.002 0 0 0 10 24a4 4 0 0 0 1-7.874V17a4 4 0 0 0-4-4H6V9.874A4.002 4.002 0 0 0 6 2zm0 2a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm5 16a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg> ${escapeHtml(gitBranch)}</div>`);
     }
@@ -686,9 +772,9 @@ class ProjectList extends BaseComponent {
           ${terminalStats.total > 0 ? `<span class="terminal-count"><span class="working-count">${terminalStats.working}</span><span class="count-separator">/</span><span class="total-count">${terminalStats.total}</span></span>` : ''}
           ${project.isWorktree && project.worktreeBranch ? `<span class="project-worktree-badge" title="Worktree: ${escapeHtml(project.worktreeBranch)}">${escapeHtml(project.worktreeBranch)}</span>` : project.isWorktree ? '<span class="project-worktree-badge" title="Worktree">WT</span>' : ''}
           ${(() => { const pws = getWorkspacesForProject(project.id); return pws.length > 0 ? `<span class="project-workspace-badge" title="${escapeHtml(pws.map(w => w.name).join(', '))}" style="color: ${sanitizeColor(pws[0].color) || 'var(--accent)'}">${escapeHtml(pws[0].icon || t('workspace.badge'))}</span>` : ''; })()}
-          ${pathMissing ? `<span class="path-missing-badge" title="${t('projects.pathMissingTitle')}"><svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg></span>` : ''}
+          ${pathMissing ? `<span class="path-missing-badge" title="${t('projects.pathMissingTitle')}"><svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg></span>` : ''}${buildHostBadgeHtml(project, { compact: true })}
         </div>
-        <div class="project-path">${escapeHtml(project.path)}</div>
+        <div class="project-path">${escapeHtml(projectLocation(project))}</div>
         ${hasTime ? `<div class="project-time">
           <span class="time-today" title="${t('common.today')}">${formatDuration(times.today)}</span>
           <span class="time-separator">\u2022</span>
@@ -725,10 +811,18 @@ class ProjectList extends BaseComponent {
       // Mark list as drag-active and flag invalid drop targets
       list.classList.add('drag-active');
       if (self._dragState.dragging.type === 'folder') {
+        const draggedId = self._dragState.dragging.id;
         list.querySelectorAll('.folder-item').forEach(f => {
           const fId = f.dataset.folderId;
-          if (fId === self._dragState.dragging.id || isDescendantOf(fId, self._dragState.dragging.id)) {
+          if (fId === draggedId || isDescendantOf(fId, draggedId)) {
             f.classList.add('drop-invalid');
+          }
+        });
+        // The projects inside that subtree are invalid targets too - reordering
+        // against one of them would reparent the folder under itself.
+        list.querySelectorAll('.project-item').forEach(p => {
+          if (isProjectInsideFolder(p.dataset.projectId, draggedId)) {
+            p.classList.add('drop-invalid');
           }
         });
       }
@@ -790,6 +884,14 @@ class ProjectList extends BaseComponent {
           e.dataTransfer.dropEffect = 'none';
           return;
         }
+        if (self._dragState.dragging.type === 'folder'
+            && isProjectInsideFolder(projectId, self._dragState.dragging.id)) {
+          e.dataTransfer.dropEffect = 'none';
+          clearDropIndicators(list);
+          project.classList.add('drop-invalid-hover');
+          self._dragState.dropTarget = { type: 'project', id: projectId, position: 'invalid' };
+          return;
+        }
         e.dataTransfer.dropEffect = 'move';
         clearDropIndicators(list);
         const position = getDropPosition(e, project, false);
@@ -817,7 +919,7 @@ class ProjectList extends BaseComponent {
       }
       const project = e.target.closest('.project-item');
       if (project && !project.contains(e.relatedTarget)) {
-        project.classList.remove('drop-before', 'drop-after');
+        project.classList.remove('drop-before', 'drop-after', 'drop-invalid-hover');
         return;
       }
       const rootZone = e.target.closest('.drop-zone-root');
@@ -943,7 +1045,7 @@ class ProjectList extends BaseComponent {
 
   _showProjectSettings(project) {
     const self = this;
-    const typeHandler = registry.get(project.type);
+    const typeHandler = registry.forProject(project);
     const fields = typeHandler.getProjectSettings(project);
     if (!fields || fields.length === 0) return;
 
@@ -1029,6 +1131,32 @@ class ProjectList extends BaseComponent {
     // Any menu item click dismisses the menu it came from.
     if (btn.classList.contains('more-actions-item')) {
       self.closeAllMoreActionsMenus();
+    }
+
+    // An action a remote project cannot use: say why instead of doing nothing.
+    if (btn.getAttribute('aria-disabled') === 'true' && btn.dataset.reasonKey) {
+      Toast.showToast({ type: 'info', message: t(btn.dataset.reasonKey) });
+      return;
+    }
+
+    if (btn.classList.contains('btn-remote-connect')) {
+      const host = getProjectHost(getProject(projectId));
+      if (host && host.profileId) connectHost(host.profileId);
+      return;
+    }
+    if (btn.classList.contains('btn-remote-disconnect')) {
+      const host = getProjectHost(getProject(projectId));
+      if (host && host.profileId) disconnectHost(host.profileId);
+      return;
+    }
+    if (btn.classList.contains('btn-remote-configure') || btn.classList.contains('btn-remote-verify')) {
+      onHostBadgeClick(projectId);
+      return;
+    }
+    if (btn.classList.contains('btn-remote-edit')) {
+      const host = getProjectHost(getProject(projectId));
+      if (host && host.profile) require('./RemoteProjectModal').openHostEditor({ profile: host.profile });
+      return;
     }
 
     if (btn.classList.contains('btn-claude')) {
@@ -1167,6 +1295,14 @@ class ProjectList extends BaseComponent {
         return;
       }
 
+      // Remote host badge: connect, configure or verify, by state.
+      const hostBadge = target.closest('.remote-host-badge[data-project-id]');
+      if (hostBadge) {
+        e.stopPropagation();
+        onHostBadgeClick(hostBadge.dataset.projectId);
+        return;
+      }
+
       // Tag filter chip click
       const tagChip = target.closest('.tag-filter-option');
       if (tagChip) {
@@ -1185,6 +1321,8 @@ class ProjectList extends BaseComponent {
         // The detail view is closed on this path, so setOpenedProjectId(null)
         // cannot carry the `project_opened` workflow trigger — announce it.
         notifyProjectOpened(projectId);
+        // Opening a remote project is what connects its host (never startup).
+        connectProjectHost(getProject(projectId));
         document.getElementById('project-detail-view').style.display = 'none';
         document.getElementById('terminals-container').style.display = '';
         document.getElementById('terminals-tabs').style.display = '';
