@@ -22,7 +22,7 @@ npm run build:win        # Windows NSIS installer
 npm run build:mac        # macOS DMG
 npm run build:linux      # Linux AppImage
 npm run publish          # Build and publish Windows installer to update server
-npm test                 # Run Jest tests (jsdom, 302 test files)
+npm test                 # Run Jest tests (jsdom, 303 test files)
 npm run test:watch       # Jest in watch mode
 npm run check:docs       # Fail if CLAUDE.md or the README translations have drifted
 npm run lint             # ESLint over main, renderer, shared, MCP servers and scripts
@@ -86,7 +86,7 @@ Electron Main Process (Node.js)
 ├── main.js                          # Bootstrap, lifecycle, single-instance lock, global shortcuts
 ├── src/main/preload.js              # IPC bridge (window.electron_api)
 ├── src/main/preload-quickpicker.js  # Preload for Quick Picker window
-├── src/main/ipc/                    # 39 IPC files, 373 handlers total
+├── src/main/ipc/                    # 39 IPC files, 374 handlers total
 ├── src/main/services/               # 43 services
 ├── src/main/windows/                # 5 window managers
 ├── src/main/utils/                  # 31 utilities
@@ -106,7 +106,7 @@ Electron Renderer Process (Browser)
 ├── src/renderer/workflow-fields/    # 14 custom UI fields for workflow nodes
 ├── src/renderer/workflow-triggers/  # 12 trigger types (definition + configurator)
 ├── src/renderer/viewers/            # PDF viewer + 3D (three.js) viewer
-├── src/renderer/i18n/               # EN/FR/ES/ID/zh-CN/pt-BR locales (4357 keys each)
+├── src/renderer/i18n/               # EN/FR/ES/ID/zh-CN/pt-BR locales (4366 keys each)
 └── src/renderer/utils/              # DOM, color, format, paths, icons, syntax highlighting, editor launch, projectFs (local/remote fs facade)
 
 Project Types (Plugin System)
@@ -136,7 +136,7 @@ Remote UI (PWA for mobile)
 |------|---------:|----------------|
 | `terminal.ipc.js` | 5 | Create PTY (node-pty), input, resize, kill, and respawn a remote (SSH) tab whose connection dropped. A remote project's PTY is resolved in main from its `ssh-remote://` path (`projectTarget` + `SshHostService.ptyLaunch`); closing a remote tab ends its tmux session |
 | `git.ipc.js` | 71 | Status, branches, pull/push/merge/rebase, clone, stash, cherry-pick, revert, tag, blame, worktree, AI commit message, PR description, inline diff. A `projectPath` that is an `ssh-remote://` URI is resolved through `projectTarget` before any handler runs and refused, in that handler's own result shape, when its profile is unknown or it lies outside every registered project; remote worktrees come back as URIs and are never granted; a remote clone runs on the host and never fetches the local GitHub token, the chat Git tab's session summary and per-session overview |
-| `chat.ipc.js` | 26 | Agent SDK streaming sessions, permissions, interrupt, model/effort/permission-mode switching, tab name generation, fork/rewind, skill/agent generation, session recap |
+| `chat.ipc.js` | 27 | Agent SDK streaming sessions, permissions, interrupt, model/effort/permission-mode switching, tab name generation, fork/rewind, skill/agent generation, session recap, MCP server reconnect |
 | `github.ipc.js` | 25 | OAuth Device Flow, workflow runs, PRs, issues, reviews, GitHub Enterprise, repo search |
 | `issue-trackers.ipc.js` | 18 | Ticket tracker providers and connections (connect with a personal API key, test, disconnect; keys go in, only masked forms come out), plus metadata, issue pages, issue detail, the two writes (update state / assignee / priority, add a comment), and the session ↔ ticket links (`issue-links:*`) |
 | `dialog.ipc.js` | 23 | Window controls, file/folder dialogs, open in explorer/editor/browser, notifications, updates + release notes, startup, clipboard. A remote file opens in VS Code, Cursor or Windsurf as `<editor> --remote ssh-remote+<alias or user@host> <path on the host>`, any other editor is refused; `watch-file` on a URI polls its remote stat every 3 s |
@@ -175,7 +175,7 @@ Remote UI (PWA for mobile)
 | `cloud-shared.js` | - | Helpers shared by the three cloud IPC files |
 | `index.js` | - | Orchestrator - registers all handlers |
 
-**Total: 373 IPC handlers across 39 files.**
+**Total: 374 IPC handlers across 39 files.**
 
 ### Services (`src/main/services/`)
 
@@ -781,7 +781,7 @@ Worker); neither is bundled into the desktop app.
 ## Testing
 
 ```bash
-npm test                    # Run all 302 unit test files (jsdom environment)
+npm test                    # Run all 303 unit test files (jsdom environment)
 npm run test:watch          # Watch mode
 npm run check:docs          # Verify this file and the READMEs still match the tree
 npm run lint                # ESLint (see below)
@@ -790,7 +790,7 @@ npm run test:e2e            # Playwright smoke test against the real Electron ap
 
 ### Unit tests (Jest)
 
-- **Framework:** Jest with jsdom, 302 test files
+- **Framework:** Jest with jsdom, 303 test files
 - **Setup:** `tests/setup.js` mocks `window.electron_nodeModules`, `window.electron_api`, `requestAnimationFrame`
 - **Pattern:** `**/tests/**/*.test.js`
 - **Directories:**
