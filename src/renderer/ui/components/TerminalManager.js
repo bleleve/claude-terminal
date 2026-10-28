@@ -63,6 +63,7 @@ const {
   detectCompletionSignal,
   parseClaudeTitle,
   extractTitleFromInput,
+  detectPermissionDialog,
   BRAILLE_SPINNER_RE,
 } = require('./terminal/claudeSignals');
 const { normalizeStoredKey, eventToNormalizedKey } = require('./terminal/keyBindings');
