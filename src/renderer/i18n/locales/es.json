@@ -223,6 +223,8 @@
     }
   },
   "gitTab": {
+    "nestedRepos": "Repositorios",
+    "nestedRepoChanges": "{count} archivo(s) modificado(s)",
     "selectProject": "Selecciona un proyecto para ver la información de git",
     "notGitRepo": "Este proyecto no es un repositorio Git",
     "gitUnavailable": "No se pudo ejecutar Git",
@@ -450,6 +452,11 @@
     "nothingToCommit": "Nada que commitear. El árbol de trabajo está limpio."
   },
   "dashboard": {
+    "nestedRepos": {
+      "title": "{count} repositorio(s) Git",
+      "open": "Abrir {name} en la pestaña Git",
+      "clean": "limpio"
+    },
     "brief": {
       "noGit": "No es un repositorio git",
       "synced": "sincronizado",
@@ -1164,6 +1171,17 @@
       "hostFailed": "No se pudo registrar el conector del navegador. No se encontró ningún navegador compatible.",
       "toggleError": "No se pudo actualizar la integración con el navegador."
     },
+    "alwaysAllowBypass": {
+      "enable": "\"Permitir siempre\" omite todas las solicitudes de la conversación",
+      "enableDesc": "Desactivado: \"Permitir siempre\" permite solo esa herramienta hasta el final de la conversación. Activado: la conversación pasa al modo de omisión y nada vuelve a preguntar hasta que termine.",
+      "warning": "Todas las llamadas a herramientas posteriores de la conversación se ejecutan sin preguntar, sea cual sea la herramienta. Si un agente puede conceder los permisos de otra pestaña, también puede activar esto."
+    },
+    "mcpGrants": {
+      "title": "Orquestación de agentes",
+      "enable": "Permitir que un agente conceda los permisos de otra pestaña",
+      "enableDesc": "Mediante la herramienta MCP chat_respond_permission. Desactivado: un agente solo puede denegar las solicitudes de otra pestaña, y tú respondes al resto en la app.",
+      "warning": "Un agente podrá entonces aprobar, en otra pestaña, un comando o un plan que nunca ves, incluidas las reglas \"Permitir siempre\". Actívalo solo si un agente dirige a los demás de principio a fin."
+    },
     "advanced": "Avanzado",
     "restoreTerminalSessions": "Recordar estados de terminal",
     "restoreTerminalSessionsDesc": "Restaurar las pestañas de terminal y sesiones de Claude de la sesión anterior al iniciar",
@@ -1183,6 +1201,12 @@
     "maxTurns": "Límite de turnos por sesión de chat",
     "maxTurnsDesc": "Detiene una sesión al alcanzar este número de intercambios con la API. Cuenta cada mensaje y cada ida y vuelta de herramienta en toda la pestaña, no por mensaje. Déjalo vacío para no poner límite.",
     "maxTurnsPlaceholder": "Sin límite",
+    "contextHandoff": "Relevo de conversaciones largas",
+    "contextHandoffDesc": "Cuando el contexto de un chat supera el umbral de abajo, Claude redacta un resumen de traspaso al final del turno y la pestaña continúa en una nueva sesión que parte de él. La sesión anterior queda en el historial. Los subagentes, y un turno que supera con creces el umbral antes de terminar, los compacta el propio CLI, un 10 % por encima del umbral.",
+    "contextHandoffThreshold": "Umbral del relevo (miles de tokens)",
+    "contextHandoffThresholdDesc": "500 significa 500k tokens, mínimo 50. Mantenlo por debajo de la ventana de contexto del modelo: si está cerca, la compactación del CLI ocurre antes.",
+    "chatHibernate": "Suspender las conversaciones inactivas (minutos)",
+    "chatHibernateDesc": "Una pestaña de chat inactiva durante este tiempo detiene su proceso de Claude Code para liberar memoria. La conversación sigue en pantalla y el siguiente mensaje la retoma donde estaba. Nunca se aplica a la pestaña abierta, ni mientras un turno, una pregunta o una tarea en segundo plano sigan en curso. 0 significa nunca.",
     "saveError": "Error al guardar los ajustes",
     "nameRequired": "El nombre es obligatorio",
     "itemDeleted": "Elemento eliminado",
@@ -2163,6 +2187,13 @@
     "compacting": "Compactando conversación...",
     "compacted": "Conversación compactada ({tokens} tokens antes)",
     "compactedSimple": "Conversación compactada",
+    "handoffStarting": "Contexto en {tokens} (umbral {threshold}): Claude redacta un resumen de traspaso y luego la conversación continúa en una nueva sesión.",
+    "handoffSummarizing": "Redactando el resumen de traspaso...",
+    "handoffDivider": "Nueva sesión · continúa un contexto de {tokens}",
+    "handoffSummary": "Resumen de traspaso",
+    "handoffRequested": "Contexto en {tokens}: resumen de traspaso solicitado",
+    "handoffFailed": "El relevo no se completó: la conversación sigue en esta sesión y esta pestaña no volverá a intentarlo.",
+    "subagentContext": "Ventana de contexto de este agente: {tokens} tokens",
     "slashCompact": "Compactar historial de conversación",
     "slashClear": "Limpiar conversación",
     "slashHelp": "Mostrar ayuda",
@@ -4512,7 +4543,7 @@
     "chooseForProjectTitle": "Cuenta de Claude",
     "chooseForProject": "¿Con qué cuenta debe ejecutarse {project}? Puedes cambiarlo luego desde su pestaña.",
     "usageLoading": "Leyendo el uso…",
-    "usageUnavailable": "Uso no disponible: ejecuta «claude /login» en esta cuenta",
+    "usageUnavailable": "Consumo no disponible: haz clic en \"Reconectar\" para volver a iniciar sesión con esta cuenta",
     "usageStale": "La API no pudo confirmar estas cifras",
     "usageRefresh": "Actualizar el uso",
     "limitedUntil": "Disponible de nuevo en {time}",
@@ -4537,7 +4568,14 @@
     "loginChecking": "Comprobando el código…",
     "loginInvalidCode": "Este código no se ha aceptado. Copia el código completo y vuelve a intentarlo.",
     "loginSuccess": "Cuenta \"{name}\" conectada.",
-    "loginError": "No se pudo iniciar sesión."
+    "reconnect": "Reconectar",
+    "reconnectHint": "Volver a iniciar sesión con esta cuenta sin perder sus proyectos ni automatizaciones",
+    "reconnectTitle": "Reconectar \"{name}\"",
+    "reconnectIntro": "Inicia sesión de nuevo con la cuenta guardada como \"{name}\". Sus proyectos, su color y sus automatizaciones no cambian.",
+    "reconnectSuccess": "Cuenta \"{name}\" reconectada.",
+    "reconnectMismatch": "Este inicio de sesión pertenece a otra cuenta, no a \"{name}\". Inicia sesión con la cuenta correcta.",
+    "loginError": "No se pudo iniciar sesión.",
+    "duplicate": "Esta cuenta ya está guardada como \"{name}\"."
   },
   "usage": {
     "staleRetry": "Datos de uso posiblemente desactualizados - la última actualización falló. Próximo intento a las {time}; haz clic para reintentar ahora. {error}",

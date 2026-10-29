@@ -51,6 +51,8 @@ const { createSessionBrief } = require('./chat/sessionBrief');
 const { createSidePanel } = require('./chat/sidePanel');
 const { createSideGit } = require('./chat/sideGit');
 const { createSideTickets } = require('./chat/sideTickets');
+const { createContextHandoff, normalizeHandoffThreshold, autoCompactWindowFor, buildHandoffSeed, parseHandoffSeed, parseHandoffRequest } = require('./chat/contextHandoff');
+const { createIdleHibernation, hibernateDelayMs } = require('./chat/idleHibernation');
 
 /** Paperclip, for the chip an attached file leaves in the composer. */
 const ATTACHMENT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>';
@@ -61,7 +63,7 @@ const { saveTerminalSessions } = require('../../services/TerminalSessionService'
 
 const { matchModel, resolveModelSelection, uncataloguedModelLabel, hasOneMContext, DEFAULT_ALIAS, modelFamily, modelTier, PREMIUM_EFFORT_LEVELS } = require('../../../shared/model-options');
 const { PERMISSION_MODES, permissionModeInfo, modeFromSetting, settingFromMode } = require('../../../shared/permission-modes');
-const { contextTokensFromMessage, contextWindowFromResult } = require('../../../shared/context-usage');
+const { contextTokensFromMessage, contextTokensFromUsage, contextWindowFromResult } = require('../../../shared/context-usage');
 const { parseTerminalCommand } = require('../../../shared/terminal-commands');
 const ModelCatalog = require('../../services/ModelCatalogClient');
 
@@ -109,6 +111,13 @@ class ChatView extends BaseComponent {
   const { terminalId = null, resumeSessionId = null, forkSession = false, resumeSessionAt = null, resumeDropsTurn = null, skipPermissions = false, onTabRename = null, onStatusChange = null, onModelChange = null, onSwitchTerminal = null, onSwitchProject = null, onForkSession = null, onRunInTerminal = null, initialPrompt = null, initialModel = null, initialEffort = null, initialImages = null, onSessionStart = null, systemPrompt = null, builtinSystemPrompt = null, draftPrompt = null, initialTickets = null } = options;
   let sessionId = null;
   let destroyed = false;
+  // Puts this tab's session to sleep once it has been idle long enough; see
+  // chat/idleHibernation.js. Created further down, once what it reads exists.
+  let idleHibernation = null;
+  // Set when the session was put to sleep: the next start resumes it on the
+  // account it was running on, and is not a new session to the workflows.
+  let wakingFromHibernation = false;
+  const noteActivity = () => { idleHibernation?.touch(); };
 
   // All starts (first prompt, account switch, fork retry) share tab ownership.
   async function startChatSession(params) {
@@ -3604,6 +3613,7 @@ class ChatView extends BaseComponent {
     const hasImages = attachments.count() > 0;
     const hasMentions = pendingMentions.length > 0;
     if ((!text && !hasImages && !hasMentions) || sendLock) return;
+    noteActivity();
 
     // /remote-control interception: a local command, never sent to the CLI.
     //
@@ -3749,8 +3759,19 @@ class ChatView extends BaseComponent {
       .filter(m => m.type === 'attachment' && m.data?.kind === 'pdf')
       .map(m => ({ base64: m.data.base64, mediaType: 'application/pdf', name: m.data.name }));
 
+    // The session is writing its handoff summary: this message belongs to the
+    // session that comes next, and opens it once the summary is in.
+    if (contextHandoff.isSummarizing()) {
+      contextHandoff.hold({ text: enhancedText, images: imagesPayload, documents: documentsPayload, mentions: resolvedMentions, userMessageUuid: userMsgUuid });
+      sendLock = false;
+      return;
+    }
+
+    let handoffSeed = null;
     try {
       if (!sessionId) {
+        // Past a context handoff, the new session opens on the summary
+        handoffSeed = contextHandoff.takeSeed();
         // Assign sessionId BEFORE await to prevent race condition:
         // _processStream fires events immediately, but await returns later.
         sessionId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -3765,7 +3786,9 @@ class ChatView extends BaseComponent {
           projectId: project.id,
           // Only an explicit binding is sent: unbound projects run against the
           // machine-wide login, which is what keeps `claude /login` capturable.
-          accountId: getProjectAccount(project.id),
+          // A session woken from sleep goes back to the account it ran on,
+          // which an account switch may have moved away from the binding.
+          accountId: wakingFromHibernation ? conversationAccountId() : getProjectAccount(project.id),
           prompt: enhancedText || '',
           // Per conversation: the footer's mode picker owns it. skipPermissions
           // (cloud tabs, quick actions, per-project override) seeded it with
@@ -3779,6 +3802,7 @@ class ChatView extends BaseComponent {
           effort: selectedEffort,
           enable1MContext: getSetting('enable1MContext') || false,
           maxTurns: getSetting('maxTurns') || null,
+          autoCompactWindow: handoffCompactWindow(),
           persistSession: !getSetting('ephemeralChats'),
           userMessageUuid: userMsgUuid,
           ...(project.isCloud ? { cloud: true, cloudProjectName: project.cloudProjectName } : {}),
@@ -3840,12 +3864,22 @@ class ChatView extends BaseComponent {
           startOpts.prompt = forceInstr + (startOpts.prompt || '');
           _forceParallelTask = false;
         }
+        if (handoffSeed) startOpts.prompt = buildHandoffSeed({ ...handoffSeed, text: startOpts.prompt });
         // Stash for potential account-switch restart (preserve cwd/model/effort/etc.)
         lastStartOpts = { ...startOpts };
-        const result = await startChatSession(startOpts);
+        const waking = wakingFromHibernation;
+        wakingFromHibernation = false;
+        const result = await startChatSession(waking ? { ...startOpts, hibernated: true } : startOpts);
         if (!result) return;
         if (!result.success) {
           sessionId = null;
+          // Still the same conversation: the next message tries to resume it
+          // again rather than opening a blank one.
+          if (startOpts.resumeSessionId && !startOpts.forkSession) {
+            pendingResumeId = startOpts.resumeSessionId;
+            wakingFromHibernation = waking;
+          }
+          contextHandoff.restoreSeed(handoffSeed);
           appendError(result.error || t('chat.errorOccurred'));
           setStreaming(false);
           // A remote host that is not reachable yet: the opening turn goes
@@ -3992,6 +4026,7 @@ class ChatView extends BaseComponent {
     });
 
     let result;
+    let bypassSession = false;
     if (action === 'allow' || action === 'always-allow') {
       btn.classList.add('chosen');
       card.classList.add('resolved', 'allowed');
@@ -4002,9 +4037,19 @@ class ChatView extends BaseComponent {
         // Without any, allow this one tool for the rest of the session. This
         // used to switch the whole session to bypassPermissions, so approving
         // one tool silently turned off every later prompt, for every tool.
+        // That stays available, but only as an explicit opt-in
+        // (`alwaysAllowBypassesSession`), and then it goes through
+        // selectMode() so the footer and the transcript say so.
         const suggestions = JSON.parse(card.dataset.suggestions || '[]');
         const toolName = card.dataset.toolName;
-        if (suggestions.length > 0) {
+        bypassSession = getSetting('alwaysAllowBypassesSession') === true;
+        if (bypassSession) {
+          result.updatedPermissions = [{
+            type: 'setMode',
+            mode: 'bypassPermissions',
+            destination: 'session'
+          }];
+        } else if (suggestions.length > 0) {
           result.updatedPermissions = suggestions;
         } else if (toolName) {
           result.updatedPermissions = [{
@@ -4026,6 +4071,10 @@ class ChatView extends BaseComponent {
 
     _respondPermission({ requestId, result }).then((accepted) => {
       if (!accepted) { markCardStale(card); return; }
+
+      // The setMode above switches the SDK at once; selectMode() moves the
+      // footer and ChatService's app-side auto-approval with it.
+      if (bypassSession && selectedMode !== 'bypassPermissions') selectMode('bypassPermissions');
 
       // Reset status — SDK will continue processing
       setStatus('thinking', t('chat.thinking'));
@@ -4672,6 +4721,7 @@ class ChatView extends BaseComponent {
       clear: '&#10227;',    // ↻
       command: '&#9889;',   // ⚡
       model: '&#10022;',    // ✦
+      handoff: '&#8644;',   // ⇄
     };
     const el = document.createElement('div');
     el.className = 'chat-system-notice';
@@ -5715,6 +5765,28 @@ class ChatView extends BaseComponent {
         el.appendChild(footer);
       }
     }
+  }
+
+  /**
+   * A subagent runs in a window of its own, which the main gauge deliberately
+   * ignores (contextTokensFromMessage skips its frames). Its card says how full
+   * that window is, read off each of its API calls the same way, so a subagent
+   * heading for its own compaction is visible before it gets there.
+   */
+  function noteSubagentContext(info, message) {
+    if (message.type !== 'assistant') return;
+    const tokens = contextTokensFromUsage(message.message?.usage);
+    if (!(tokens > 0) || tokens === info.contextTokens) return;
+    info.contextTokens = tokens;
+    let el = info.card.querySelector('.chat-subagent-context');
+    if (!el) {
+      el = document.createElement('span');
+      el.className = 'chat-subagent-context';
+      info.card.querySelector('.chat-subagent-activity')?.after(el);
+    }
+    if (!el.isConnected) return;
+    el.textContent = formatTokenCount(tokens);
+    el.title = t('chat.subagentContext', { tokens: tokens.toLocaleString() });
   }
 
   /**
@@ -6833,6 +6905,7 @@ class ChatView extends BaseComponent {
    */
   function setStreaming(streaming, { turnEnded = true } = {}) {
     isStreaming = streaming;
+    noteActivity();
     stopBtn.style.display = streaming ? '' : 'none';
     // Only meaningful while something is actually in the foreground.
     bgBtn.style.display = streaming ? '' : 'none';
@@ -7023,6 +7096,219 @@ class ChatView extends BaseComponent {
   statusTokens.addEventListener('focus', showContextOverlay);
   statusTokens.addEventListener('blur', hideContextBreakdown);
 
+  // ── Context handoff ─────────────────────────────────────────────────────
+  //
+  // Past the threshold set in the chat settings, the session writes a handoff
+  // summary as one more turn, then the tab moves on to a new session that opens
+  // on it (chat/contextHandoff.js). The old session is left whole on disk; the
+  // tab keeps it on screen above a divider.
+  function handoffThreshold() {
+    if (!getSetting('contextHandoffEnabled')) return 0;
+    return normalizeHandoffThreshold(getSetting('contextHandoffThreshold'));
+  }
+
+  /** The CLI's compaction window while the handoff is on, null otherwise. */
+  function handoffCompactWindow() {
+    const threshold = handoffThreshold();
+    return threshold > 0 ? autoCompactWindowFor(threshold) : null;
+  }
+
+  /**
+   * Nothing may be cut off or left behind by closing the session: no turn
+   * running, no message waiting in the CLI's queue or behind a parked switch,
+   * no background task still working for it.
+   */
+  function canHandOff() {
+    if (destroyed || !sessionId || !sdkSessionId || project?.isCloud) return false;
+    if (isStreaming || switchingAccount || pendingQueuedSends.length) return false;
+    if (messagesEl.querySelector('.chat-msg-user.queued')) return false;
+    const owned = taskOwnerKey ? tasksStore.listTasksForOwner(taskOwnerKey) : [];
+    return !owned.some(task => task.status === 'running');
+  }
+
+  /**
+   * The line between the two sessions. Live, the summary sits right above it as
+   * the old session's last answer; a replayed transcript of the new session
+   * has nothing above, so it carries the summary itself, folded.
+   */
+  function buildHandoffDivider(seed, { withSummary = false } = {}) {
+    const el = document.createElement('div');
+    el.className = 'chat-handoff-divider';
+    el.dataset.serializable = '1';
+    const label = t('chat.handoffDivider', { tokens: formatTokenCount(seed.tokens || 0) });
+    let html = `<div class="chat-handoff-line"><span class="chat-handoff-label">${escapeHtml(label)}</span></div>`;
+    if (withSummary && seed.summary) {
+      html += `<details class="chat-handoff-summary"><summary>${escapeHtml(t('chat.handoffSummary'))}</summary>`
+        + `<div class="chat-msg-content">${renderMarkdown(seed.summary)}</div></details>`;
+    }
+    el.innerHTML = html;
+    return el;
+  }
+
+  /**
+   * Open the new session on messages typed while the summary was being written,
+   * the way an account switch restarts a tab: same start options, no resume.
+   */
+  async function startHandedOffSession(seed, held) {
+    if (destroyed || !held.length || !lastStartOpts) return;
+    const [first, ...rest] = held;
+    sessionId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    taskOwnerKey = tasksStore.claimSession(taskOwnerKey || sessionId, sessionId);
+    if (onSessionStart) onSessionStart(sessionId);
+    const startOpts = {
+      ...lastStartOpts,
+      sessionId,
+      prompt: buildHandoffSeed({ ...seed, text: first.text }),
+      images: first.images || [],
+      documents: first.documents || [],
+      mentions: first.mentions || [],
+      userMessageUuid: first.userMessageUuid || null,
+      model: requestedModel(),
+      effort: selectedEffort,
+      permissionMode: selectedMode,
+      autoCompactWindow: handoffCompactWindow(),
+      resumeSessionId: null,
+      forkSession: false,
+      resumeSessionAt: null,
+      resumeDropsTurn: null,
+    };
+    lastStartOpts = { ...startOpts };
+    turnHadAssistantContent = false;
+    turnErrorShown = false;
+    setStreaming(true);
+    appendThinkingIndicator();
+    const res = await startChatSession(startOpts);
+    if (!res) return;
+    if (!res.success) {
+      sessionId = null;
+      contextHandoff.restoreSeed(seed);
+      appendError(res.error || t('chat.errorOccurred'));
+      setStreaming(false);
+      return;
+    }
+    if (res.remote) remoteChat.showWarnings(res.remote.warnings);
+    for (const m of rest) {
+      const sent = await api.chat.send({
+        sessionId,
+        text: m.text,
+        images: m.images || [],
+        documents: m.documents || [],
+        mentions: m.mentions || [],
+        userMessageUuid: m.userMessageUuid || null,
+      });
+      if (destroyed) return;
+      if (!sent.success) appendError(sent.error || t('chat.errorOccurred'));
+    }
+  }
+
+  const contextHandoff = createContextHandoff({
+    getThreshold: handoffThreshold,
+    getUsedTokens: () => inputTokens,
+    canStart: canHandOff,
+    getCliSessionId: () => sdkSessionId,
+    sendRequest: (text) => api.chat.send({
+      sessionId,
+      text,
+      images: [],
+      documents: [],
+      mentions: [],
+      userMessageUuid: crypto.randomUUID(),
+    }),
+    onSummarizing({ tokens, threshold }) {
+      appendSystemNotice(t('chat.handoffStarting', {
+        tokens: formatTokenCount(tokens),
+        threshold: formatTokenCount(threshold),
+      }), 'handoff');
+      turnHadAssistantContent = false;
+      turnErrorShown = false;
+      setStreaming(true);
+      appendThinkingIndicator();
+      setStatus('thinking', t('chat.handoffSummarizing'));
+    },
+    onReady(seed, held) {
+      // Forget the old session before closing it, so its last events (the
+      // interrupted `done` a close sends) find no tab to land in.
+      const previous = sessionId;
+      sessionId = null;
+      sdkSessionId = null;
+      api.chat.close({ sessionId: previous });
+      // A mirror to claude.ai belonged to that session and ended with it
+      if (remoteMirrored) paintRemoteBtn(false, null);
+      // The new session starts from nothing but the summary; its first frame
+      // reports what that comes to.
+      inputTokens = 0;
+      updateStatusInfo();
+      messagesEl.appendChild(buildHandoffDivider(seed));
+      scrollToBottom();
+      if (held.length) startHandedOffSession(contextHandoff.takeSeed(), held);
+    },
+    async onFailed(held) {
+      removeThinkingIndicator();
+      if (isStreaming) setStreaming(false);
+      appendSystemNotice(t('chat.handoffFailed'), 'handoff');
+      // The old session is still there: what was typed meanwhile goes to it.
+      for (const m of held) {
+        if (destroyed || !sessionId) return;
+        const sent = await api.chat.send({ sessionId, ...m });
+        if (destroyed) return;
+        if (!sent.success) appendError(sent.error || t('chat.errorOccurred'));
+      }
+    },
+  });
+
+  // ── Idle sleep ──
+  //
+  // Closes the session of a tab left idle and puts the tab back in the state a
+  // restored tab is in: the conversation stays on screen, and the next message
+  // resumes it with `--resume`. Nothing on screen says so.
+
+  const UNANSWERED_CARDS = '.chat-perm-card:not(.resolved), .chat-question-card:not(.resolved), .chat-plan-card:not(.resolved)';
+
+  function isActiveTab() {
+    // A view not owned by a terminal tab cannot say whether it is shown, so it
+    // counts as open and never sleeps.
+    if (terminalId == null) return true;
+    try {
+      const { getActiveTerminal } = require('../../state');
+      return getActiveTerminal() === terminalId;
+    } catch { return true; }
+  }
+
+  function hibernateSession() {
+    if (destroyed || !sessionId || !sdkSessionId) return;
+    // Forget the session before closing it, as the handoff does, so its last
+    // events find no tab to land in.
+    const previous = sessionId;
+    sessionId = null;
+    pendingResumeId = sdkSessionId;
+    pendingForkSession = false;
+    pendingResumeAt = null;
+    pendingDropsTurn = null;
+    wakingFromHibernation = true;
+    api.chat.close({ sessionId: previous, hibernate: true });
+  }
+
+  idleHibernation = createIdleHibernation({
+    getDelayMs: () => hibernateDelayMs(getSetting('chatHibernateMinutes')),
+    getState: () => ({
+      hasSession: !!sessionId,
+      // Without its id, or with a transcript never written to disk
+      // (ephemeral chats), the conversation could not be picked up again.
+      resumable: !!sdkSessionId && lastStartOpts?.persistSession !== false,
+      active: isActiveTab(),
+      busy: isStreaming || isAborting || sendLock || switchingAccount
+        || !!remoteChat.isConnectionLost?.(),
+      waitingOnUser: !!messagesEl.querySelector(UNANSWERED_CARDS)
+        || !!(terminalId != null && getTerminal(terminalId)?.pendingPermission),
+      queued: !!(pendingModelPush || pendingEffortPush || pendingQueuedSends.length),
+      handoff: contextHandoff.isSummarizing(),
+      runningTasks: tasksStore.listTasksForOwner(taskOwnerKey).some(task => task.status === 'running'),
+      shared: remoteMirrored,
+      cloud: !!project.isCloud,
+    }),
+    hibernate: hibernateSession,
+  });
+
   let userHasScrolled = false;
   let hasNewMessages = false;
   let lastScrollHeight = 0, lastViewportHeight = 0;
@@ -7142,12 +7428,14 @@ class ChatView extends BaseComponent {
 
   const unsubMessage = api.chat.onMessage(({ sessionId: sid, message }) => {
     if (sid !== sessionId) return;
+    noteActivity();
 
     // Route subagent messages to their card (messages with parent_tool_use_id)
     const parentId = message.parent_tool_use_id;
     if (parentId) {
       const subInfo = findSubagentByParentId(parentId);
       if (subInfo) {
+        noteSubagentContext(subInfo, message);
         handleSubagentMessage(subInfo, message);
         return;
       }
@@ -7356,6 +7644,11 @@ class ChatView extends BaseComponent {
           appendSystemNotice(message.result, 'command');
         }
         setStreaming(false);
+      }
+      // After the turn's own UI has settled: the summary is on screen before
+      // the divider goes under it.
+      if (!contextHandoff.onTurnResult(message) && !message.is_error && (!message.subtype || message.subtype === 'success')) {
+        contextHandoff.afterTurn();
       }
       return;
     }
@@ -8028,6 +8321,7 @@ class ChatView extends BaseComponent {
     }
     isAborting = false;
     setStreaming(false);
+    if (contextHandoff.isSummarizing()) contextHandoff.onAborted();
   });
   unsubscribers.push(unsubError);
 
@@ -8321,6 +8615,8 @@ class ChatView extends BaseComponent {
     }
     const wasInterrupted = interrupted || isAborting;
     isAborting = false;
+    // Stopped while writing the summary: the tab stays on this session.
+    if (contextHandoff.isSummarizing()) contextHandoff.onAborted();
     removeThinkingIndicator();
     finalizeStreamBlock();
     resolveAllPendingCards();
@@ -8417,6 +8713,7 @@ class ChatView extends BaseComponent {
   let _permTimers = new Map(); // requestId -> { pulseTimer, notifTimer, counterId }
   const unsubPerm = api.chat.onPermissionRequest((data) => {
     if (data.sessionId !== sessionId) return;
+    noteActivity();
     if (project.isCloud) return; // Cloud sessions bypass permissions
     removeThinkingIndicator();
     appendPermissionCard(data);
@@ -8600,6 +8897,7 @@ class ChatView extends BaseComponent {
   // ── MCP elicitation requests ──
   const unsubElicit = api.chat.onElicitationRequest((data) => {
     if (data.sessionId !== sessionId) return;
+    noteActivity();
     if (project.isCloud) return;
     removeThinkingIndicator();
     appendElicitationCard(data);
@@ -9115,7 +9413,23 @@ class ChatView extends BaseComponent {
           el.classList.add('history');
           fragment.appendChild(el);
 
+        } else if (msg.role === 'user' && parseHandoffRequest(msg.text)) {
+          // The old session's last prompt, which the user never typed
+          const { tokens } = parseHandoffRequest(msg.text);
+          const el = buildSystemNotice(t('chat.handoffRequested', { tokens: formatTokenCount(tokens) }), 'handoff');
+          el.classList.add('history');
+          fragment.appendChild(el);
+
         } else if (msg.role === 'user') {
+          // A session opened by a context handoff: the summary is drawn as the
+          // divider it was, and the bubble keeps only what the user typed.
+          const handoff = parseHandoffSeed(msg.text);
+          if (handoff) {
+            const divider = buildHandoffDivider(handoff, { withSummary: true });
+            divider.classList.add('history');
+            fragment.appendChild(divider);
+            if (!handoff.text && !(msg.images && msg.images.length)) continue;
+          }
           const el = document.createElement('div');
           el.className = 'chat-msg chat-msg-user history';
           el.dataset.serializable = '1';
@@ -9126,8 +9440,9 @@ class ChatView extends BaseComponent {
               return `<img src="${dataUrl}" alt="image" class="chat-msg-image" />`;
             }).join('')}</div>`;
           }
-          if (msg.text) {
-            userHtml += `<div class="chat-msg-content">${renderMarkdown(msg.text)}</div>`;
+          const shownText = handoff ? handoff.text : msg.text;
+          if (shownText) {
+            userHtml += `<div class="chat-msg-content">${renderMarkdown(shownText)}</div>`;
           }
           el.innerHTML = userHtml;
           fragment.appendChild(el);
@@ -9349,6 +9664,7 @@ class ChatView extends BaseComponent {
           }, { projectId: project.id, projectPath: project.path || '', source: 'chat' });
         } catch (e) { /* events not ready */ }
       }
+      idleHibernation?.destroy();
       if (sessionId) api.chat.close({ sessionId });
       remoteChat.destroy();
       // Persist whatever the debounce was still holding, before the view goes.

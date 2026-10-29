@@ -223,6 +223,8 @@
     }
   },
   "gitTab": {
+    "nestedRepos": "仓库",
+    "nestedRepoChanges": "{count} 个文件已更改",
     "selectProject": "选择项目查看Git信息",
     "notGitRepo": "此项目不是 Git 仓库",
     "gitUnavailable": "Git 无法运行",
@@ -450,6 +452,11 @@
     "nothingToCommit": "没有需要提交的更改。工作树是干净的。"
   },
   "dashboard": {
+    "nestedRepos": {
+      "title": "{count} 个 Git 仓库",
+      "open": "在 Git 标签页中打开 {name}",
+      "clean": "无改动"
+    },
     "brief": {
       "noGit": "不是 git 仓库",
       "synced": "已同步",
@@ -1167,6 +1174,17 @@
       "hostFailed": "无法注册浏览器连接器，未找到受支持的浏览器。",
       "toggleError": "更新浏览器集成失败。"
     },
+    "alwaysAllowBypass": {
+      "enable": "\"始终允许\"跳过本次对话的所有确认",
+      "enableDesc": "关闭：\"始终允许\"仅在本次对话结束前允许该工具。开启：对话切换到跳过权限模式，直到结束都不再询问。",
+      "warning": "本次对话之后的所有工具调用都将直接运行，不再询问，无论是哪个工具。如果允许智能体授予其他标签页的权限，智能体也能触发此操作。"
+    },
+    "mcpGrants": {
+      "title": "智能体编排",
+      "enable": "允许智能体批准其他标签页的权限请求",
+      "enableDesc": "通过 MCP 工具 chat_respond_permission。关闭时，智能体只能拒绝其他标签页的请求，其余请求由你在应用中处理。",
+      "warning": "开启后，智能体可以在其他标签页中批准你从未看到的命令或计划，包括“始终允许”规则。仅当由一个智能体全程驱动其他智能体时才开启。"
+    },
     "advanced": "高级",
     "restoreTerminalSessions": "记住最后的终端状态",
     "restoreTerminalSessionsDesc": "启动时从上一个会话恢复终端选项卡和 Claude 会话",
@@ -1186,6 +1204,12 @@
     "maxTurns": "每个聊天会话的轮次上限",
     "maxTurnsDesc": "会话与 API 的交互达到该次数后停止。统计整个标签页中的每条消息和每次工具调用，而非按单条消息计算。留空表示不限制。",
     "maxTurnsPlaceholder": "不限制",
+    "contextHandoff": "长对话接力",
+    "contextHandoffDesc": "当聊天的上下文超过下方阈值时，Claude 会在本轮结束时写一份交接摘要，标签页随后在以该摘要开头的新会话中继续。之前的会话保留在历史记录中。子代理以及在结束前远超阈值的单轮对话，由 CLI 自身在高于阈值 10% 处压缩。",
+    "contextHandoffThreshold": "接力阈值（千令牌）",
+    "contextHandoffThresholdDesc": "500 表示 500k 令牌，最小值为 50。请保持在模型的上下文窗口以下：若太接近，CLI 自身的压缩会先发生。",
+    "chatHibernate": "闲置对话进入休眠（分钟）",
+    "chatHibernateDesc": "聊天标签页闲置达到此时长后，会停止其 Claude Code 进程以释放内存。对话仍显示在屏幕上，下一条消息会从中断处继续。不会作用于当前打开的标签页，也不会在回合、提问或后台任务仍在进行时生效。0 表示从不。",
     "saveError": "保存设置失败",
     "nameRequired": "姓名为必填项",
     "itemDeleted": "项目已移除",
@@ -2173,6 +2197,13 @@
     "compacting": "压缩对话...",
     "compacted": "对话已压缩（之前为 {tokens} 令牌）",
     "compactedSimple": "对话紧凑",
+    "handoffStarting": "上下文已达 {tokens}（阈值 {threshold}）：Claude 正在撰写交接摘要，之后对话将在新会话中继续。",
+    "handoffSummarizing": "正在撰写交接摘要...",
+    "handoffDivider": "新会话 · 接续 {tokens} 的上下文",
+    "handoffSummary": "交接摘要",
+    "handoffRequested": "上下文已达 {tokens}：已请求交接摘要",
+    "handoffFailed": "接力未能完成：对话仍在当前会话中，此标签页不会再次尝试。",
+    "subagentContext": "此代理的上下文窗口：{tokens} 令牌",
     "slashCompact": "紧凑的对话历史记录",
     "slashClear": "清晰的对话",
     "slashHelp": "显示帮助",
@@ -4512,7 +4543,7 @@
     "chooseForProjectTitle": "Claude 账户",
     "chooseForProject": "{project} 使用哪个账户运行？之后可从其标签页更改。",
     "usageLoading": "正在读取用量…",
-    "usageUnavailable": "无法获取用量 — 请对该账号运行 \"claude /login\"",
+    "usageUnavailable": "用量不可用：点击\"重新连接\"重新登录此账户",
     "usageStale": "API 无法确认这些数据",
     "usageRefresh": "刷新用量",
     "limitedUntil": "{time} 后可再次使用",
@@ -4537,7 +4568,14 @@
     "loginChecking": "正在验证代码…",
     "loginInvalidCode": "此代码未被接受。请复制完整代码后重试。",
     "loginSuccess": "账户“{name}”已连接。",
-    "loginError": "登录失败。"
+    "reconnect": "重新连接",
+    "reconnectHint": "重新登录此账户，保留其项目和自动化",
+    "reconnectTitle": "重新连接\"{name}\"",
+    "reconnectIntro": "使用保存为\"{name}\"的账户重新登录。其项目、颜色和自动化保持不变。",
+    "reconnectSuccess": "账户\"{name}\"已重新连接。",
+    "reconnectMismatch": "此次登录属于另一个账户，而不是\"{name}\"。请使用正确的账户登录。",
+    "loginError": "登录失败。",
+    "duplicate": "该账户已保存为“{name}”。"
   },
   "usage": {
     "staleRetry": "使用情况数据可能已过时 - 上次刷新失败。下次尝试时间 {time}；点击可立即重试。 {error}",

@@ -19,6 +19,13 @@
  * - Phase 2 ships `wait`, `wait_any`, `read_output`, `chat_respond_permission`
  *   for full orchestration (subscribe-based waits, buffered output reads,
  *   programmatic permission responses).
+ * - `chat_respond_permission` denies, and grants only when the user turned on
+ *   `mcpPermissionGrantsEnabled` in the settings. An approval sent from here
+ *   is one the user never saw: the calling session's own prompt shows a tab
+ *   id and a verb, not the command or plan being approved. The setting is in
+ *   READONLY_SETTINGS (settings.js), so an agent cannot turn it on itself, and
+ *   the renderer checks it again, since anything can drop a file in
+ *   `tabs/triggers/`.
  *
  * Example orchestration
  * ---------------------
@@ -62,6 +69,12 @@ function readJson(file, fallback) {
     log(`Error reading ${path.basename(file)}: ${e.message}`);
   }
   return fallback;
+}
+
+// Unreadable or absent settings read as "off": the safe answer for a gate.
+function permissionGrantsEnabled() {
+  const settings = readJson(path.join(getDataDir(), 'settings.json'), {});
+  return settings?.mcpPermissionGrantsEnabled === true;
 }
 
 function loadTabs() {
@@ -152,7 +165,7 @@ const tools = [
   },
   {
     name: 'tab_send',
-    description: 'Send content to a specific tab by its stable tabId. For chat tabs the content is submitted as a user message; for terminal tabs it is typed as a command with a trailing newline. Fire-and-forget with a short response confirmation (~2-5s).',
+    description: 'Send content to a specific tab by its stable tabId. For chat tabs the content is submitted as a user message; for terminal tabs it is typed as a command with a trailing newline, and refused while the tab shows a permission prompt (typing would approve it) unless the user turned on "Let an agent grant another tab\'s permissions". Fire-and-forget with a short response confirmation (~2-5s).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -222,20 +235,20 @@ const tools = [
   },
   {
     name: 'chat_respond_permission',
-    description: 'Respond to a pending permission request on a chat tab programmatically (allow / deny / always-allow). Only works when the tab status is `awaiting_permission`. For deny, `message` is sent back to the agent as feedback.',
+    description: 'Answer a pending permission request on a chat tab. Only works when the tab status is `awaiting_permission`. `deny` always works; `allow` and `always-allow` only when the user turned on "Let an agent grant another tab\'s permissions" in the Claude Terminal settings, otherwise the user approves in the app.',
     inputSchema: {
       type: 'object',
       properties: {
         tabId: { type: 'string', description: 'Stable tab identifier of the chat tab' },
         action: {
           type: 'string',
-          enum: ['allow', 'deny', 'always-allow'],
-          description: 'Decision to send back to the agent',
+          enum: ['deny', 'allow', 'always-allow'],
+          description: 'Decision to send back to the agent. Defaults to `deny`.',
         },
-        message: { type: 'string', description: 'Optional feedback message (used when action=deny).' },
+        message: { type: 'string', description: 'Optional feedback sent back to the agent (used when action=deny).' },
         requestId: { type: 'string', description: 'Optional explicit permission requestId (defaults to the current pending one).' },
       },
-      required: ['tabId', 'action'],
+      required: ['tabId'],
     },
   },
 ];
@@ -346,19 +359,22 @@ async function handle(name, args) {
 
     if (name === 'chat_respond_permission') {
       if (!args.tabId) return fail('Missing required parameter: tabId');
-      if (!args.action) return fail('Missing required parameter: action');
-      if (!['allow', 'deny', 'always-allow'].includes(args.action)) {
-        return fail(`Invalid action "${args.action}". Must be allow | deny | always-allow.`);
+      const action = args.action || 'deny';
+      if (!['deny', 'allow', 'always-allow'].includes(action)) {
+        return fail(`Invalid action "${action}". Must be deny | allow | always-allow.`);
+      }
+      if (action !== 'deny' && !permissionGrantsEnabled()) {
+        return fail(`Action "${action}" is turned off: an agent may only deny another tab's permission requests unless the user enables "Let an agent grant another tab's permissions" in the Claude Terminal settings. Use action "deny", or let the user answer in the app.`);
       }
       const requestId = writeTrigger('permission', {
         tabId: args.tabId,
-        action: args.action,
+        action,
         message: args.message || '',
         permissionRequestId: args.requestId || null,
       });
       const resp = await awaitResponse(requestId);
       if (!resp.ok) return fail(`chat_respond_permission failed: ${resp.error || 'unknown error'}`);
-      return ok(`Permission ${args.action} sent to tab ${args.tabId}.`);
+      return ok(`Permission ${action} sent to tab ${args.tabId}.`);
     }
 
     return fail(`Unknown tabs tool: ${name}`);

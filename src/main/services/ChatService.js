@@ -91,6 +91,10 @@ const MAX_TOUCHED_FILES = 200;
  */
 const RESTRICTED_SESSION_MAX_TURNS = 40;
 
+/** The range the CLI accepts for its `autoCompactWindow` setting (100k to 1M). */
+const AUTO_COMPACT_WINDOW_MIN = 100000;
+const AUTO_COMPACT_WINDOW_MAX = 1000000;
+
 /**
  * Note a file this session wrote, for `_sessionContext`.
  * Silent on anything unexpected — this is bookkeeping on the hot stream path and
@@ -685,7 +689,7 @@ class ChatService {
    * @param {string[]} [params.disallowedTools] - Tools to withhold from the session.
    * @returns {Promise<string>} Session ID
    */
-  async startSession({ cwd, projectId = null, accountId = null, prompt, permissionMode = 'default', resumeSessionId = null, sessionId = null, images = [], documents = [], mentions = [], model = null, enable1MContext = false, forkSession = false, resumeSessionAt = null, resumeDropsTurn = null, effort = null, outputFormat = null, skills = null, systemPrompt = null, settingSources = null, maxTurns = null, cloud = false, cloudProjectName = null, userMessageUuid = null, persistSession = true, allowedTools = null, disallowedTools = null, remote = null }) {
+  async startSession({ cwd, projectId = null, accountId = null, prompt, permissionMode = 'default', resumeSessionId = null, sessionId = null, images = [], documents = [], mentions = [], model = null, enable1MContext = false, forkSession = false, resumeSessionAt = null, resumeDropsTurn = null, effort = null, outputFormat = null, skills = null, systemPrompt = null, settingSources = null, maxTurns = null, cloud = false, cloudProjectName = null, userMessageUuid = null, persistSession = true, allowedTools = null, disallowedTools = null, remote = null, autoCompactWindow = null, hibernated = false }) {
     if (!sessionId) sessionId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     // Cloud session: delegate to cloud server instead of local SDK
@@ -824,6 +828,19 @@ class ChatService {
         options.effort = effort;
       }
 
+      // Where the CLI compacts on its own (its `autoCompactWindow` setting),
+      // set by the chat's context handoff. The renderer hands each conversation
+      // over at the end of a turn; this is what bounds what it cannot reach: a
+      // subagent's window, which the CLI compacts with the same logic, and a
+      // single turn that runs far past the threshold before it ends. Passed in
+      // the flag settings layer, so it covers this session and nothing else.
+      // Outside the range the CLI accepts, nothing is set and its own default
+      // stands.
+      const compactWindow = Math.round(Number(autoCompactWindow));
+      if (compactWindow >= AUTO_COMPACT_WINDOW_MIN && compactWindow <= AUTO_COMPACT_WINDOW_MAX) {
+        options.settings = { autoCompactWindow: compactWindow };
+      }
+
       // Enable 1M token context window (beta)
       if (enable1MContext) {
         options.betas = ['context-1m-2025-08-07'];
@@ -917,7 +934,9 @@ class ChatService {
       // Which host a remote session runs on, for its error messages
       if (remote) session.remote = { profileId: remote.profileId, host: remote.host };
 
-      this._emitLifecycle('start', sessionId, { projectId, cwd });
+      // A tab waking from idle sleep resumes a conversation that never ended:
+      // `hibernate` lets lifecycle consumers tell it from a new session.
+      this._emitLifecycle('start', sessionId, { projectId, cwd, ...(hibernated ? { hibernate: true } : {}) });
 
       // The background-task level is per CLI process and nothing is emitted at
       // startup, so the host owns the reset. Without it, a resumed tab would
@@ -2744,7 +2763,13 @@ class ChatService {
     if (gen) gen.abortController.abort();
   }
 
-  closeSession(sessionId) {
+  /**
+   * @param {string} sessionId
+   * @param {{ hibernate?: boolean }} [opts] - `hibernate`: an idle tab going to
+   *   sleep, which resumes the same conversation later. Reported as such, so
+   *   lifecycle consumers can tell it from a conversation that ended.
+   */
+  closeSession(sessionId, { hibernate = false } = {}) {
     // Emit anything still sitting in the coalescing buffer before tearing the
     // session down — a buffered delta must never be dropped.
     this._flushDeltas(sessionId);
@@ -2759,7 +2784,7 @@ class ChatService {
     }
 
     if (session.queryStream && !session._streamEnded) {
-      this._emitLifecycle('end', sessionId, { status: 'interrupted' });
+      this._emitLifecycle('end', sessionId, { status: 'interrupted', ...(hibernate ? { hibernate: true } : {}) });
     }
     this.sessions.delete(sessionId);
     if (session.abortController) session.abortController.abort();

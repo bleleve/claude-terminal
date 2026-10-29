@@ -13,7 +13,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/downloads/Sterll/claude-terminal/total?color=d97706&label=downloads" alt="Downloads" />
-  <img src="https://img.shields.io/badge/version-1.3.7--BLE.9-orange" alt="Version" />
+  <img src="https://img.shields.io/badge/version-1.3.8-orange" alt="Version" />
   <img src="https://img.shields.io/badge/platform-Windows%20|%20macOS%20|%20Linux-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="License" />
   <img src="https://img.shields.io/badge/electron-43-purple" alt="Electron" />
@@ -179,6 +179,8 @@ npm install
 - **Attachments**: paste, drag-drop, or pick PNG/JPEG/GIF/WebP images (up to 20MB), plus text files and PDFs
 - **Slash commands**: auto-completing commands (/compact, /clear, /help, custom skills)
 - **Terminal handoff**: commands that act on the machine or the account rather than the conversation (/design-login, /login, /logout, /permissions, /plugin...) open a Claude terminal tab to run them, since the chat drives the CLI headless
+- **Long-conversation handoff**: past a context threshold you set (off by default), the session writes a handoff summary and the tab carries on in a fresh session that opens on it; the previous session stays whole in the history
+- **Idle tab sleep**: a chat tab left idle for 15 minutes (configurable) closes its Claude process to free memory, and the next message resumes the conversation where it was
 - **Inline @mentions**: rich contenteditable input field lets you type @mentions inline without leaving the message composition area
 - **File rewind**: revert chat context to an earlier file state via SDK checkpointing — useful for undoing unwanted edits mid-session
 - **Cost tracking**: model name, token count, and USD cost in the status bar
@@ -200,6 +202,8 @@ npm install
 - **Prompt enhancement**: one-click AI rewrite of your message using Haiku for clearer instructions before sending
 - Interrupt streaming mid-turn, auto-generated tab names via haiku model
 - Compacting indicator shown during conversation compaction so you know when context is being compressed
+- **Git tab**: each session lists the pull requests it worked on, grouped by what needs you, with their CI status as a dot on the tab and Fix it / Resolve / Update / Address review buttons that draft the prompt
+- **Tickets**: connect Linear with a personal API key (Settings > Tickets), browse the workspace as a list or a board, start a session from a ticket, link tickets to a session and mention one with **@tickets**; the app only suggests links, you confirm
 
 ### Terminals
 - Multiple Claude Code terminals per project with tabbed interface
@@ -223,6 +227,8 @@ npm install
 - Bind a separate Claude account to each project, with its own isolated credential store
 - Switch projects without switching accounts by hand, and without one project's login affecting another's
 - Per-account usage shown in Settings, and a usage-limit switch that carries the conversation over
+- **Connect an account** signs a new account in through the CLI's own `claude auth login`, without replacing the login your machine already uses; saved accounts are recognised by their Claude profile, so none is saved twice
+- Each automation can run as a chosen account, be skipped above a usage threshold, and has its own cost in the Cost tab
 
 ### Claude Remote Control (claude.ai & mobile)
 - Put a chat session on [claude.ai/code](https://claude.ai/code) and the Claude mobile app, so you can follow it or drive it from your phone
@@ -264,6 +270,7 @@ npm install
 - **Amend commits**: edit the last commit message or staged content before pushing
 - **AI commit messages**: auto-generate conventional commit messages via GitHub Models API
 - **Pull Requests**: create and view PRs directly from the app
+- **Folders of repositories**: a project that is a plain folder holding several repositories lists them one or two levels down and works on the one you pick
 
 ### GitHub Integration
 - OAuth Device Flow authentication (secure, no token copy-paste)

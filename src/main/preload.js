@@ -79,6 +79,7 @@ contextBridge.exposeInMainWorld('electron_api', {
     info: (projectPath) => ipcRenderer.invoke('git-info', projectPath),
     infoFull: (projectPath) => ipcRenderer.invoke('git-info-full', projectPath),
     statusQuick: (params) => ipcRenderer.invoke('git-status-quick', params),
+    nestedRepos: (params) => ipcRenderer.invoke('git-nested-repos', params),
     statusDetailed: (params) => ipcRenderer.invoke('git-status-detailed', params),
     branches: (params) => ipcRenderer.invoke('git-branches', params),
     currentBranch: (params) => ipcRenderer.invoke('git-current-branch', params),
@@ -463,6 +464,7 @@ contextBridge.exposeInMainWorld('electron_api', {
     usage: (maxAgeMs, force) => ipcRenderer.invoke('accounts-usage', { maxAgeMs, force }),
     capture: (name) => ipcRenderer.invoke('accounts-capture', { name }),
     login: (name) => ipcRenderer.invoke('accounts-login-start', { name }),
+    reconnect: (id) => ipcRenderer.invoke('accounts-login-start', { reconnectId: id }),
     loginCode: (code) => ipcRenderer.invoke('accounts-login-code', { code }),
     loginCancel: () => ipcRenderer.invoke('accounts-login-cancel'),
     onLoginProgress: createListener('accounts-login-progress'),
@@ -687,6 +689,9 @@ contextBridge.exposeInMainWorld('electron_api', {
     complete: (settings) => ipcRenderer.invoke('setup-wizard-complete', settings),
     skip: () => ipcRenderer.send('setup-wizard-skip'),
     rerun: () => ipcRenderer.send('setup-wizard-rerun'),
+    claudeCodeStatus: () => ipcRenderer.invoke('setup-claude-code-status'),
+    installClaudeCode: () => ipcRenderer.invoke('setup-claude-code-install'),
+    onClaudeCodeProgress: createListener('setup-claude-code-progress'),
     // Emitted by main after the wizard is re-run from the settings panel,
     // with the settings it just persisted to settings.json
     onSettingsChanged: createListener('settings-changed-externally')

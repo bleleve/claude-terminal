@@ -102,6 +102,12 @@ const defaultSettings = {
   enableFollowupSuggestions: true, // Show AI-generated follow-up suggestion chips after Claude responds (uses Haiku)
   enhancePrompts: false, // Opt-in: reformulate prompts via Haiku for better prompt engineering before sending
   chromeBridgeEnabled: false, // Opt-in: let chat sessions drive Chrome via the Claude browser extension
+  // Opt-in: let the MCP chat_respond_permission tool grant, not only deny, another
+  // chat tab's permission request. Read-only over MCP, so an agent cannot turn it on.
+  mcpPermissionGrantsEnabled: false,
+  // Opt-in: "Always Allow" on a chat permission card switches the whole session
+  // to bypassPermissions instead of allowing that one tool. Read-only over MCP.
+  alwaysAllowBypassesSession: false,
   // Every tab is pinned by default: the grouped sidebar fits without overflow,
   // so the More menu is now opt-in rather than the default state.
   pinnedTabs: ['claude', 'dashboard', 'files', 'git', 'tickets', 'session-replay', 'tasks', 'control-tower', 'workspace', 'memory', 'timetracking', 'cost', 'database', 'skills', 'agents', 'plugins', 'mcp', 'workflows', 'errorlog', 'connectivity'],
@@ -117,6 +123,9 @@ const defaultSettings = {
   tabsOrder: null, // null = canonical order, otherwise array of all tabIds in custom order
   parallelMaxAgents: 3, // Default number of parallel agents for Parallel Task Manager (1-10)
   maxTurns: null, // null = no limit (SDK/CLI default), or a cap on API round-trips for the whole tab
+  contextHandoffEnabled: false, // Past the threshold below, a chat writes a handoff summary and continues in a new session
+  contextHandoffThreshold: 500000, // Context window occupancy (tokens) that triggers the handoff
+  chatHibernateMinutes: 15, // A chat tab idle this long (and not the open tab) closes its CLI process; the next message resumes it. 0 = never
   autoClaudeMdUpdate: true, // Suggest CLAUDE.md updates after chat sessions
   dailyGoal: 0, // Daily time goal in minutes (0 = disabled)
   githubApiUrl: 'https://api.github.com', // GitHub API base URL (for GitHub Enterprise)

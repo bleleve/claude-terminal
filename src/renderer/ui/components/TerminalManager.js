@@ -126,6 +126,19 @@ function ptyIdOf(termData, tabId) {
   return termData?.ptyId ?? tabId;
 }
 
+const PERMISSION_DIALOG_REFUSAL = 'This tab is waiting on a permission prompt, and typing into it would approve it. '
+  + 'Granting another tab\'s permissions over MCP is turned off in the settings; let the user answer in the app.';
+
+/**
+ * Whether text sent by an agent (MCP `tab_send`, `terminal_send_command`) must
+ * not be typed into this PTY tab: it shows the CLI's approval dialog and the
+ * user has not opted in to agents granting permissions.
+ */
+function refusesAgentInput(termData) {
+  if (getSetting('mcpPermissionGrantsEnabled') === true) return false;
+  return detectPermissionDialog(termData?.terminal);
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // ── TerminalManager Class ──
 // ════════════════════════════════════════════════════════════════════════════
@@ -4663,6 +4676,12 @@ class TerminalManager extends BaseComponent {
     }
 
     if (data.isBasic || data.mode === 'terminal') {
+      // Enter answers the CLI's approval dialog with its first entry, "Yes",
+      // so typing into a tab that shows one is a grant by another route than
+      // chat_respond_permission, and needs the same opt-in.
+      if (refusesAgentInput(data)) {
+        return { ok: false, error: PERMISSION_DIALOG_REFUSAL };
+      }
       try {
         this._api.terminal.input({ id: ptyIdOf(data, id), data: text + (text.endsWith('\r') || text.endsWith('\n') ? '' : '\r') });
       } catch (e) {
@@ -4797,9 +4816,23 @@ class TerminalManager extends BaseComponent {
     };
   }
 
-  // Respond to a pending permission on a chat tab programmatically.
-  // action: 'allow' | 'deny' | 'always-allow'; message optional (used for deny).
-  respondPermissionForTab(tabId, { action = 'allow', message = '', requestId = null } = {}) {
+  // Answer a pending permission on a chat tab programmatically (the MCP
+  // `chat_respond_permission` tool). action: 'deny' | 'allow' | 'always-allow';
+  // message optional, sent as feedback with a denial.
+  // Granting needs `mcpPermissionGrantsEnabled`, checked here as well as in the
+  // tool: anything can drop a trigger file, and an approval from outside the
+  // app is one the user never saw. See the header of
+  // resources/mcp-servers/tools/tabs.js.
+  respondPermissionForTab(tabId, { action = 'deny', message = '', requestId = null } = {}) {
+    const btnSelector = {
+      'deny': '.chat-perm-btn[data-action="deny"], .chat-plan-btn[data-action="deny"]',
+      'allow': '.chat-perm-btn[data-action="allow"], .chat-plan-btn[data-action="allow"]',
+      'always-allow': '.chat-perm-btn[data-action="always-allow"]',
+    }[action];
+    if (!btnSelector) return { ok: false, error: `Unsupported action: ${action}` };
+    if (action !== 'deny' && getSetting('mcpPermissionGrantsEnabled') !== true) {
+      return { ok: false, error: `Action "${action}" refused: granting another tab's permissions over MCP is turned off in the settings` };
+    }
     const found = getTerminalByTabId(tabId);
     if (!found) return { ok: false, error: `Tab not found: ${tabId}` };
     const { data } = found;
@@ -4822,13 +4855,6 @@ class TerminalManager extends BaseComponent {
     }
     if (!card) return { ok: false, error: 'Permission card not found in DOM' };
 
-    const btnSelector = (() => {
-      if (action === 'allow') return '.chat-perm-btn[data-action="allow"], .chat-plan-btn[data-action="allow"]';
-      if (action === 'always-allow') return '.chat-perm-btn[data-action="always-allow"]';
-      if (action === 'deny') return '.chat-perm-btn[data-action="deny"], .chat-plan-btn[data-action="deny"]';
-      return null;
-    })();
-    if (!btnSelector) return { ok: false, error: `Unsupported action: ${action}` };
     const btn = card.querySelector(btnSelector);
     if (!btn) return { ok: false, error: `Button for action "${action}" not found` };
 
@@ -4929,6 +4955,7 @@ module.exports = {
   // MCP orchestration
   getTabByTabId: (tabId) => _getInstance().getTabByTabId(tabId),
   sendToTab: (tabId, content) => _getInstance().sendToTab(tabId, content),
+  refusesAgentInput,
   getStatusForTab: (tabId) => _getInstance().getStatusForTab(tabId),
   closeTabByTabId: (tabId) => _getInstance().closeTabByTabId(tabId),
   listTabsSummary: () => _getInstance().listTabsSummary(),

@@ -15,6 +15,8 @@ const { BUILTIN_TOOLS } = require('../../utils/toolRegistry');
 const { getProjectsForAccount } = require('../../state/projects.state');
 const { buildAccountUsageHtml } = require('../components/accountUsage');
 const { mountTicketsSettings } = require('../components/ticketsSettings');
+const { normalizeHandoffThreshold, MIN_HANDOFF_THRESHOLD } = require('../components/chat/contextHandoff');
+const { hibernateDelayMs } = require('../components/chat/idleHibernation');
 
 // ── Settings search ──
 //
@@ -1526,6 +1528,20 @@ class SettingsPanel extends BasePanel {
                 <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L1 21h22L12 2zm0 3.99L19.53 19H4.47L12 5.99zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/></svg>
                 <span>${t('settings.modeAutonomousWarning')}</span>
               </div>
+              <div class="settings-toggle-row">
+                <div class="settings-toggle-label">
+                  <div>${t('settings.alwaysAllowBypass.enable')}</div>
+                  <div class="settings-toggle-desc">${t('settings.alwaysAllowBypass.enableDesc')}</div>
+                </div>
+                <label class="settings-toggle">
+                  <input type="checkbox" id="always-allow-bypass-toggle" ${settings.alwaysAllowBypassesSession === true ? 'checked' : ''}>
+                  <span class="settings-toggle-slider"></span>
+                </label>
+              </div>
+              <div class="settings-warning" id="always-allow-bypass-warning" style="display: ${settings.alwaysAllowBypassesSession === true ? 'flex' : 'none'};">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L1 21h22L12 2zm0 3.99L19.53 19H4.47L12 5.99zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/></svg>
+                <span>${t('settings.alwaysAllowBypass.warning')}</span>
+              </div>
               </div>
             </div>
             <div class="settings-group">
@@ -1680,6 +1696,38 @@ class SettingsPanel extends BasePanel {
                     value="${settings.maxTurns != null ? escapeHtml(String(settings.maxTurns)) : ''}"
                     placeholder="${t('settings.maxTurnsPlaceholder')}">
                 </div>
+                <div class="settings-toggle-row">
+                  <div class="settings-toggle-label">
+                    <div>${t('settings.contextHandoff')}</div>
+                    <div class="settings-toggle-desc">${t('settings.contextHandoffDesc')}</div>
+                  </div>
+                  <label class="settings-toggle">
+                    <input type="checkbox" id="context-handoff-toggle" ${settings.contextHandoffEnabled ? 'checked' : ''}>
+                    <span class="settings-toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-label">
+                    <div>${t('settings.contextHandoffThreshold')}</div>
+                    <div class="settings-desc">${t('settings.contextHandoffThresholdDesc')}</div>
+                  </div>
+                </div>
+                <div style="padding: 0 16px 12px;">
+                  <input type="number" id="context-handoff-threshold-input" class="settings-input-sm" style="width: 100%;"
+                    min="${MIN_HANDOFF_THRESHOLD / 1000}" step="10"
+                    value="${normalizeHandoffThreshold(settings.contextHandoffThreshold) / 1000}">
+                </div>
+                <div class="settings-row">
+                  <div class="settings-label">
+                    <div>${t('settings.chatHibernate')}</div>
+                    <div class="settings-desc">${t('settings.chatHibernateDesc')}</div>
+                  </div>
+                </div>
+                <div style="padding: 0 16px 12px;">
+                  <input type="number" id="chat-hibernate-input" class="settings-input-sm" style="width: 100%;"
+                    min="0" step="5"
+                    value="${hibernateDelayMs(settings.chatHibernateMinutes) / 60000}">
+                </div>
               </div>
             </div>
             <div class="settings-group">
@@ -1765,6 +1813,25 @@ class SettingsPanel extends BasePanel {
                 </label>
               </div>
               <div class="settings-desc" style="padding: 0 16px 12px;">${t('claudeRemote.settingsHint')}</div>
+              </div>
+            </div>
+            <div class="settings-group" data-section="mcp-grants">
+              <div class="settings-group-title">${t('settings.mcpGrants.title')}</div>
+              <div class="settings-card">
+              <div class="settings-toggle-row">
+                <div class="settings-toggle-label">
+                  <div>${t('settings.mcpGrants.enable')}</div>
+                  <div class="settings-toggle-desc">${t('settings.mcpGrants.enableDesc')}</div>
+                </div>
+                <label class="settings-toggle">
+                  <input type="checkbox" id="mcp-permission-grants-toggle" ${settings.mcpPermissionGrantsEnabled === true ? 'checked' : ''}>
+                  <span class="settings-toggle-slider"></span>
+                </label>
+              </div>
+              <div class="settings-warning" id="mcp-permission-grants-warning" style="display: ${settings.mcpPermissionGrantsEnabled === true ? 'flex' : 'none'};">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L1 21h22L12 2zm0 3.99L19.53 19H4.47L12 5.99zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/></svg>
+                <span>${t('settings.mcpGrants.warning')}</span>
+              </div>
               </div>
             </div>
             <div class="settings-group">
@@ -2092,6 +2159,20 @@ class SettingsPanel extends BasePanel {
         document.getElementById('dangerous-warning').style.display = card.dataset.mode === 'dangerous' ? 'flex' : 'none';
       };
     });
+
+    const mcpGrantsToggle = document.getElementById('mcp-permission-grants-toggle');
+    if (mcpGrantsToggle) {
+      mcpGrantsToggle.addEventListener('change', () => {
+        document.getElementById('mcp-permission-grants-warning').style.display = mcpGrantsToggle.checked ? 'flex' : 'none';
+      });
+    }
+
+    const alwaysAllowBypassToggle = document.getElementById('always-allow-bypass-toggle');
+    if (alwaysAllowBypassToggle) {
+      alwaysAllowBypassToggle.addEventListener('change', () => {
+        document.getElementById('always-allow-bypass-warning').style.display = alwaysAllowBypassToggle.checked ? 'flex' : 'none';
+      });
+    }
 
     // Claude accounts section — wire async list + actions
     this._wireAccountsSection(container);
@@ -2462,6 +2543,20 @@ class SettingsPanel extends BasePanel {
       const newMaxTurns = Number.isFinite(parsedMaxTurns) && parsedMaxTurns > 0
         ? parsedMaxTurns
         : null;
+      const contextHandoffToggle = document.getElementById('context-handoff-toggle');
+      const newContextHandoffEnabled = contextHandoffToggle ? contextHandoffToggle.checked : settings.contextHandoffEnabled === true;
+      // Typed in thousands of tokens, stored in tokens.
+      const handoffThresholdInput = document.getElementById('context-handoff-threshold-input');
+      const parsedHandoffThreshold = handoffThresholdInput ? parseFloat(handoffThresholdInput.value) : NaN;
+      const newContextHandoffThreshold = normalizeHandoffThreshold(
+        Number.isFinite(parsedHandoffThreshold) ? parsedHandoffThreshold * 1000 : settings.contextHandoffThreshold
+      );
+      // Minutes; 0 means never. Junk keeps what was stored.
+      const hibernateInput = document.getElementById('chat-hibernate-input');
+      const parsedHibernate = hibernateInput ? parseFloat(hibernateInput.value) : NaN;
+      const newChatHibernateMinutes = Number.isFinite(parsedHibernate) && parsedHibernate >= 0
+        ? parsedHibernate
+        : (settings.chatHibernateMinutes ?? null);
       const autoClaudeMdToggle = document.getElementById('auto-claude-md-toggle');
       const newAutoClaudeMd = autoClaudeMdToggle ? autoClaudeMdToggle.checked : true;
       const chromeBridgeToggle = document.getElementById('chrome-bridge-toggle');
@@ -2474,6 +2569,10 @@ class SettingsPanel extends BasePanel {
       const newRcDrive = rcDriveToggle ? rcDriveToggle.checked : settings.claudeRemoteControlDrive !== false;
       const rcTerminalsToggle = document.getElementById('claude-remote-terminals-toggle');
       const newRcTerminals = rcTerminalsToggle ? rcTerminalsToggle.checked : settings.claudeRemoteControlTerminals === true;
+      const mcpGrantsToggleEl = document.getElementById('mcp-permission-grants-toggle');
+      const newMcpPermissionGrants = mcpGrantsToggleEl ? mcpGrantsToggleEl.checked : settings.mcpPermissionGrantsEnabled === true;
+      const alwaysAllowBypassToggleEl = document.getElementById('always-allow-bypass-toggle');
+      const newAlwaysAllowBypass = alwaysAllowBypassToggleEl ? alwaysAllowBypassToggleEl.checked : settings.alwaysAllowBypassesSession === true;
       const context1MToggle = document.getElementById('enable-1m-context-toggle');
       const newEnable1MContext = context1MToggle ? context1MToggle.checked : settings.enable1MContext || false;
       const ephemeralChatsToggle = document.getElementById('ephemeral-chats-toggle');
@@ -2540,6 +2639,8 @@ class SettingsPanel extends BasePanel {
         claudeRemoteControlEnabled: newRcEnabled,
         claudeRemoteControlDrive: newRcDrive,
         claudeRemoteControlTerminals: newRcTerminals,
+        mcpPermissionGrantsEnabled: newMcpPermissionGrants,
+        alwaysAllowBypassesSession: newAlwaysAllowBypass,
         enable1MContext: newEnable1MContext,
         ephemeralChats: newEphemeralChats,
         showDotfiles: newShowDotfiles,
@@ -2557,6 +2658,9 @@ class SettingsPanel extends BasePanel {
         chromeBridgeEnabled: newChromeBridgeEnabled,
         autoClaudeMdUpdate: newAutoClaudeMd,
         maxTurns: newMaxTurns,
+        contextHandoffEnabled: newContextHandoffEnabled,
+        contextHandoffThreshold: newContextHandoffThreshold,
+        chatHibernateMinutes: newChatHibernateMinutes,
         telemetryEnabled: newTelemetryEnabled,
         orphanReaperEnabled: newOrphanReaperEnabled,
         telemetryCategories: newTelemetryCategories,
@@ -2719,6 +2823,10 @@ class SettingsPanel extends BasePanel {
     const personaInstructionsEl = document.getElementById('persona-instructions-input');
     if (personaNameEl) personaNameEl.addEventListener('blur', autoSave);
     if (personaInstructionsEl) personaInstructionsEl.addEventListener('blur', autoSave);
+    // Number fields commit on change (blur or Enter), not on every keystroke
+    for (const id of ['max-turns-input', 'context-handoff-threshold-input', 'chat-hibernate-input']) {
+      document.getElementById(id)?.addEventListener('change', autoSave);
+    }
 
     // Re-render settings when telemetry master toggle changes (to show/hide sub-toggles)
     const telemetryMasterToggle = document.getElementById('telemetry-enabled-toggle');
@@ -2881,6 +2989,7 @@ class SettingsPanel extends BasePanel {
               ${a.id === defaultId
                 ? `<span class="account-row-status">${escapeHtml(t('accounts.isDefault') || 'Default')}</span>`
                 : `<button class="btn btn-secondary btn-sm" data-action="set-default" data-id="${a.id}">${escapeHtml(t('accounts.makeDefault') || 'Make default')}</button>`}
+              <button class="btn btn-secondary btn-sm" data-action="reconnect" data-id="${a.id}" title="${escapeHtml(t('accounts.reconnectHint'))}">${escapeHtml(t('accounts.reconnect'))}</button>
               <button class="btn btn-secondary btn-sm" data-action="rename" data-id="${a.id}">${escapeHtml(t('common.rename') || 'Rename')}</button>
               <button class="btn btn-secondary btn-sm" data-action="remove" data-id="${a.id}">${escapeHtml(t('common.delete') || 'Delete')}</button>
             </div>
@@ -2946,6 +3055,13 @@ class SettingsPanel extends BasePanel {
           // very button in the DOM — always give it back.
           btn.disabled = false;
         }
+      } else if (action === 'reconnect') {
+        const { showAccountLoginModal } = require('../components/AccountLoginModal');
+        const name = btn.closest('.account-row')?.querySelector('.account-row-name')?.textContent || '';
+        const account = await showAccountLoginModal({ reconnect: { id, name } });
+        // The list follows through accounts-changed; the figures do not, and
+        // the ones on screen are the "unavailable" of the dead login.
+        if (account) await this._loadAccountsUsage({ force: true });
       } else if (action === 'rename') {
         const { showPrompt } = require('../components/Modal');
         const newName = await showPrompt({
@@ -3025,7 +3141,8 @@ class SettingsPanel extends BasePanel {
         try {
           const r = await this.api.accounts.capture(name);
           if (!r?.success) {
-            showError(r?.error || t('accounts.captureError'), 5000);
+            const { accountErrorMessage } = require('../components/AccountLoginModal');
+            showError(accountErrorMessage(r, t('accounts.captureError')), 5000);
             return;
           }
           await renderList();

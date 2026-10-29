@@ -24,9 +24,11 @@ const {
   readCredentialsForDir,
   writeSeedForDir,
   deleteCredentialsForDir,
+  tokenFromCredentials,
   SECURESTORAGE_ENV,
 } = require('../utils/claudeCredentials');
 const { runLogin, loginEnv } = require('../utils/claudeLogin');
+const { fetchOAuthIdentity } = require('../utils/oauthProfile');
 
 const accountsDir = path.join(dataDir, 'accounts');
 const indexFile = path.join(accountsDir, 'index.json');
@@ -460,21 +462,25 @@ async function captureCurrent(name) {
   const fingerprint = fingerprintCredentials(creds);
   if (!fingerprint) throw new Error('Credentials file has no usable access token.');
 
+  // Asked of the API, not read from ~/.claude.json: after an account switch
+  // that file still names whoever ran `claude /login` last.
+  const identity = await fetchOAuthIdentity(tokenFromCredentials(creds));
+
   const index = readIndex();
-  const existing = index.accounts.find(a => a.fingerprint === fingerprint);
-  if (existing) {
-    throw new Error(`This account is already saved as "${existing.name}".`);
-  }
+  const existing = index.accounts.find(a => a.fingerprint === fingerprint)
+    || findByIdentity(index, identity);
+  if (existing) throw duplicateError(existing);
 
   const id = generateId();
   const account = {
     id,
-    name: name?.trim() || `Account ${index.accounts.length + 1}`,
+    name: name?.trim() || identity?.email || `Account ${index.accounts.length + 1}`,
     color: null,
     fingerprint,
     createdAt: new Date().toISOString(),
     lastUsedAt: new Date().toISOString()
   };
+  applyIdentity(account, identity);
 
   const stored = accountCredentials(creds);
   fs.writeFileSync(accountFile(id), JSON.stringify(stored, null, 2), { mode: 0o600 });
@@ -487,6 +493,73 @@ async function captureCurrent(name) {
 
   writeSeedForDir(accountConfigDir(id), stored);
   return summarize(account);
+}
+
+/**
+ * The saved account a sign-in identity already belongs to, if any.
+ *
+ * Matched on the account and organisation ids, never on the fingerprint alone:
+ * every sign-in mints a new token, so the same account never fingerprints the
+ * same twice. One person can sit in two organisations (a personal plan and a
+ * Team seat), each with its own grant and limits, which is why the
+ * organisation is part of the key. An account saved before identities were
+ * recorded matches nothing until recordIdentity() has filled it in.
+ *
+ * @param {Object} index
+ * @param {{ accountUuid?: string|null, organizationUuid?: string|null }|null} identity
+ */
+function findByIdentity(index, identity) {
+  if (!identity?.accountUuid) return null;
+  return index.accounts.find(a =>
+    a.accountUuid === identity.accountUuid
+    && (a.organizationUuid || null) === (identity.organizationUuid || null)) || null;
+}
+
+function duplicateError(existing) {
+  const err = new Error(`This account is already saved as "${existing.name}".`);
+  err.code = 'ACCOUNT_DUPLICATE';
+  err.accountName = existing.name;
+  return err;
+}
+
+function applyIdentity(account, identity) {
+  if (!identity?.accountUuid) return;
+  account.accountUuid = identity.accountUuid;
+  if (identity.organizationUuid) account.organizationUuid = identity.organizationUuid;
+  if (identity.email) account.email = identity.email;
+}
+
+/** Accounts already asked about in this process, whatever the answer. */
+const identityAttempts = new Set();
+
+/**
+ * Fill in who an account is, for one saved before identities were recorded.
+ *
+ * Called with a token that has just been accepted by the API for this account
+ * (UsageService, after a successful usage fetch), so the answer describes the
+ * account and not whoever holds the machine-wide login. Asked once per account
+ * per process: an account the endpoint cannot place stays unidentified rather
+ * than costing a request on every usage tick.
+ *
+ * @param {string} accountId
+ * @param {string} token - an access token the API just accepted for it
+ * @returns {Promise<boolean>} whether the index was updated
+ */
+async function recordIdentity(accountId, token) {
+  if (!accountId || !token || identityAttempts.has(accountId)) return false;
+  const known = readIndex().accounts.find(a => a.id === accountId);
+  if (!known || known.accountUuid) return false;
+  identityAttempts.add(accountId);
+
+  const identity = await fetchOAuthIdentity(token);
+  if (!identity) return false;
+  // Re-read: the index may have moved while the request was out.
+  const index = readIndex();
+  const account = index.accounts.find(a => a.id === accountId);
+  if (!account || account.accountUuid) return false;
+  applyIdentity(account, identity);
+  writeIndex(index);
+  return true;
 }
 
 /**
@@ -513,14 +586,8 @@ function readLoginIdentity(configDir) {
 }
 
 /**
- * Record a signed-in store as a new account.
- *
- * A duplicate is matched on the account and organisation ids, not on the
- * fingerprint: every sign-in mints a new token, so the fingerprint of the same
- * account never matches twice. One person can sit in two organisations (a
- * personal plan and a Team seat), each with its own grant and limits, which is
- * why the organisation is part of the key. Captured accounts carry neither id
- * and are never matched here.
+ * Record a signed-in store as a new account, refusing one already saved
+ * (see findByIdentity()).
  */
 async function registerSignedIn(id, { name, storeDir, configDir }) {
   const creds = await readCredentialsForDir(storeDir);
@@ -528,15 +595,16 @@ async function registerSignedIn(id, { name, storeDir, configDir }) {
   if (!isUsableStore(creds) || !fingerprint) {
     throw new Error('Sign-in finished, but Claude Code wrote no usable credentials for the new account.');
   }
-  const identity = readLoginIdentity(configDir);
+  let identity = readLoginIdentity(configDir);
+  // The config file is the CLI's to write; when it left none, the token can
+  // still say who it is.
+  if (!identity.accountUuid) {
+    identity = (await fetchOAuthIdentity(tokenFromCredentials(creds))) || identity;
+  }
 
   const index = readIndex();
-  const existing = identity.accountUuid && index.accounts.find(a =>
-    a.accountUuid === identity.accountUuid
-    && (a.organizationUuid || null) === identity.organizationUuid);
-  if (existing) {
-    throw new Error(`This account is already saved as "${existing.name}".`);
-  }
+  const existing = findByIdentity(index, identity);
+  if (existing) throw duplicateError(existing);
 
   const now = new Date().toISOString();
   const account = {
@@ -547,9 +615,7 @@ async function registerSignedIn(id, { name, storeDir, configDir }) {
     createdAt: now,
     lastUsedAt: now
   };
-  if (identity.email) account.email = identity.email;
-  if (identity.accountUuid) account.accountUuid = identity.accountUuid;
-  if (identity.organizationUuid) account.organizationUuid = identity.organizationUuid;
+  applyIdentity(account, identity);
 
   // The store is the record from here on; the snapshot is the backup every
   // account keeps, and what ensureAccountStore() keeps current.
@@ -559,6 +625,61 @@ async function registerSignedIn(id, { name, storeDir, configDir }) {
   // whoever it held, and making this the default is setDefault()'s job, since
   // that is what puts an account in that store.
   writeIndex(index);
+  return summarize(account);
+}
+
+/**
+ * Put a fresh sign-in in place of a saved account's credentials.
+ *
+ * The sign-in ran in a scratch store, so the account's own store is only
+ * replaced once the new login is known to be the same Claude account: an
+ * account signed out by a refused refresh is still that account, and its
+ * bindings, colour and automations stay where they are.
+ *
+ * @param {string} id - the account being reconnected
+ * @param {{ storeDir: string, configDir: string }} opts
+ */
+async function replaceSignedIn(id, { storeDir, configDir }) {
+  const creds = await readCredentialsForDir(storeDir);
+  const fingerprint = fingerprintCredentials(creds);
+  if (!isUsableStore(creds) || !fingerprint) {
+    throw new Error('Sign-in finished, but Claude Code wrote no usable credentials.');
+  }
+  let identity = readLoginIdentity(configDir);
+  if (!identity.accountUuid) {
+    identity = (await fetchOAuthIdentity(tokenFromCredentials(creds))) || identity;
+  }
+
+  const index = readIndex();
+  const account = index.accounts.find(a => a.id === id);
+  if (!account) throw new Error(`Account ${id} not found.`);
+  if (account.accountUuid && identity.accountUuid
+      && (account.accountUuid !== identity.accountUuid
+        || (account.organizationUuid || null) !== (identity.organizationUuid || null))) {
+    const err = new Error(`This sign-in belongs to ${identity.email || 'another account'}, not to "${account.name}".`);
+    err.code = 'ACCOUNT_MISMATCH';
+    err.accountName = account.name;
+    err.email = identity.email || null;
+    throw err;
+  }
+  const other = findByIdentity(index, identity);
+  if (other && other.id !== id) throw duplicateError(other);
+
+  const stored = accountCredentials(creds);
+  fs.writeFileSync(accountFile(id), JSON.stringify(stored, null, 2), { mode: 0o600 });
+  account.fingerprint = fingerprint;
+  account.lastUsedAt = new Date().toISOString();
+  applyIdentity(account, identity);
+  writeIndex(index);
+
+  // The account's own store: dropped whole (Keychain entry included, since it
+  // would otherwise win over the seed) and seeded with the new login.
+  const ownDir = accountConfigDir(id);
+  await deleteCredentialsForDir(ownDir);
+  writeSeedForDir(ownDir, stored);
+  // The machine-wide store too when this account is the one it holds, since
+  // that is the store it authenticates from (see credentialsForAccount()).
+  if (index.liveId === id) await writeCurrentCredentials(stored);
   return summarize(account);
 }
 
@@ -576,15 +697,23 @@ let activeLogin = null;
  *
  * Starting a sign-in cancels the one in progress.
  *
+ * With `reconnectId`, the sign-in renews that saved account instead of adding
+ * one (replaceSignedIn()). It still runs in a scratch store, so a sign-in that
+ * fails, is cancelled or lands on someone else leaves the account untouched.
+ *
  * @param {Object} opts
  * @param {string} opts.command - the Claude Code binary
  * @param {string[]} [opts.commandArgs]
  * @param {string} [opts.name] - defaults to the account's email
+ * @param {string} [opts.reconnectId] - a saved account to sign in again
  * @param {(url: string) => void} [opts.onUrl]
  * @param {() => void} [opts.onInvalidCode]
- * @returns {Promise<Object>} the new account's summary
+ * @returns {Promise<Object>} the account's summary
  */
-function startLogin({ command, commandArgs, name, onUrl, onInvalidCode }) {
+function startLogin({ command, commandArgs, name, reconnectId, onUrl, onInvalidCode }) {
+  if (reconnectId && !readIndex().accounts.some(a => a.id === reconnectId)) {
+    return Promise.reject(new Error(`Account ${reconnectId} not found.`));
+  }
   cancelLogin();
   ensureDir();
   const id = generateId();
@@ -610,7 +739,14 @@ function startLogin({ command, commandArgs, name, onUrl, onInvalidCode }) {
   activeLogin = login;
 
   return login.result
-    .then(() => registerSignedIn(id, { name, storeDir, configDir }))
+    .then(async () => {
+      if (!reconnectId) return registerSignedIn(id, { name, storeDir, configDir });
+      const account = await replaceSignedIn(reconnectId, { storeDir, configDir });
+      // The scratch store has been copied into the account's own; keeping it
+      // would leave a second holder of the same grant.
+      await deleteCredentialsForDir(storeDir);
+      return account;
+    })
     .catch(async (err) => {
       // Whatever the CLI managed to write, Keychain entry included, belongs to
       // an account that does not exist.
@@ -800,6 +936,7 @@ module.exports = {
   startLogin,
   submitLoginCode,
   cancelLogin,
+  recordIdentity,
   switchTo,
   setDefault,
   syncActiveFromDisk,

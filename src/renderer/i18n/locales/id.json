@@ -223,6 +223,8 @@
     }
   },
   "gitTab": {
+    "nestedRepos": "Repositori",
+    "nestedRepoChanges": "{count} file diubah",
     "selectProject": "Pilih proyek untuk melihat informasi git",
     "notGitRepo": "Proyek ini bukan repositori Git",
     "gitUnavailable": "Git tidak dapat dijalankan",
@@ -450,6 +452,11 @@
     "nothingToCommit": "Tidak ada yang di-commit. Working tree bersih."
   },
   "dashboard": {
+    "nestedRepos": {
+      "title": "{count} repositori Git",
+      "open": "Buka {name} di tab Git",
+      "clean": "bersih"
+    },
     "brief": {
       "noGit": "Bukan repositori git",
       "synced": "tersinkron",
@@ -1167,6 +1174,17 @@
       "hostFailed": "Tidak dapat mendaftarkan konektor peramban. Tidak ada peramban yang didukung ditemukan.",
       "toggleError": "Gagal memperbarui integrasi peramban."
     },
+    "alwaysAllowBypass": {
+      "enable": "\"Selalu Izinkan\" melewati semua permintaan dalam percakapan",
+      "enableDesc": "Mati: \"Selalu Izinkan\" hanya mengizinkan alat itu sampai percakapan berakhir. Nyala: percakapan beralih ke mode bypass, sehingga tidak ada yang bertanya lagi sampai selesai.",
+      "warning": "Setiap pemanggilan alat berikutnya dalam percakapan berjalan tanpa bertanya, apa pun alatnya. Jika agen boleh memberikan izin tab lain, agen juga bisa memicu ini."
+    },
+    "mcpGrants": {
+      "title": "Orkestrasi agen",
+      "enable": "Izinkan agen memberi izin untuk tab lain",
+      "enableDesc": "Melalui alat MCP chat_respond_permission. Nonaktif: agen hanya dapat menolak permintaan tab lain, dan Anda menjawab sisanya di aplikasi.",
+      "warning": "Agen kemudian dapat menyetujui, di tab lain, perintah atau rencana yang tidak pernah Anda lihat, termasuk aturan \"Selalu Izinkan\". Aktifkan hanya jika satu agen mengendalikan agen lainnya dari awal hingga akhir."
+    },
     "advanced": "Lanjutan",
     "restoreTerminalSessions": "Ingat kondisi terminal terakhir",
     "restoreTerminalSessionsDesc": "Pulihkan tab terminal dan sesi Claude dari sesi sebelumnya saat aplikasi dijalankan",
@@ -1186,6 +1204,12 @@
     "maxTurns": "Batas giliran per sesi chat",
     "maxTurnsDesc": "Menghentikan sesi setelah mencapai jumlah pertukaran dengan API ini. Menghitung setiap pesan dan setiap panggilan alat di seluruh tab, bukan per pesan. Kosongkan untuk tanpa batas.",
     "maxTurnsPlaceholder": "Tanpa batas",
+    "contextHandoff": "Estafet percakapan panjang",
+    "contextHandoffDesc": "Saat konteks chat melewati ambang di bawah, Claude menulis ringkasan serah terima di akhir giliran dan tab berlanjut di sesi baru yang dimulai dari ringkasan itu. Sesi sebelumnya tetap ada di riwayat. Subagen, dan giliran yang jauh melewati ambang sebelum selesai, dipadatkan oleh CLI sendiri, 10% di atas ambang.",
+    "contextHandoffThreshold": "Ambang estafet (ribuan token)",
+    "contextHandoffThresholdDesc": "500 berarti 500k token, minimum 50. Jaga di bawah jendela konteks model: jika terlalu dekat, pemadatan bawaan CLI terjadi lebih dulu.",
+    "chatHibernate": "Tidurkan percakapan yang tidak aktif (menit)",
+    "chatHibernateDesc": "Tab chat yang tidak aktif selama ini menghentikan proses Claude Code-nya untuk membebaskan memori. Percakapan tetap tampil, dan pesan berikutnya melanjutkannya dari posisi terakhir. Tidak pernah berlaku untuk tab yang sedang dibuka, atau selama giliran, pertanyaan, atau tugas latar belakang masih berjalan. 0 berarti tidak pernah.",
     "saveError": "Gagal menyimpan pengaturan",
     "nameRequired": "Nama wajib diisi",
     "itemDeleted": "Item dihapus",
@@ -2173,6 +2197,13 @@
     "compacting": "Meringkas percakapan...",
     "compacted": "Percakapan diringkas (sebelumnya {tokens} token)",
     "compactedSimple": "Percakapan diringkas",
+    "handoffStarting": "Konteks di {tokens} (ambang {threshold}): Claude sedang menulis ringkasan serah terima, lalu percakapan berlanjut di sesi baru.",
+    "handoffSummarizing": "Menulis ringkasan serah terima...",
+    "handoffDivider": "Sesi baru · lanjutan dari konteks {tokens}",
+    "handoffSummary": "Ringkasan serah terima",
+    "handoffRequested": "Konteks di {tokens}: ringkasan serah terima diminta",
+    "handoffFailed": "Estafet tidak berhasil: percakapan tetap di sesi ini, dan tab ini tidak akan mencoba lagi.",
+    "subagentContext": "Jendela konteks agen ini: {tokens} token",
     "slashCompact": "Ringkas riwayat percakapan",
     "slashClear": "Bersihkan percakapan",
     "slashHelp": "Tampilkan bantuan",
@@ -4512,7 +4543,7 @@
     "chooseForProjectTitle": "Akun Claude",
     "chooseForProject": "Akun mana yang dipakai {project}? Bisa diubah nanti dari tabnya.",
     "usageLoading": "Membaca penggunaan…",
-    "usageUnavailable": "Penggunaan tidak tersedia — jalankan \"claude /login\" pada akun ini",
+    "usageUnavailable": "Penggunaan tidak tersedia: klik \"Hubungkan ulang\" untuk masuk lagi dengan akun ini",
     "usageStale": "API tidak dapat memastikan angka ini",
     "usageRefresh": "Segarkan penggunaan",
     "limitedUntil": "Tersedia lagi dalam {time}",
@@ -4537,7 +4568,14 @@
     "loginChecking": "Memeriksa kode…",
     "loginInvalidCode": "Kode ini tidak diterima. Salin seluruh kode lalu coba lagi.",
     "loginSuccess": "Akun \"{name}\" terhubung.",
-    "loginError": "Gagal masuk."
+    "reconnect": "Hubungkan ulang",
+    "reconnectHint": "Masuk lagi dengan akun ini tanpa kehilangan proyek atau otomatisasinya",
+    "reconnectTitle": "Hubungkan ulang \"{name}\"",
+    "reconnectIntro": "Masuk lagi dengan akun yang disimpan sebagai \"{name}\". Proyek, warna, dan otomatisasinya tetap seperti semula.",
+    "reconnectSuccess": "Akun \"{name}\" terhubung kembali.",
+    "reconnectMismatch": "Login ini milik akun lain, bukan \"{name}\". Masuk dengan akun yang benar.",
+    "loginError": "Gagal masuk.",
+    "duplicate": "Akun ini sudah disimpan sebagai \"{name}\"."
   },
   "usage": {
     "staleRetry": "Data penggunaan mungkin sudah tidak terbaru - pemuatan terakhir gagal. Percobaan berikutnya pukul {time}; klik untuk mencoba sekarang. {error}",

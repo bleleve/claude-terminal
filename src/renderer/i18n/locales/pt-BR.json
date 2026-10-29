@@ -223,6 +223,8 @@
     }
   },
   "gitTab": {
+    "nestedRepos": "Repositórios",
+    "nestedRepoChanges": "{count} arquivo(s) alterado(s)",
     "selectProject": "Selecione um projeto para ver as informações do Git",
     "notGitRepo": "Este projeto não é um repositório Git",
     "gitUnavailable": "Não foi possível executar o Git",
@@ -450,6 +452,11 @@
     "nothingToCommit": "Nada para commitar. A árvore de trabalho está limpa."
   },
   "dashboard": {
+    "nestedRepos": {
+      "title": "{count} repositório(s) Git",
+      "open": "Abrir {name} na aba Git",
+      "clean": "limpo"
+    },
     "brief": {
       "noGit": "Não é um repositório git",
       "synced": "sincronizado",
@@ -1167,6 +1174,17 @@
       "hostFailed": "Não foi possível registrar o conector do navegador. Nenhum navegador compatível foi encontrado.",
       "toggleError": "Falha ao atualizar a integração com o navegador."
     },
+    "alwaysAllowBypass": {
+      "enable": "\"Sempre permitir\" ignora todas as solicitações da conversa",
+      "enableDesc": "Desativado: \"Sempre permitir\" permite apenas essa ferramenta até o fim da conversa. Ativado: a conversa passa para o modo de ignorar permissões e nada volta a perguntar até ela terminar.",
+      "warning": "Todas as chamadas de ferramentas seguintes da conversa são executadas sem perguntar, seja qual for a ferramenta. Se um agente puder conceder as permissões de outra aba, ele também pode acionar isso."
+    },
+    "mcpGrants": {
+      "title": "Orquestração de agentes",
+      "enable": "Permitir que um agente conceda as permissões de outra aba",
+      "enableDesc": "Pela ferramenta MCP chat_respond_permission. Desativado: um agente só pode negar os pedidos de outra aba, e você responde ao resto no app.",
+      "warning": "Um agente poderá então aprovar, em outra aba, um comando ou um plano que você nunca vê, inclusive regras \"Sempre permitir\". Ative apenas se um agente conduz os outros do início ao fim."
+    },
     "advanced": "Avançado",
     "restoreTerminalSessions": "Lembrar o último estado dos terminais",
     "restoreTerminalSessionsDesc": "Restaura as abas de terminal e as sessões do Claude da sessão anterior ao iniciar",
@@ -1186,6 +1204,12 @@
     "maxTurns": "Limite de turnos por sessão de chat",
     "maxTurnsDesc": "Interrompe a sessão quando ela atinge esse número de trocas com a API. Conta cada prompt e cada ida e volta de ferramenta em toda a aba, não por mensagem. Deixe vazio para não ter limite.",
     "maxTurnsPlaceholder": "Sem limite",
+    "contextHandoff": "Revezamento de conversas longas",
+    "contextHandoffDesc": "Quando o contexto de um chat passa do limite abaixo, o Claude escreve um resumo de passagem no fim do turno e a aba continua em uma nova sessão que começa a partir dele. A sessão anterior fica no histórico. Os subagentes, e um turno que passa muito do limite antes de terminar, são compactados pelo próprio CLI, 10% acima do limite.",
+    "contextHandoffThreshold": "Limite do revezamento (milhares de tokens)",
+    "contextHandoffThresholdDesc": "500 significa 500k tokens, mínimo 50. Mantenha abaixo da janela de contexto do modelo: perto demais, a compactação do próprio CLI acontece antes.",
+    "chatHibernate": "Suspender conversas inativas (minutos)",
+    "chatHibernateDesc": "Uma aba de chat inativa por esse tempo encerra o processo do Claude Code para liberar memória. A conversa continua na tela, e a próxima mensagem a retoma de onde parou. Nunca se aplica à aba aberta, nem enquanto um turno, uma pergunta ou uma tarefa em segundo plano ainda estiverem em andamento. 0 significa nunca.",
     "saveError": "Falha ao salvar as configurações",
     "nameRequired": "O nome é obrigatório",
     "itemDeleted": "Item removido",
@@ -2173,6 +2197,13 @@
     "compacting": "Compactando conversa...",
     "compacted": "Conversa compactada ({tokens} tokens antes)",
     "compactedSimple": "Conversa compactada",
+    "handoffStarting": "Contexto em {tokens} (limite {threshold}): o Claude está escrevendo um resumo de passagem, depois a conversa continua em uma nova sessão.",
+    "handoffSummarizing": "Escrevendo o resumo de passagem...",
+    "handoffDivider": "Nova sessão · continua um contexto de {tokens}",
+    "handoffSummary": "Resumo de passagem",
+    "handoffRequested": "Contexto em {tokens}: resumo de passagem solicitado",
+    "handoffFailed": "O revezamento não deu certo: a conversa continua nesta sessão, e esta aba não vai tentar de novo.",
+    "subagentContext": "Janela de contexto deste agente: {tokens} tokens",
     "slashCompact": "Compactar o histórico da conversa",
     "slashClear": "Limpar conversa",
     "slashHelp": "Mostrar ajuda",
@@ -4512,7 +4543,7 @@
     "chooseForProjectTitle": "Conta do Claude",
     "chooseForProject": "Com qual conta {project} deve ser executado? Você pode alterar isso depois pela aba dele.",
     "usageLoading": "Lendo uso…",
-    "usageUnavailable": "Uso indisponível — execute \"claude /login\" nesta conta",
+    "usageUnavailable": "Uso indisponível: clique em \"Reconectar\" para entrar de novo com esta conta",
     "usageStale": "A API não pôde confirmar estes números",
     "usageRefresh": "Atualizar uso",
     "limitedUntil": "Disponível novamente em {time}",
@@ -4537,7 +4568,14 @@
     "loginChecking": "Verificando o código…",
     "loginInvalidCode": "Este código não foi aceito. Copie o código inteiro e tente novamente.",
     "loginSuccess": "Conta \"{name}\" conectada.",
-    "loginError": "Falha ao entrar."
+    "reconnect": "Reconectar",
+    "reconnectHint": "Entrar de novo com esta conta sem perder seus projetos nem automações",
+    "reconnectTitle": "Reconectar \"{name}\"",
+    "reconnectIntro": "Entre novamente com a conta salva como \"{name}\". Os projetos, a cor e as automações dela continuam como estão.",
+    "reconnectSuccess": "Conta \"{name}\" reconectada.",
+    "reconnectMismatch": "Este login pertence a outra conta, não a \"{name}\". Entre com a conta certa.",
+    "loginError": "Falha ao entrar.",
+    "duplicate": "Esta conta já está salva como \"{name}\"."
   },
   "usage": {
     "staleRetry": "Os dados de uso podem estar desatualizados - a última atualização falhou. Próxima tentativa às {time}; clique para tentar agora. {error}",

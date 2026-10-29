@@ -9,6 +9,7 @@ const api = window.electron_api;
 const { path, fs, process: nodeProcess, __dirname } = window.electron_nodeModules;
 const { fileExists, fsp, ensureDirs } = require('./src/renderer/utils/fs-async');
 const { matchesSessionQuery } = require('./src/renderer/utils/sessionSearch');
+const nestedRepos = require('./src/renderer/utils/nestedRepos');
 const { createTerminalTicketsButton } = require('./src/renderer/ui/components/terminal/ticketsButton');
 const { applyNavigationMode, isSidebarNavigation, isProjectsPopoverOpen } = require('./src/renderer/ui/navigationMode');
 
@@ -1482,6 +1483,12 @@ if (api.mcpTerminal) {
       }
 
       const termData = terminals.get(targetId);
+      // Same refusal as tab_send: typing into a tab that shows the CLI's
+      // approval dialog would answer it Yes.
+      if (termData?.mode !== 'chat' && TerminalManager.refusesAgentInput(termData)) {
+        console.warn(`[MCP Terminal] Refused send to terminal ${targetId}: it is waiting on a permission prompt`);
+        return;
+      }
       console.log(`[MCP Terminal] Sending to terminal ${targetId} (mode=${termData?.mode || '?'}): ${data.command}`);
 
       if (termData?.mode === 'chat' && termData?.chatView) {
@@ -5854,9 +5861,12 @@ let currentFilterProjectId = null;
 let currentFilterWorktreePath = null; // non-null when active tab is a worktree
 let branchCache = { projectId: null, data: null };
 
-// Returns the git working directory: worktree path if active tab is a worktree, else project path
+// Returns the git working directory: worktree path if active tab is a worktree,
+// the picked sub-folder repository for a folder grouping several, else project path
 function getEffectiveGitPath() {
-  return currentFilterWorktreePath || getProject(currentFilterProjectId)?.path;
+  return currentFilterWorktreePath
+    || nestedRepos.getSelectedRepoPath(currentFilterProjectId)
+    || getProject(currentFilterProjectId)?.path;
 }
 
 function hideFilterGitActions() {
@@ -5919,11 +5929,19 @@ async function showFilterGitActions(projectId) {
     return;
   }
 
-  // Check if it's a git repo
+  // Check if it's a git repo, or a folder whose sub-folders are
   const gitStatus = localState.gitRepoStatus.get(projectId);
-  if (!gitStatus || !gitStatus.isGitRepo) {
+  if (!gitStatus) {
     filterGitActions.style.display = 'none';
     return;
+  }
+  if (!gitStatus.isGitRepo) {
+    const repos = await nestedRepos.listNestedRepos(project);
+    if (callVersion !== _showFilterGitActionsVersion) return;
+    if (!repos.length) {
+      filterGitActions.style.display = 'none';
+      return;
+    }
   }
 
   currentFilterProjectId = projectId;
@@ -6261,6 +6279,18 @@ document.addEventListener('click', (e) => {
     branchDropdown.classList.remove('active');
     filterBtnBranch.classList.remove('open');
   }
+});
+
+// A sub-folder repository was picked (Git tab, Changes panel): the toolbar's
+// branch name and dropdown follow it.
+nestedRepos.onSelectionChange((projectId) => {
+  if (projectId !== currentFilterProjectId) return;
+  branchCache = { projectId: null, data: null };
+  const gitPath = getEffectiveGitPath();
+  if (!gitPath || filterGitActions.style.display === 'none') return;
+  api.git.currentBranch({ projectPath: gitPath })
+    .then(branch => { if (projectId === currentFilterProjectId && filterBranchName) filterBranchName.textContent = branch || 'main'; })
+    .catch(() => {});
 });
 
 // Subscribe to project filter changes to show/hide git actions
