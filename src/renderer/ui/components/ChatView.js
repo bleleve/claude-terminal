@@ -241,6 +241,7 @@ class ChatView extends BaseComponent {
   let currentMsgHasToolUse = false;
   let turnHadAssistantContent = false; // tracks if current turn displayed any streamed/assistant content
   let turnErrorShown = false; // an in-band error banner (assistant msg.error) is already on screen for this turn
+  let turnFailed = false; // an error banner went up since the last turn started: the tab ends on `error`, not `idle`
   let todoWidgetEl = null; // persistent task list widget
   let todoAllDone = false; // tracks if all tasks are completed
   // ── Task tool accumulator (SDK 0.3+ TaskCreate / TaskUpdate / TaskList) ──
@@ -4601,6 +4602,11 @@ class ChatView extends BaseComponent {
     if (action) attachErrorAction(el, action);
     messagesEl.appendChild(el);
     scrollToBottom();
+    // Every banner is a failure the user has to see, and the transcript is
+    // only on screen while this tab is. Mid-turn the flag waits for the turn
+    // to end; outside one (a send refused before it started) it shows now.
+    turnFailed = true;
+    if (!isStreaming) setStatus('error', t('chat.statusError'));
     return el;
   }
 
@@ -6844,6 +6850,7 @@ class ChatView extends BaseComponent {
     }
 
     if (streaming) {
+      turnFailed = false;
       elapsedTimer.start();
       inputEl.dataset.placeholder = t('chat.queuePlaceholder') || 'Queue a follow-up message...';
       setStatus('thinking', t('chat.thinking'));
@@ -6857,7 +6864,8 @@ class ChatView extends BaseComponent {
       if (getSetting('enableFollowupSuggestions') !== false) {
         followupChips.flush();
       }
-      setStatus('idle', t('chat.ready') || 'Ready');
+      if (turnFailed) setStatus('error', t('chat.statusError'));
+      else setStatus('idle', t('chat.ready') || 'Ready');
       inputEl.focus();
     }
   }
@@ -6874,6 +6882,9 @@ class ChatView extends BaseComponent {
           break;
         case 'waiting':
           onStatusChange('working', 'waiting');
+          break;
+        case 'error': // ready for the next message, but the last one failed
+          onStatusChange('ready', 'error');
           break;
         case 'working':
           onStatusChange('working', 'tool_calling');
