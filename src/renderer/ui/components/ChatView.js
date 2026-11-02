@@ -108,7 +108,7 @@ class ChatView extends BaseComponent {
 
   createChatView(wrapperEl, project, options = {}) {
     const api = this._api;
-  const { terminalId = null, resumeSessionId = null, forkSession = false, resumeSessionAt = null, resumeDropsTurn = null, skipPermissions = false, onTabRename = null, onStatusChange = null, onModelChange = null, onSwitchTerminal = null, onSwitchProject = null, onForkSession = null, onRunInTerminal = null, initialPrompt = null, initialModel = null, initialEffort = null, initialImages = null, onSessionStart = null, systemPrompt = null, builtinSystemPrompt = null, draftPrompt = null, initialTickets = null } = options;
+  const { terminalId = null, resumeSessionId = null, forkSession = false, resumeSessionAt = null, resumeDropsTurn = null, skipPermissions = false, onTabRename = null, onStatusChange = null, onModelChange = null, onSwitchTerminal = null, onSwitchProject = null, onForkSession = null, onRunInTerminal = null, initialPrompt = null, initialModel = null, initialEffort = null, initialImages = null, onSessionStart = null, onCliSessionId = null, systemPrompt = null, builtinSystemPrompt = null, draftPrompt = null, initialTickets = null } = options;
   let sessionId = null;
   let destroyed = false;
   // Puts this tab's session to sleep once it has been idle long enough; see
@@ -8161,11 +8161,17 @@ class ChatView extends BaseComponent {
       // The CLI's id is what a restored tab resumes on, so it has to name this
       // tab's task history too — that is the link the next run reads.
       taskOwnerKey = tasksStore.claimSession(taskOwnerKey || msg.session_id, msg.session_id);
-      // Propagate new session ID to termData for persistence (fixes /clear not saving new ID)
-      if (terminalId) {
-        updateTerminal(terminalId, { claudeSessionId: msg.session_id });
-        saveTerminalSessions();
-      }
+    }
+    // The tab persists the CLI's id, which is what a restart resumes. Checked on
+    // every message rather than only when the id changes: a resume reports the
+    // id the view already knew, so a tab that lost it on the way would never
+    // get it back. Covers /clear too, whose new id lands here. The tab is told
+    // which id it held, so a name filed under ChatService's handle can follow.
+    const tabSessionId = terminalId ? getTerminal(terminalId)?.claudeSessionId : undefined;
+    if (msg.session_id && terminalId && tabSessionId !== msg.session_id) {
+      updateTerminal(terminalId, { claudeSessionId: msg.session_id });
+      saveTerminalSessions();
+      if (onCliSessionId) onCliSessionId(msg.session_id, tabSessionId || null);
     }
 
     // Store message UUID on the assistant DOM element (used for fork)

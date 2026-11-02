@@ -7,6 +7,7 @@
 const { BaseComponent } = require('../../core/BaseComponent');
 const { matchesSessionQuery } = require('../../utils/sessionSearch');
 const { isCliFailureText } = require('../../../shared/cli-failure-text');
+const { isChatServiceHandle } = require('../../services/TerminalSessionService');
 const { isSidebarNavigation } = require('../navigationMode');
 
 // xterm is loaded on demand — see src/renderer/services/xtermLoader.js. Every
@@ -137,6 +138,26 @@ const PERMISSION_DIALOG_REFUSAL = 'This tab is waiting on a permission prompt, a
 function refusesAgentInput(termData) {
   if (getSetting('mcpPermissionGrantsEnabled') === true) return false;
   return detectPermissionDialog(termData?.terminal);
+}
+
+/**
+ * Record the id a chat view reports when it starts a session.
+ *
+ * That id is ChatService's own (`chat-<ts>-<rand>`), not the CLI's: the CLI's
+ * arrives with the first message, and ChatView writes it over this one only
+ * when it differs from the id the view already knew. So it may stand in for a
+ * tab with no conversation yet, never replace one the tab already holds. A tab
+ * restored, woken from idle sleep or switched from terminal mode resumes under
+ * the same CLI id, nothing writes that id back, and the next restart resumed an
+ * id with no transcript: an empty "Conversation resumed" and the conversation
+ * gone from the tab.
+ *
+ * @param {string} terminalId
+ * @param {string} sid - ChatService session id
+ */
+function noteChatSessionStart(terminalId, sid) {
+  if (getTerminal(terminalId)?.claudeSessionId) return;
+  updateTerminal(terminalId, { claudeSessionId: sid });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2772,6 +2793,37 @@ class TerminalManager extends BaseComponent {
     await this._saveSessionNames();
   }
 
+  /**
+   * Move the name a tab filed under ChatService's handle to the CLI's id.
+   *
+   * A fresh tab is named from its first prompt before the CLI has answered
+   * with the conversation's id, so that name is filed under the handle the
+   * tab held meanwhile. The sessions list only knows the CLI's id: without
+   * this, the conversation shows up there under its first prompt instead of
+   * the name the tab carried, custom or not.
+   *
+   * Only a handle's entry moves. A CLI id replaced by another one (/clear)
+   * names a conversation of its own, which keeps its name.
+   *
+   * @param {string|null} fromId - id the tab held before
+   * @param {string} toId - CLI session id
+   */
+  async _carrySessionName(fromId, toId) {
+    if (!toId || !isChatServiceHandle(fromId)) return;
+    const names = await this._loadSessionNames();
+    const entry = names[fromId];
+    if (!entry) return;
+    delete names[fromId];
+    const target = names[toId];
+    const targetCustom = !!(target && typeof target === 'object' && target.custom);
+    const entryCustom = !!(typeof entry === 'object' && entry.custom);
+    // A name already filed under the CLI id wins, unless the user chose the
+    // moving one and the other is only an auto name.
+    if (!target || (entryCustom && !targetCustom)) names[toId] = entry;
+    this._namesCache = names;
+    await this._saveSessionNames();
+  }
+
   // Mirror a rename made in the sessions list onto any open tab running that
   // session, so the tab does not overwrite it on the next auto rename.
   _applyNameToOpenTabs(sessionId, name, custom) {
@@ -4265,12 +4317,15 @@ class TerminalManager extends BaseComponent {
       ...(systemPrompt ? { systemPrompt } : {}),
       onSessionStart: (sid) => {
         _chatSessionId = sid;
-        updateTerminal(id, { claudeSessionId: sid });
-        // A tab renamed before its session existed persists the name now
+        noteChatSessionStart(id, sid);
+        // A tab renamed before its session existed persists the name now,
+        // under the id the tab keeps: a restored tab keeps its CLI id, and a
+        // name filed under this start's handle would never be read again.
         const td = getTerminal(id);
-        if (td?.nameCustom && td.name) self._setSessionCustomName(sid, td.name);
+        if (td?.nameCustom && td.name) self._setSessionCustomName(td.claudeSessionId || sid, td.name);
         if (onSessionStart) onSessionStart(sid);
       },
+      onCliSessionId: (cliId, previousId) => self._carrySessionName(previousId, cliId),
       onTabRename: (name) => self.updateTerminalTabName(id, name),
       onStatusChange: (status, substatus) => self._updateChatTerminalStatus(id, status, substatus),
       onModelChange: ({ family, tier }) => self._setChatTabModelTag(id, family, tier),
@@ -4401,7 +4456,8 @@ class TerminalManager extends BaseComponent {
         initialModel: projSettings.chatModel || null,
         initialEffort: projSettings.effortLevel || null,
         builtinSystemPrompt: getBuiltinSystemPrompt(project.type),
-        onSessionStart: (sid) => updateTerminal(id, { claudeSessionId: sid }),
+        onSessionStart: (sid) => noteChatSessionStart(id, sid),
+        onCliSessionId: (cliId, previousId) => self._carrySessionName(previousId, cliId),
         onTabRename: (name) => self.updateTerminalTabName(id, name),
         onStatusChange: (status, substatus) => self._updateChatTerminalStatus(id, status, substatus),
         onModelChange: ({ family, tier }) => self._setChatTabModelTag(id, family, tier),
@@ -4903,6 +4959,7 @@ let _instance = null;
 function _getInstance() { if (!_instance) _instance = new TerminalManager(); return _instance; }
 
 module.exports = {
+  noteChatSessionStart,
   TerminalManager,
   createTerminal: (project, options) => _getInstance().createTerminal(project, options),
   closeTerminal: (id) => _getInstance().closeTerminal(id),
