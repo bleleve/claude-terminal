@@ -69,7 +69,6 @@ const ModelCatalog = require('../../services/ModelCatalogClient');
 
 // Catalog access is shared with the project-settings and parallel-run pickers
 // (see ModelCatalogClient), so all three always agree on which models exist.
-const allCatalogModels = () => ModelCatalog.allModels();
 const loadModelCatalog = (api, opts) => ModelCatalog.load(api, opts);
 
 const EFFORT_OPTIONS = [
@@ -183,6 +182,14 @@ class ChatView extends BaseComponent {
   function conversationAccountId() {
     return lastStartOpts ? (lastStartOpts.accountId ?? null) : getProjectAccount(project.id);
   }
+  // The catalog as this tab's account sees it: the shared tiers plus the models
+  // only that account may run (Mythos), which the CLI's menu never lists.
+  const tabCatalog = () => ModelCatalog.catalogFor(conversationAccountId());
+  const allCatalogModels = () => ModelCatalog.modelsFor(conversationAccountId());
+  const loadTabCatalog = () => Promise.all([
+    loadModelCatalog(api),
+    ModelCatalog.loadAccess(api, conversationAccountId()),
+  ]);
   // A limit refused the turn that was running, so a switch has to ask for that
   // turn back instead of resuming into a session that answers nothing. Cleared
   // as soon as a turn runs again, so a later switch from the account menu on an
@@ -1146,7 +1153,7 @@ class ChatView extends BaseComponent {
     const preferred = chosen
       || chosenId(initialModel)
       || chosenId(getSetting('chatModel'))
-      || ModelCatalog.getCatalog().recommended
+      || tabCatalog().recommended
       // Nothing better to show yet: keep what the last pass derived rather than
       // blanking the chip.
       || selectedModel
@@ -1190,7 +1197,7 @@ class ChatView extends BaseComponent {
 
   async function initModelSelector() {
     applyResolvedModel();
-    await loadModelCatalog(api);
+    await loadTabCatalog();
     applyResolvedModel();
     syncEffortVisibility();
   }
@@ -1243,11 +1250,11 @@ class ChatView extends BaseComponent {
   }
 
   function buildModelDropdown() {
-    const legacy = ModelCatalog.getCatalog().legacy || [];
+    const legacy = tabCatalog().legacy || [];
 
     modelDropdown.innerHTML = `
       <div class="chat-model-group">
-        ${ModelCatalog.getCatalog().primary.map((m, i) => renderModelRow(m, i)).join('')}
+        ${tabCatalog().primary.map((m, i) => renderModelRow(m, i)).join('')}
       </div>
       ${legacy.length ? `
       <div class="chat-model-sep"></div>
@@ -1280,7 +1287,7 @@ class ChatView extends BaseComponent {
       return;
     }
     if (!/^[1-9]$/.test(e.key)) return;
-    const target = ModelCatalog.getCatalog().primary[Number(e.key) - 1];
+    const target = tabCatalog().primary[Number(e.key) - 1];
     if (!target) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1300,7 +1307,9 @@ class ChatView extends BaseComponent {
     document.addEventListener('keydown', onModelMenuKeydown, true);
     // A cold first open renders the fallback tier; repaint in place once the
     // CLI answers so the user never has to close and reopen to see the truth.
-    loadModelCatalog(api).then(() => {
+    // The account's own models are asked here too: the tab may have moved to
+    // another account since the selector was set up.
+    loadTabCatalog().then(() => {
       if (modelDropdown.style.display === 'none') return;
       applyResolvedModel();
       syncEffortVisibility();
@@ -1644,7 +1653,7 @@ class ChatView extends BaseComponent {
 
   /** The model the CLI recommends, as a catalog row — null when it hasn't said. */
   function recommendedModelRow() {
-    return matchModel(allCatalogModels(), ModelCatalog.getCatalog().recommended);
+    return matchModel(allCatalogModels(), tabCatalog().recommended);
   }
 
   /**
