@@ -1743,6 +1743,16 @@ class SettingsPanel extends BasePanel {
                       .join('')}
                   </select>
                 </div>
+                <div class="settings-toggle-row">
+                  <div class="settings-toggle-label">
+                    <div>${t('settings.chatBlockWritesOutsideCwd')}</div>
+                    <div class="settings-toggle-desc">${t('settings.chatBlockWritesOutsideCwdDesc')}</div>
+                  </div>
+                  <label class="settings-toggle">
+                    <input type="checkbox" id="chat-block-writes-toggle" ${settings.chatBlockWritesOutsideCwd === true ? 'checked' : ''}>
+                    <span class="settings-toggle-slider"></span>
+                  </label>
+                </div>
               </div>
             </div>
             <div class="settings-group">
@@ -2576,6 +2586,8 @@ class SettingsPanel extends BasePanel {
       const newChatSubagentEffort = subagentEffortSelect
         ? (normalizeSubagentEffort(subagentEffortSelect.value) || '')
         : (settings.chatSubagentEffort || '');
+      const blockWritesToggle = document.getElementById('chat-block-writes-toggle');
+      const newChatBlockWritesOutsideCwd = blockWritesToggle ? blockWritesToggle.checked : settings.chatBlockWritesOutsideCwd === true;
       const autoClaudeMdToggle = document.getElementById('auto-claude-md-toggle');
       const newAutoClaudeMd = autoClaudeMdToggle ? autoClaudeMdToggle.checked : true;
       const chromeBridgeToggle = document.getElementById('chrome-bridge-toggle');
@@ -2681,6 +2693,7 @@ class SettingsPanel extends BasePanel {
         contextHandoffThreshold: newContextHandoffThreshold,
         chatHibernateMinutes: newChatHibernateMinutes,
         chatSubagentEffort: newChatSubagentEffort,
+        chatBlockWritesOutsideCwd: newChatBlockWritesOutsideCwd,
         telemetryEnabled: newTelemetryEnabled,
         orphanReaperEnabled: newOrphanReaperEnabled,
         telemetryCategories: newTelemetryCategories,

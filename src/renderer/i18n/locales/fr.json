@@ -150,7 +150,12 @@
     "loadingHint": "Cela peut prendre quelques secondes",
     "resumeSession": "Reprendre une session Claude",
     "addSession": "Nouvelle session ou terminal",
-    "newClaudeSession": "Nouvelle session Claude"
+    "newClaudeSession": "Nouvelle session Claude",
+    "splitUnsupported": "Les consoles de projet (FiveM, WebApp, API...) ne peuvent pas encore aller dans une vue divisée",
+    "splitMaxPanes": "Une vue divisée contient au plus {count} panneaux",
+    "splitTooSmall": "Pas assez de place pour un panneau de plus : agrandissez la fenêtre ou fermez un panneau",
+    "splitClosePane": "Retirer ce panneau (l'onglet reste ouvert)",
+    "splitResize": "Redimensionner les panneaux"
   },
   "mcp": {
     "notFound": "MCP introuvable",
@@ -772,7 +777,9 @@
     "terminalWordJump": "Saut de mot au lieu de changement d'onglet (Ctrl+Flèche)",
     "terminalTabSwitch": "Changer d'onglet (Ctrl+Tab)",
     "terminalRightClickPaste": "Coller au clic droit",
-    "terminalRightClickCopyPaste": "Copier/coller au clic droit (style Windows Terminal)"
+    "terminalRightClickCopyPaste": "Copier/coller au clic droit (style Windows Terminal)",
+    "splitRight": "Diviser à droite",
+    "splitDown": "Diviser en bas"
   },
   "contextMenu": {
     "newSubfolder": "Nouveau sous-dossier",
@@ -1308,6 +1315,8 @@
     "chatSubagentEffort": "Effort des sous-agents",
     "chatSubagentEffortDesc": "L'effort des sous-agents quand rien d'autre ne le fixe (leur propre définition, ou Claude qui demande un niveau). Par défaut, ils prennent celui de la conversation. S'applique à partir de la session suivante, avec Claude Code 2.1.316 ou plus récent.",
     "chatSubagentEffortInherit": "Comme la conversation",
+    "chatBlockWritesOutsideCwd": "Refuser les écritures hors du projet",
+    "chatBlockWritesOutsideCwdDesc": "Write, Edit et NotebookEdit refusent tout chemin hors des dossiers de travail de la session, dans tous les modes de permission, bypass compris. Claude perd aussi EnterWorktree et ExitWorktree : il ne peut plus passer dans un worktree git à lui, ni modifier les fichiers de réglages de Claude Code. Les commandes shell et les outils MCP ne sont pas limités. S'applique à partir de la session suivante, avec Claude Code 2.1.314 ou plus récent.",
     "saveError": "Erreur lors de la sauvegarde des paramètres",
     "nameRequired": "Le nom est requis",
     "itemDeleted": "Élément supprimé",
@@ -2010,7 +2019,8 @@
       "updating": "Mise à jour...",
       "retry": "Réessayer",
       "errorEmpty": "Rien à résumer pour l'instant.",
-      "errorFailed": "Le brief n'a pas pu être rédigé. Réessayez dans un instant."
+      "errorFailed": "Le brief n'a pas pu être rédigé. Réessayez dans un instant.",
+      "errorRead": "Le brief enregistré n'a pas pu être lu."
     },
     "title": "Chat",
     "sendMessage": "Envoyer",
@@ -2195,6 +2205,7 @@
     "todoTitle": "Tâches",
     "todoAllDone": "Terminé",
     "subagentLaunching": "Lancement de l'agent...",
+    "subagentFork": "Fork de la conversation",
     "subagentRunning": "Agent en cours...",
     "subagentThinking": "Réflexion...",
     "compacting": "Compaction de la conversation...",
@@ -3177,7 +3188,11 @@
     "closeTabTitle": "Fermer {name} ?",
     "closeTabMessage": "Cet onglet va être fermé. Toute session en cours y sera terminée.",
     "closeTabRemember": "Mémoriser mon choix",
-    "closeAll": "Tout fermer"
+    "closeAll": "Tout fermer",
+    "openRight": "Ouvrir à droite",
+    "openBelow": "Ouvrir en bas",
+    "removeFromSplit": "Retirer de la vue divisée",
+    "exitSplit": "Quitter la vue divisée"
   },
   "telemetry": {
     "consentTitle": "Aidez à améliorer Claude Terminal",

@@ -49,14 +49,16 @@ describe('chat side column', () => {
     ({ createSidePanel, STORAGE_KEY } = require('../../src/renderer/ui/components/chat/sidePanel'));
   });
 
-  test('starts expanded, and comes back collapsed if it was left so', () => {
-    expect(createSidePanel(markup()).isCollapsed()).toBe(false);
-
-    jest.resetModules();
-    localStorage.setItem(STORAGE_KEY, 'true');
-    ({ createSidePanel } = require('../../src/renderer/ui/components/chat/sidePanel'));
+  test('starts collapsed, and comes back open if it was left so', () => {
     expect(createSidePanel(markup()).isCollapsed()).toBe(true);
     expect(document.body.classList.contains('chat-side-collapsed')).toBe(true);
+
+    jest.resetModules();
+    document.body.className = '';
+    localStorage.setItem(STORAGE_KEY, 'false');
+    ({ createSidePanel } = require('../../src/renderer/ui/components/chat/sidePanel'));
+    expect(createSidePanel(markup()).isCollapsed()).toBe(false);
+    expect(document.body.classList.contains('chat-side-collapsed')).toBe(false);
   });
 
   test('collapsing in one tab collapses every tab, and the strip brings all of them back', () => {
@@ -130,6 +132,9 @@ describe('chat side column', () => {
   test('a section is open when the column is and the section is not folded', () => {
     const els = markup();
     const panel = createSidePanel(els);
+    // Collapsed at first: nothing is open until the user opens the column.
+    expect(panel.isOpen('git')).toBe(false);
+    els.railEl.click();
     expect(panel.isOpen('git')).toBe(true);
     els.sideEl.querySelector('[data-section="git"] .chat-side-section-head').click();
     expect(panel.isOpen('git')).toBe(false);
